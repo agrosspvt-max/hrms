@@ -1,4 +1,109 @@
-import { useMemo } from 'react';
+import { useMemo, useRef, useCallback } from 'react';
+
+const fmt = (v) => (v === '' || v === null || v === undefined ? '' : String(v));
+
+/**
+ * Module-level editable cell renderer.
+ *
+ * Defined OUTSIDE the SheetWorkflowGrid function body on purpose: when this
+ * component was nested inside the parent, every parent re-render created a
+ * brand-new component identity, which made React unmount/remount the input
+ * on every keystroke - which is exactly what caused focus loss while
+ * typing.  Hoisting it makes the identity stable so React just updates the
+ * value attribute and keeps the cursor in place.
+ *
+ * `data-cell="r:c"` is also stamped on every editable input so the grid's
+ * keyboard handler can find the next cell for arrow / Tab / Enter
+ * navigation without a brittle refs map.
+ */
+function EditCell({ cell, r, c, onCellChange }) {
+  const type = cell.fieldType || 'text';
+  const v = cell.value;
+  const commit = (val) => onCellChange && onCellChange(r, c, val);
+  const cellAttr = `${r}:${c}`;
+  if (type === 'number') {
+    return <input className="swg-in" type="number" data-cell={cellAttr}
+      value={v === 0 ? 0 : (v || '')}
+      onChange={(e) => commit(e.target.value === '' ? '' : Number(e.target.value))} placeholder="—" />;
+  }
+  if (type === 'date') {
+    return <input className="swg-in" type="date" data-cell={cellAttr}
+      value={v || ''} onChange={(e) => commit(e.target.value)} />;
+  }
+  if (type === 'textarea') {
+    return <textarea className="swg-in" rows={1} data-cell={cellAttr}
+      value={v || ''} onChange={(e) => commit(e.target.value)} placeholder="—" />;
+  }
+  if (type === 'dropdown') {
+    return (
+      <select className="swg-in" data-cell={cellAttr} value={v || ''} onChange={(e) => commit(e.target.value)}>
+        <option value="">Select…</option>
+        {(cell.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+  }
+  return <input className="swg-in" data-cell={cellAttr}
+    value={v || ''} onChange={(e) => commit(e.target.value)} placeholder="—" />;
+}
+
+/**
+ * Module-level inline workflow cells (Status / Type / Assign To / Note).
+ * Same rationale as EditCell - stable identity prevents focus loss while
+ * typing in the dependency remark / pending reason inputs.
+ */
+function WorkflowCells({ score, status, onStatusChange, assignable }) {
+  const st = status[score.key] || { dependencyType: 'independent' };
+  const rowStatus = st.rowStatus || '';
+  const isDependent = st.dependencyType === 'dependent';
+  const showType = rowStatus === 'done' || rowStatus === 'pending';
+  const ch = (patch) => onStatusChange && onStatusChange(score.key, patch);
+
+  return (
+    <>
+      <td className="swg-wf-cell">
+        <select className={`swg-status swg-status-${rowStatus || 'none'}`}
+          value={rowStatus} onChange={(e) => ch({ rowStatus: e.target.value })}>
+          <option value="">Select…</option>
+          <option value="done">Done</option>
+          <option value="pending">Pending</option>
+          <option value="work_not_available">Work Not Available</option>
+        </select>
+      </td>
+      <td className="swg-wf-cell">
+        {showType ? (
+          <div className="swg-type">
+            <label><input type="radio" name={`wt-${score.key}`} checked={!isDependent} onChange={() => ch({ dependencyType: 'independent' })} /> Indep.</label>
+            <label><input type="radio" name={`wt-${score.key}`} checked={isDependent} onChange={() => ch({ dependencyType: 'dependent' })} /> Depend.</label>
+          </div>
+        ) : <span className="swg-empty">—</span>}
+      </td>
+      <td className="swg-wf-cell">
+        {showType && isDependent ? (
+          <select className="swg-in" value={st.dependencyAssignedTo || ''} onChange={(e) => ch({ dependencyAssignedTo: e.target.value })}>
+            <option value="">Select person…</option>
+            {(assignable || []).map((u) => (
+              <option key={u._id} value={u._id}>
+                {u.name}{u.role ? ` · ${u.role === 'super_admin' ? 'Super Admin' : u.role.toUpperCase()}` : ''}{u.isHOD ? ' · HOD' : ''}
+              </option>
+            ))}
+          </select>
+        ) : <span className="swg-empty">—</span>}
+      </td>
+      <td className="swg-wf-cell">
+        {(rowStatus === 'pending' || (showType && isDependent)) ? (
+          <div className="swg-notes">
+            {rowStatus === 'pending' && (
+              <input className="swg-in" placeholder="Pending reason (required)" value={st.pendingReason || ''} onChange={(e) => ch({ pendingReason: e.target.value })} />
+            )}
+            {showType && isDependent && (
+              <input className="swg-in" placeholder="Dependency remark (required)" value={st.dependencyRemark || ''} onChange={(e) => ch({ dependencyRemark: e.target.value })} />
+            )}
+          </div>
+        ) : <span className="swg-empty">—</span>}
+      </td>
+    </>
+  );
+}
 
 /**
  * SheetWorkflowGrid - the EMPLOYEE fill view of a spreadsheet report, where
@@ -52,94 +157,87 @@ export default function SheetWorkflowGrid({ sheet, onCellChange, status = {}, on
 
   const hasTaskRows = taskRows.size > 0;
 
+  // Container ref + key handler power Arrow / Tab / Enter navigation
+  // between editable cells.  We delegate keydown on the container instead
+  // of maintaining a refs map — `data-cell="r:c"` on every editable input
+  // is the single source of truth, so adding rows / columns Just Works.
+  const wrapRef = useRef(null);
+  const onKeyDown = useCallback((e) => {
+    const t = e.target;
+    if (!t || !t.getAttribute) return;
+    const tag = t.tagName;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return;
+    const attr = t.getAttribute('data-cell');
+    if (!attr) return;
+    const [rStr, cStr] = attr.split(':');
+    const r = Number(rStr); const c = Number(cStr);
+    if (!Number.isFinite(r) || !Number.isFinite(c)) return;
+
+    const find = (rr, cc) => wrapRef.current?.querySelector(`[data-cell="${rr}:${cc}"]`);
+    const cellsByCol = (cc) => Array.from(wrapRef.current?.querySelectorAll(`[data-cell$=":${cc}"]`) || [])
+      .map((el) => Number(el.getAttribute('data-cell').split(':')[0]))
+      .filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+    const cellsByRow = (rr) => Array.from(wrapRef.current?.querySelectorAll(`[data-cell^="${rr}:"]`) || [])
+      .map((el) => Number(el.getAttribute('data-cell').split(':')[1]))
+      .filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+
+    const move = (next) => {
+      if (next) {
+        e.preventDefault();
+        next.focus();
+        if (next.select) next.select();
+      }
+    };
+
+    if (e.key === 'Enter' || e.key === 'ArrowDown') {
+      if (e.key === 'ArrowDown' && t.type === 'number') e.preventDefault();
+      const rows = cellsByCol(c); const next = rows.find((rr) => rr > r);
+      move(next != null ? find(next, c) : null);
+    } else if (e.key === 'ArrowUp') {
+      if (t.type === 'number') e.preventDefault();
+      const rows = cellsByCol(c); const prev = [...rows].reverse().find((rr) => rr < r);
+      move(prev != null ? find(prev, c) : null);
+    } else if (e.key === 'ArrowRight') {
+      const cells = cellsByRow(r); const next = cells.find((cc) => cc > c);
+      move(next != null ? find(r, next) : null);
+    } else if (e.key === 'ArrowLeft') {
+      const cells = cellsByRow(r); const prev = [...cells].reverse().find((cc) => cc < c);
+      move(prev != null ? find(r, prev) : null);
+    } else if (e.key === 'Tab') {
+      // Move to next/previous editable spreadsheet cell, keeping focus
+      // inside the grid.  Workflow controls remain reachable via Tab too
+      // because the browser tabs through them after the last data cell.
+      const cells = cellsByRow(r);
+      if (e.shiftKey) {
+        const prev = [...cells].reverse().find((cc) => cc < c);
+        if (prev != null) move(find(r, prev));
+        else {
+          const rows = cellsByCol(c); const prevRow = [...rows].reverse().find((rr) => rr < r);
+          if (prevRow != null) {
+            const lastCol = cellsByRow(prevRow).slice(-1)[0];
+            if (lastCol != null) move(find(prevRow, lastCol));
+          }
+        }
+      } else {
+        const next = cells.find((cc) => cc > c);
+        if (next != null) move(find(r, next));
+        else {
+          const rows = cellsByCol(c); const nextRow = rows.find((rr) => rr > r);
+          if (nextRow != null) {
+            const firstCol = cellsByRow(nextRow)[0];
+            if (firstCol != null) move(find(nextRow, firstCol));
+          }
+        }
+      }
+    }
+  }, []);
+
   if (!sheet || !cols.length) {
     return <div className="text-sm text-slate-400 italic py-6 text-center">No spreadsheet content.</div>;
   }
 
-  const fmt = (v) => (v === '' || v === null || v === undefined ? '' : String(v));
-
-  // ---- editable cell renderer (input cells only) --------------------
-  const EditCell = ({ cell, r, c }) => {
-    const type = cell.fieldType || 'text';
-    const v = cell.value;
-    const commit = (val) => onCellChange && onCellChange(r, c, val);
-    if (type === 'number') {
-      return <input className="swg-in" type="number" value={v === 0 ? 0 : (v || '')}
-        onChange={(e) => commit(e.target.value === '' ? '' : Number(e.target.value))} placeholder="—" />;
-    }
-    if (type === 'date') {
-      return <input className="swg-in" type="date" value={v || ''} onChange={(e) => commit(e.target.value)} />;
-    }
-    if (type === 'textarea') {
-      return <textarea className="swg-in" rows={1} value={v || ''} onChange={(e) => commit(e.target.value)} placeholder="—" />;
-    }
-    if (type === 'dropdown') {
-      return (
-        <select className="swg-in" value={v || ''} onChange={(e) => commit(e.target.value)}>
-          <option value="">Select…</option>
-          {(cell.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
-        </select>
-      );
-    }
-    return <input className="swg-in" value={v || ''} onChange={(e) => commit(e.target.value)} placeholder="—" />;
-  };
-
-  // ---- inline workflow cells for one task row -----------------------
-  const WorkflowCells = ({ score }) => {
-    const st = status[score.key] || { dependencyType: 'independent' };
-    const rowStatus = st.rowStatus || '';
-    const isDependent = st.dependencyType === 'dependent';
-    const showType = rowStatus === 'done' || rowStatus === 'pending';
-    const ch = (patch) => onStatusChange && onStatusChange(score.key, patch);
-
-    return (
-      <>
-        <td className="swg-wf-cell">
-          <select className={`swg-status swg-status-${rowStatus || 'none'}`} value={rowStatus} onChange={(e) => ch({ rowStatus: e.target.value })}>
-            <option value="">Select…</option>
-            <option value="done">Done</option>
-            <option value="pending">Pending</option>
-            <option value="work_not_available">Work Not Available</option>
-          </select>
-        </td>
-        <td className="swg-wf-cell">
-          {showType ? (
-            <div className="swg-type">
-              <label><input type="radio" name={`wt-${score.key}`} checked={!isDependent} onChange={() => ch({ dependencyType: 'independent' })} /> Indep.</label>
-              <label><input type="radio" name={`wt-${score.key}`} checked={isDependent} onChange={() => ch({ dependencyType: 'dependent' })} /> Depend.</label>
-            </div>
-          ) : <span className="swg-empty">—</span>}
-        </td>
-        <td className="swg-wf-cell">
-          {showType && isDependent ? (
-            <select className="swg-in" value={st.dependencyAssignedTo || ''} onChange={(e) => ch({ dependencyAssignedTo: e.target.value })}>
-              <option value="">Select person…</option>
-              {assignable.map((u) => (
-                <option key={u._id} value={u._id}>
-                  {u.name}{u.role ? ` · ${u.role === 'super_admin' ? 'Super Admin' : u.role.toUpperCase()}` : ''}{u.isHOD ? ' · HOD' : ''}
-                </option>
-              ))}
-            </select>
-          ) : <span className="swg-empty">—</span>}
-        </td>
-        <td className="swg-wf-cell">
-          {(rowStatus === 'pending' || (showType && isDependent)) ? (
-            <div className="swg-notes">
-              {rowStatus === 'pending' && (
-                <input className="swg-in" placeholder="Pending reason (required)" value={st.pendingReason || ''} onChange={(e) => ch({ pendingReason: e.target.value })} />
-              )}
-              {showType && isDependent && (
-                <input className="swg-in" placeholder="Dependency remark (required)" value={st.dependencyRemark || ''} onChange={(e) => ch({ dependencyRemark: e.target.value })} />
-              )}
-            </div>
-          ) : <span className="swg-empty">—</span>}
-        </td>
-      </>
-    );
-  };
-
   return (
-    <div className="swg-wrap">
+    <div className="swg-wrap" ref={wrapRef} onKeyDown={onKeyDown}>
       <style>{SWG_CSS}</style>
       <div className="swg-scroll">
         <table className="swg-table">
@@ -176,7 +274,7 @@ export default function SheetWorkflowGrid({ sheet, onCellChange, status = {}, on
                           scored ? 'swg-scored' : '',
                         ].join(' ')}
                       >
-                        {editable ? <EditCell cell={cell} r={rw.index} c={co.index} />
+                        {editable ? <EditCell cell={cell} r={rw.index} c={co.index} onCellChange={onCellChange} />
                           : role === 'input' ? (fmt(cell?.value) || <span className="swg-empty">—</span>)
                           : fmt(cell?.value)}
                       </td>
@@ -184,7 +282,7 @@ export default function SheetWorkflowGrid({ sheet, onCellChange, status = {}, on
                   })}
                   {hasTaskRows && (
                     taskScore
-                      ? <WorkflowCells score={taskScore} />
+                      ? <WorkflowCells score={taskScore} status={status} onStatusChange={onStatusChange} assignable={assignable} />
                       : <><td className="swg-wf-cell swg-na" colSpan={4}><span className="swg-empty">—</span></td></>
                   )}
                 </tr>

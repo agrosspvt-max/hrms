@@ -76,7 +76,7 @@ export default function SentAlerts() {
         <StatCard label="Total Sent" value={totals.total} accent="brand" />
         <StatCard label="Read by Employee" value={totals.read} accent="green" />
         <StatCard label="Still Unread" value={totals.unread} accent="amber" />
-        <StatCard label="Backlog Alerts" value={totals.backlog} accent="red" />
+        <StatCard label="Pendency Alerts" value={totals.backlog} accent="red" />
       </div>
 
       <div className="card card-body grid md:grid-cols-3 gap-3">
@@ -88,7 +88,7 @@ export default function SentAlerts() {
         </select>
         <select className="input" value={type} onChange={(e) => setType(e.target.value)}>
           <option value="">All types</option>
-          <option value="backlog_alert">Backlog alerts</option>
+          <option value="backlog_alert">Pendency alerts</option>
           <option value="general">General</option>
         </select>
       </div>
@@ -153,7 +153,7 @@ function Row({ n, expanded, onToggle }) {
         </td>
         <td>
           {n.type === 'backlog_alert'
-            ? <span className="badge-amber">Backlog</span>
+            ? <span className="badge-amber">Pendency</span>
             : <span className="badge-gray">General</span>}
         </td>
         <td className="max-w-xs truncate">{n.title}</td>

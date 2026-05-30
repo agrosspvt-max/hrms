@@ -137,7 +137,7 @@ function NotificationCard({ n, onRead, onDelete }) {
                 {n.title}
               </div>
               {!n.read && <span className="badge-blue">New</span>}
-              {isBacklog && <span className="badge-amber">Backlog</span>}
+              {isBacklog && <span className="badge-amber">Pendency</span>}
             </div>
             <div className="text-[11px] text-slate-500 mt-1 pl-6">
               From {n.sender?.name || 'System'}

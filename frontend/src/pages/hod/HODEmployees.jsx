@@ -52,7 +52,7 @@ export default function HODEmployees() {
         <StatCard label="Team Size" value={members.length} accent="brand" />
         <StatCard label="Submitted Today" value={submittedToday} accent="green" />
         <StatCard label="Awaiting My Review" value={pendingReview} accent={pendingReview ? 'amber' : 'brand'} to="/team-reviews" />
-        <StatCard label="With Backlog" value={withBacklog} accent={withBacklog ? 'red' : 'brand'} />
+        <StatCard label="With Pendency" value={withBacklog} accent={withBacklog ? 'red' : 'brand'} />
       </div>
 
       <div className="card overflow-x-auto">
@@ -63,7 +63,7 @@ export default function HODEmployees() {
             <thead>
               <tr>
                 <th>ID</th><th>Name</th><th>Designation</th><th>Review Flow</th>
-                <th>Today</th><th>Backlog</th><th>Status</th>
+                <th>Today</th><th>Pendency</th><th>Status</th>
               </tr>
             </thead>
             <tbody>
