@@ -1,0 +1,17 @@
+{
+  "name": "hrms-monorepo",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Enterprise HRMS + Workflow Monitoring + Salary Management",
+  "scripts": {
+    "install:all": "npm install && npm --prefix backend install && npm --prefix frontend install",
+    "seed": "npm --prefix backend run seed",
+    "dev": "concurrently -k --names \"API,WEB\" --prefix-colors \"blue.bold,green.bold\" \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:server": "npm --prefix backend run dev",
+    "dev:client": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
