@@ -306,11 +306,25 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       )}
       {!data.onLeave && data.holiday && (
         <div className="card card-body bg-purple-50 border-purple-200">
-          <div className="text-sm font-semibold text-purple-800">🎉 Today is a holiday: {data.holiday.name}</div>
+          <div className="text-sm font-semibold text-purple-800">Today is a holiday: {data.holiday.name}</div>
           {data.holiday.description && (
             <div className="text-xs text-purple-700 mt-1">{data.holiday.description}</div>
           )}
           <div className="text-[11px] text-purple-700 mt-1 capitalize">Type: {data.holiday.type}</div>
+        </div>
+      )}
+      {!data.onLeave && data.workingDespiteOff && (
+        <div className="card card-body bg-amber-50 border-amber-200">
+          <div className="text-sm font-semibold text-amber-900">
+            Working day today (HR override)
+          </div>
+          <div className="text-xs text-amber-800 mt-1">
+            {data.weeklyOffOriginal
+              ? 'Today is normally your weekly off, but HR has assigned override work below.'
+              : data.holidayOriginal
+              ? `Today is normally a holiday (${data.holidayOriginal.name}), but HR has assigned override work below.`
+              : 'HR has assigned override work to a non-working day.'}
+          </div>
         </div>
       )}
 

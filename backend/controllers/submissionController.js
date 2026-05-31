@@ -122,7 +122,12 @@ const getToday = asyncHandler(async (req, res) => {
   const halfDayLeave = leaveToday && leaveToday.dayType === 'half' ? leaveToday : null;
   const weeklyOff = isWeeklyOff(employee, today);
 
-  if (!fullDayLeave && !weeklyOff && !holiday) {
+  // Always invoke the engine UNLESS today is a full-day approved leave
+  // (which truly suppresses work).  On a weekly-off / holiday the engine
+  // itself only emits assignments with `holidayOverride === true` (honouring
+  // overrideScope), so this is what makes the "Assign Work on Non-Working
+  // Day" toggle actually surface on the employee's dashboard.
+  if (!fullDayLeave) {
     await ensureDailySubmissions(employee, today);
   }
 
@@ -131,13 +136,26 @@ const getToday = asyncHandler(async (req, res) => {
     date: today,
   }).populate('template', 'title');
 
+  // Effective working status: if HR pushed override work onto a weekly-off
+  // or holiday, today is a working day for the employee -- otherwise the
+  // dashboard would still show "Enjoy your day!" and hide the tasks.
+  const hasOverrideWork = (weeklyOff || !!holiday) && submissions.length > 0;
+
   const backlog = await getBacklog(employee._id, today);
 
   res.json({
     date: today,
     onLeave: !!fullDayLeave,
-    weeklyOff,
-    holiday: holiday ? { name: holiday.name, description: holiday.description, type: holiday.type } : null,
+    // Effective flags drive the UI banner + the Today's Tasks gate.
+    weeklyOff: weeklyOff && !hasOverrideWork,
+    holiday: holiday && !hasOverrideWork
+      ? { name: holiday.name, description: holiday.description, type: holiday.type }
+      : null,
+    // Surface the raw (calendar) status + override flag so the UI can
+    // badge the day even when it shows the task list.
+    weeklyOffOriginal: weeklyOff,
+    holidayOriginal: holiday ? { name: holiday.name } : null,
+    workingDespiteOff: hasOverrideWork,
     leaveInfo: fullDayLeave ? { fromDate: fullDayLeave.fromDate, toDate: fullDayLeave.toDate, leaveType: fullDayLeave.leaveType } : null,
     halfDayLeave: halfDayLeave ? { fromDate: halfDayLeave.fromDate, toDate: halfDayLeave.toDate, leaveType: halfDayLeave.leaveType } : null,
     submissions,
