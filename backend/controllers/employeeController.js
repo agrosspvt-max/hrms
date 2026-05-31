@@ -171,8 +171,12 @@ const createEmployee = asyncHandler(async (req, res) => {
   // We resolve the designation title separately so we don't require the
   // caller to .populate() before persisting.
   (async () => {
+    console.log(`[WELCOME] employee created -> ${user.email} (${user.name})`);
     try {
-      if (!user.email) return;
+      if (!user.email) {
+        console.warn('[WELCOME] skipped: employee has no email address');
+        return;
+      }
       let designationTitle = '';
       if (user.designation) {
         const Designation = require('../models/Designation');
@@ -180,14 +184,20 @@ const createEmployee = asyncHandler(async (req, res) => {
         designationTitle = d?.title || '';
       }
       const loginUrl = process.env.HRMS_LOGIN_URL || 'https://hrms-alpha-weld.vercel.app';
+      console.log(`[WELCOME] sending -> to=${user.email} designation="${designationTitle}" loginUrl=${loginUrl}`);
       await sendWelcomeEmail({
         to: user.email,
         employeeName: user.name,
         designationTitle,
         loginUrl,
       });
+      console.log(`[WELCOME] sent OK -> ${user.email}`);
     } catch (err) {
-      console.error('[email] welcome email failed for %s: %s', user.email, err.message);
+      console.error(
+        `[WELCOME] FAILED -> ${user.email} | ${err.message}`,
+        err.code ? `code=${err.code}` : '',
+        err.responseCode ? `responseCode=${err.responseCode}` : '',
+      );
     }
   })();
 

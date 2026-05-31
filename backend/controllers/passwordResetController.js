@@ -156,10 +156,15 @@ const approve = asyncHandler(async (req, res) => {
   reqDoc.resetTokenExpiry = expiry;
   reqDoc.isUsed = false;
   await reqDoc.save();
+  console.log(`[RESET] token generated for ${employee.email} (request ${reqDoc._id})`);
 
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:5173';
+  if (clientUrl.includes('localhost') && process.env.NODE_ENV === 'production') {
+    console.warn(`[RESET] WARNING: CLIENT_URL still points to ${clientUrl} in production -- the reset link in the email will be broken. Set CLIENT_URL to your Vercel URL on Render.`);
+  }
   const resetUrl = `${clientUrl}/reset-password?token=${resetToken}`;
 
+  console.log(`[RESET] email send started -> ${employee.email}`);
   try {
     await sendPasswordResetEmail({
       to: employee.email,
@@ -167,6 +172,7 @@ const approve = asyncHandler(async (req, res) => {
       resetUrl,
       ttlMinutes: TOKEN_TTL_MIN,
     });
+    console.log(`[RESET] email send success -> ${employee.email}`);
     reqDoc.emailSentAt = new Date();
     await reqDoc.save();
     logAudit(req, {
@@ -178,7 +184,11 @@ const approve = asyncHandler(async (req, res) => {
     });
   } catch (err) {
     // Surface SMTP issues but keep the approval state so HR can retry.
-    console.error('[password-reset] email send failed:', err.message);
+    console.error(
+      `[RESET] email send FAILED -> ${employee.email} | ${err.message}`,
+      err.code ? `code=${err.code}` : '',
+      err.responseCode ? `responseCode=${err.responseCode}` : '',
+    );
     res.status(500);
     throw new Error(`Approved but email failed to send: ${err.message}`);
   }

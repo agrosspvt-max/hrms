@@ -35,6 +35,37 @@ app.use('/api/audit', require('./routes/auditRoutes'));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date() }));
 
+/**
+ * TEMPORARY debug route for diagnosing SMTP delivery on Render.
+ *   GET /api/test-email?to=foo@bar.com
+ *
+ * Returns { success: true } on send or { success: false, error, code } on
+ * failure (no auth so it can be hit with curl during deployment debug).
+ * Remove once email delivery is confirmed working.
+ */
+app.get('/api/test-email', async (req, res) => {
+  const to = (req.query.to || '').toString().trim();
+  if (!to) return res.status(400).json({ success: false, error: 'Pass ?to=email@example.com' });
+  try {
+    const { sendMail } = require('./utils/emailService');
+    const info = await sendMail({
+      to,
+      subject: 'HRMS SMTP test',
+      text: `If you can read this, SMTP is working from ${process.env.NODE_ENV || 'unknown'} at ${new Date().toISOString()}.`,
+      html: `<p>If you can read this, SMTP is working from <b>${process.env.NODE_ENV || 'unknown'}</b> at ${new Date().toISOString()}.</p>`,
+    });
+    return res.json({ success: true, messageId: info.messageId, response: info.response });
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: err.message,
+      code: err.code || null,
+      responseCode: err.responseCode || null,
+      command: err.command || null,
+    });
+  }
+});
+
 app.use(notFound);
 app.use(errorHandler);
 
@@ -78,6 +109,12 @@ const syncSalaryIndexes = async () => {
 const start = async () => {
   await connectDB();
   try { await syncSalaryIndexes(); } catch (e) { console.error('[migrate] salary period migration failed:', e.message); }
+  // Fire-and-forget SMTP self-check.  Result is logged for debugging;
+  // never blocks the HTTP listener from coming up.
+  try {
+    const { verifyTransporterAtBoot } = require('./utils/emailService');
+    verifyTransporterAtBoot();
+  } catch (e) { console.error('[smtp] boot verify error:', e.message); }
   app.listen(PORT, () => console.log(`[server] HRMS API running on :${PORT}`));
 };
 

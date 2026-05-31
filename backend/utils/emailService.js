@@ -14,24 +14,84 @@ const getTransporter = () => {
       'SMTP credentials missing. Set SMTP_EMAIL and SMTP_PASSWORD in backend/.env (Gmail App Password).'
     );
   }
+  // Gmail App Passwords are 16 chars with no spaces; users frequently
+  // paste "abcd efgh ijkl mnop" -- strip whitespace so the same value
+  // works whether or not spaces are kept.  Never log this value.
+  const cleanedPass = String(process.env.SMTP_PASSWORD).replace(/\s+/g, '');
   cachedTransporter = nodemailer.createTransport({
     host: process.env.SMTP_HOST || 'smtp.gmail.com',
     port: Number(process.env.SMTP_PORT) || 587,
     secure: Number(process.env.SMTP_PORT) === 465, // 465 = SSL, 587 = STARTTLS
     auth: {
       user: process.env.SMTP_EMAIL,
-      pass: process.env.SMTP_PASSWORD,
+      pass: cleanedPass,
     },
   });
   return cachedTransporter;
 };
 
+/**
+ * Startup self-check.  Logs whether SMTP env vars are present and runs
+ * transporter.verify() so SMTP handshake / auth problems surface in the
+ * Render logs the moment the service boots -- instead of waiting for the
+ * first password reset to fail silently.
+ *
+ * NEVER prints SMTP_PASSWORD.  Length is printed so an obviously wrong
+ * password (e.g. a 22-char pasted "...# no spaces" comment) stands out.
+ */
+const verifyTransporterAtBoot = async () => {
+  const user = process.env.SMTP_EMAIL || '';
+  const pwd = process.env.SMTP_PASSWORD || '';
+  const host = process.env.SMTP_HOST || 'smtp.gmail.com';
+  const port = Number(process.env.SMTP_PORT) || 587;
+
+  console.log(`[smtp] SMTP_EMAIL = ${user || '(missing)'} `);
+  console.log(`[smtp] SMTP_PASSWORD present = ${pwd ? 'yes' : 'no'} (length=${pwd.length}, no-space length=${pwd.replace(/\s+/g, '').length})`);
+  console.log(`[smtp] host = ${host} port = ${port}`);
+  console.log(`[smtp] CLIENT_URL (reset-link host) = ${process.env.CLIENT_URL || '(missing)'}`);
+  console.log(`[smtp] HRMS_LOGIN_URL (welcome-email link) = ${process.env.HRMS_LOGIN_URL || '(missing -> using fallback)'}`);
+
+  if (!user || !pwd) {
+    console.error('[smtp] SKIPPED verify(): SMTP_EMAIL or SMTP_PASSWORD missing in env');
+    return;
+  }
+  try {
+    const t = getTransporter();
+    await t.verify();
+    console.log('[smtp] verify() OK -- SMTP handshake & auth succeeded');
+  } catch (err) {
+    console.error(
+      '[smtp] verify() FAILED:',
+      err.message,
+      err.code ? `(code=${err.code})` : '',
+      err.responseCode ? `(responseCode=${err.responseCode})` : '',
+    );
+  }
+};
+
 const sendMail = async ({ to, subject, html, text }) => {
   const from = `"${process.env.SMTP_FROM_NAME || 'HRMS Support'}" <${process.env.SMTP_EMAIL}>`;
-  const transporter = getTransporter();
-  const info = await transporter.sendMail({ from, to, subject, html, text });
-  console.log(`[email] sent to ${to} - messageId ${info.messageId}`);
-  return info;
+  console.log(`[email] -> attempt to=${to} subject="${subject}"`);
+  let transporter;
+  try {
+    transporter = getTransporter();
+  } catch (err) {
+    console.error(`[EMAIL FAILED] ${to} | ${subject} | transporter init: ${err.message}`);
+    throw err;
+  }
+  try {
+    const info = await transporter.sendMail({ from, to, subject, html, text });
+    console.log(`[email] OK to=${to} messageId=${info.messageId} response="${info.response}"`);
+    return info;
+  } catch (err) {
+    console.error(
+      `[EMAIL FAILED] ${to} | ${subject} | ${err.message}`,
+      err.code ? `code=${err.code}` : '',
+      err.responseCode ? `responseCode=${err.responseCode}` : '',
+      err.command ? `command=${err.command}` : '',
+    );
+    throw err;
+  }
 };
 
 /**
@@ -151,4 +211,4 @@ Agromaxx Industry`;
   return sendMail({ to, subject, html, text });
 };
 
-module.exports = { sendMail, sendPasswordResetEmail, sendWelcomeEmail };
+module.exports = { sendMail, sendPasswordResetEmail, sendWelcomeEmail, verifyTransporterAtBoot };
