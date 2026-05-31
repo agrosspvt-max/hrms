@@ -1,6 +1,23 @@
 const nodemailer = require('nodemailer');
 
 /**
+ * Email delivery layer.
+ *
+ * Two providers are supported transparently:
+ *  - "resend"  - HTTPS POST to api.resend.com:443 (default in production
+ *                because Render Free instances block outbound SMTP).
+ *  - "smtp"    - Classic nodemailer + Gmail App Password (used for local
+ *                dev and any host that does allow outbound SMTP).
+ *
+ * The high-level helpers (sendPasswordResetEmail, sendWelcomeEmail) and
+ * the `/api/test-email` debug route all go through sendMail(), so the
+ * provider switch is invisible to callers.
+ */
+
+const EMAIL_PROVIDER = (process.env.EMAIL_PROVIDER || '').toLowerCase().trim();
+const isResend = () => EMAIL_PROVIDER === 'resend';
+
+/**
  * Lazily-built nodemailer transporter so the app boots even before
  * SMTP credentials are configured.  Real failures surface only when
  * we actually try to send.
@@ -31,25 +48,120 @@ const getTransporter = () => {
 };
 
 /**
- * Startup self-check.  Logs whether SMTP env vars are present and runs
- * transporter.verify() so SMTP handshake / auth problems surface in the
- * Render logs the moment the service boots -- instead of waiting for the
- * first password reset to fail silently.
+ * Build the From: header used by both providers.  Resend rejects a bare
+ * "name <addr>" so it gets a trailing rfc-2822 pair just like SMTP does.
+ */
+const buildFrom = () => {
+  const fromAddr =
+    process.env.SMTP_FROM_EMAIL ||
+    process.env.SMTP_EMAIL ||
+    'onboarding@resend.dev';
+  const fromName = process.env.SMTP_FROM_NAME || 'HRMS Support';
+  return `${fromName} <${fromAddr}>`;
+};
+
+/**
+ * Resend HTTPS API send.  Uses global fetch (Node 18+; mongoose 8.4
+ * already requires Node 18+, so this is safe).  Errors are re-thrown in
+ * the same shape SMTP errors take so callers / logs don't need to branch.
+ */
+const sendViaResend = async ({ to, subject, html, text }) => {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!apiKey) {
+    throw new Error('EMAIL_PROVIDER=resend but RESEND_API_KEY is missing');
+  }
+  const payload = {
+    from: buildFrom(),
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    html,
+    text,
+  };
+  const resp = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+  const raw = await resp.text();
+  let parsed = null;
+  try { parsed = raw ? JSON.parse(raw) : null; } catch (_) { /* keep raw */ }
+  if (!resp.ok) {
+    const msg = (parsed && (parsed.message || parsed.error || parsed.name)) || raw || `HTTP ${resp.status}`;
+    const err = new Error(msg);
+    err.code = (parsed && parsed.name) || `HTTP_${resp.status}`;
+    err.responseCode = resp.status;
+    throw err;
+  }
+  return {
+    messageId: (parsed && parsed.id) || 'resend',
+    response: `200 OK via Resend (id=${parsed?.id || 'unknown'})`,
+  };
+};
+
+/**
+ * Classic nodemailer/Gmail send.  Untouched behaviour from the original
+ * implementation so local dev keeps working exactly as before.
+ */
+const sendViaSmtp = async ({ to, subject, html, text }) => {
+  const transporter = getTransporter();
+  const info = await transporter.sendMail({ from: buildFrom(), to, subject, html, text });
+  return info;
+};
+
+/**
+ * Startup self-check.  Logs whether the configured provider's
+ * credentials are present and -- where possible -- pings the provider
+ * so handshake / auth problems surface in the Render logs the moment
+ * the service boots, instead of waiting for the first password reset to
+ * fail silently.
  *
- * NEVER prints SMTP_PASSWORD.  Length is printed so an obviously wrong
- * password (e.g. a 22-char pasted "...# no spaces" comment) stands out.
+ * Never prints SMTP_PASSWORD or RESEND_API_KEY.  Lengths are printed so
+ * an obviously wrong value (e.g. a 22-char pasted "...# no spaces"
+ * comment) stands out.
  */
 const verifyTransporterAtBoot = async () => {
+  console.log(`[smtp] EMAIL_PROVIDER = ${EMAIL_PROVIDER || '(unset -> smtp)'}`);
+  console.log(`[smtp] CLIENT_URL (reset-link host) = ${process.env.CLIENT_URL || '(missing)'}`);
+  console.log(`[smtp] HRMS_LOGIN_URL (welcome-email link) = ${process.env.HRMS_LOGIN_URL || '(missing -> using fallback)'}`);
+
+  if (isResend()) {
+    const key = process.env.RESEND_API_KEY || '';
+    const fromAddr = process.env.SMTP_FROM_EMAIL || process.env.SMTP_EMAIL || 'onboarding@resend.dev';
+    console.log(`[smtp] provider = Resend (HTTPS api.resend.com)`);
+    console.log(`[smtp] RESEND_API_KEY present = ${key ? 'yes' : 'no'} (length=${key.length})`);
+    console.log(`[smtp] From: ${buildFrom()} (sender=${fromAddr})`);
+    if (!key) {
+      console.error('[smtp] SKIPPED verify(): RESEND_API_KEY missing in env');
+      return;
+    }
+    try {
+      const resp = await fetch('https://api.resend.com/domains', {
+        headers: { Authorization: `Bearer ${key}` },
+      });
+      if (resp.ok) {
+        console.log('[smtp] verify() OK -- Resend API key accepted');
+      } else {
+        const body = (await resp.text()).slice(0, 200);
+        console.error(`[smtp] verify() FAILED: Resend HTTP ${resp.status} ${body}`);
+      }
+    } catch (err) {
+      console.error('[smtp] verify() FAILED (Resend reachability):', err.message);
+    }
+    return;
+  }
+
+  // SMTP path
   const user = process.env.SMTP_EMAIL || '';
   const pwd = process.env.SMTP_PASSWORD || '';
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = Number(process.env.SMTP_PORT) || 587;
-
+  console.log(`[smtp] provider = SMTP (nodemailer)`);
   console.log(`[smtp] SMTP_EMAIL = ${user || '(missing)'} `);
   console.log(`[smtp] SMTP_PASSWORD present = ${pwd ? 'yes' : 'no'} (length=${pwd.length}, no-space length=${pwd.replace(/\s+/g, '').length})`);
   console.log(`[smtp] host = ${host} port = ${port}`);
-  console.log(`[smtp] CLIENT_URL (reset-link host) = ${process.env.CLIENT_URL || '(missing)'}`);
-  console.log(`[smtp] HRMS_LOGIN_URL (welcome-email link) = ${process.env.HRMS_LOGIN_URL || '(missing -> using fallback)'}`);
 
   if (!user || !pwd) {
     console.error('[smtp] SKIPPED verify(): SMTP_EMAIL or SMTP_PASSWORD missing in env');
@@ -70,17 +182,11 @@ const verifyTransporterAtBoot = async () => {
 };
 
 const sendMail = async ({ to, subject, html, text }) => {
-  const from = `"${process.env.SMTP_FROM_NAME || 'HRMS Support'}" <${process.env.SMTP_EMAIL}>`;
-  console.log(`[email] -> attempt to=${to} subject="${subject}"`);
-  let transporter;
+  console.log(`[email] -> attempt to=${to} subject="${subject}" provider=${isResend() ? 'resend' : 'smtp'}`);
   try {
-    transporter = getTransporter();
-  } catch (err) {
-    console.error(`[EMAIL FAILED] ${to} | ${subject} | transporter init: ${err.message}`);
-    throw err;
-  }
-  try {
-    const info = await transporter.sendMail({ from, to, subject, html, text });
+    const info = isResend()
+      ? await sendViaResend({ to, subject, html, text })
+      : await sendViaSmtp({ to, subject, html, text });
     console.log(`[email] OK to=${to} messageId=${info.messageId} response="${info.response}"`);
     return info;
   } catch (err) {
