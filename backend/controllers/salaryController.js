@@ -106,7 +106,11 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
   const monthNumber = from.getUTCMonth() + 1;
   const month = formatMonth(year, monthNumber);
   const periodKey = `${formatYMD(from)}_${formatYMD(periodEnd)}`;
-  const compact = (d) => formatYMD(d).replace(/-/g, '');
+  // Shortened payslip number: PS-<empId>-<MMM>-<YYYY> (derived from the
+  // payroll period start).  Uniqueness / period scoping continues to live
+  // on `periodKey` -- the payslip number is a human-friendly display.
+  const MONTH_ABBR = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const mmm = MONTH_ABBR[monthNumber - 1] || '';
   const update = {
     employee: employee._id,
     employeeName: employee.name || '',
@@ -118,7 +122,7 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
     bankName: employee.bankName || '',
     bankAccount: employee.bankAccount || '',
     uanNumber: employee.uanNumber || '',
-    payslipNumber: `PS-${employee.employeeId || String(employee._id).slice(-6)}-${compact(from)}-${compact(periodEnd)}`,
+    payslipNumber: `PS-${employee.employeeId || String(employee._id).slice(-6)}-${mmm}-${year}`,
     month, year, monthNumber,
     periodStart: from, periodEnd, periodKey,
     workingDays: att.workingDays,

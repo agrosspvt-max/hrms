@@ -6,6 +6,7 @@ const Leave = require('../models/Leave');
 const DependencyTask = require('../models/DependencyTask');
 const { sendCSV } = require('../utils/csvExporter');
 const { logAudit } = require('../utils/audit');
+const { sendWelcomeEmail } = require('../utils/emailService');
 const { startOfDay, addDays, parseDay } = require('../utils/dateHelpers');
 const { getBacklog, deriveAttendance } = require('../services/dailyEngine');
 
@@ -165,6 +166,31 @@ const createEmployee = asyncHandler(async (req, res) => {
     targetLabel: `${user.name} <${user.email}>`,
     meta: { role: user.role, employeeId: user.employeeId },
   });
+
+  // Fire-and-forget welcome email.  Must NEVER roll back creation.
+  // We resolve the designation title separately so we don't require the
+  // caller to .populate() before persisting.
+  (async () => {
+    try {
+      if (!user.email) return;
+      let designationTitle = '';
+      if (user.designation) {
+        const Designation = require('../models/Designation');
+        const d = await Designation.findById(user.designation).select('title').lean();
+        designationTitle = d?.title || '';
+      }
+      const loginUrl = process.env.HRMS_LOGIN_URL || 'https://hrms-alpha-weld.vercel.app';
+      await sendWelcomeEmail({
+        to: user.email,
+        employeeName: user.name,
+        designationTitle,
+        loginUrl,
+      });
+    } catch (err) {
+      console.error('[email] welcome email failed for %s: %s', user.email, err.message);
+    }
+  })();
+
   res.status(201).json(user);
 });
 

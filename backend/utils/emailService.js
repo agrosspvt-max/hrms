@@ -88,4 +88,67 @@ HRMS Support Team`;
   return sendMail({ to, subject, html, text });
 };
 
-module.exports = { sendMail, sendPasswordResetEmail };
+/**
+ * Welcome email sent the moment HR / Super Admin successfully creates a
+ * new employee account.  Re-uses the same SMTP transport as password
+ * reset; failures here MUST be swallowed by the caller so employee
+ * creation never rolls back.
+ */
+const sendWelcomeEmail = async ({ to, employeeName, designationTitle, loginUrl }) => {
+  const subject = 'Welcome to Agromaxx Industry HRMS';
+  const designationLine = designationTitle && designationTitle.trim() ? designationTitle : 'Not assigned yet';
+
+  const text = `Hello ${employeeName || 'there'},
+
+Welcome to Agromaxx Industry.
+Your employee account has been created successfully.
+
+Designation:
+${designationLine}
+
+You can access the HRMS portal using the link below:
+${loginUrl}
+
+Please log in using the credentials provided by HR.
+
+We wish you success in your journey with Agromaxx Industry.
+
+Regards,
+HR Team
+Agromaxx Industry`;
+
+  const html = `
+  <div style="font-family:Helvetica,Arial,sans-serif;max-width:560px;margin:auto;background:#f8fafc;padding:24px">
+    <div style="background:white;border-radius:12px;border:1px solid #e2e8f0;overflow:hidden">
+      <div style="background:#1e3a8a;color:white;padding:20px 24px;">
+        <div style="font-size:12px;letter-spacing:1px;opacity:.85;text-transform:uppercase">Agromaxx Industry</div>
+        <div style="font-size:20px;font-weight:700;margin-top:4px">Welcome to the HRMS Portal</div>
+      </div>
+      <div style="padding:24px;color:#0f172a;font-size:14px;line-height:1.6">
+        <p style="margin:0 0 12px 0">Hello <b>${employeeName || 'there'}</b>,</p>
+        <p style="margin:0 0 12px 0">Welcome to <b>Agromaxx Industry</b>. Your employee account has been created successfully.</p>
+        <div style="background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px;margin:16px 0">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#64748b;font-weight:600">Designation</div>
+          <div style="font-size:15px;font-weight:600;color:#0f172a;margin-top:2px">${designationLine}</div>
+        </div>
+        <p style="margin:0 0 8px 0">You can access the HRMS portal using the link below:</p>
+        <p style="text-align:center;margin:22px 0 10px 0">
+          <a href="${loginUrl}"
+             style="display:inline-block;background:#1e3a8a;color:white;text-decoration:none;padding:12px 28px;border-radius:8px;font-weight:600;font-size:14px">
+            Open HRMS Portal
+          </a>
+        </p>
+        <p style="font-size:12px;color:#64748b;text-align:center;margin:0 0 18px 0">
+          <a href="${loginUrl}" style="color:#1e3a8a;word-break:break-all">${loginUrl}</a>
+        </p>
+        <p style="margin:0 0 12px 0">Please log in using the credentials provided by HR.</p>
+        <p style="margin:0 0 4px 0">We wish you success in your journey with Agromaxx Industry.</p>
+        <p style="margin:20px 0 0 0;color:#475569;font-size:13px">Regards,<br/><b>HR Team</b><br/>Agromaxx Industry</p>
+      </div>
+    </div>
+  </div>`;
+
+  return sendMail({ to, subject, html, text });
+};
+
+module.exports = { sendMail, sendPasswordResetEmail, sendWelcomeEmail };
