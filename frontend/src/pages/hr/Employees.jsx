@@ -235,8 +235,10 @@ function ImportEmployeesModal({ onClose, onImported }) {
               <div className="font-semibold text-slate-900">Step 1 — Download the template</div>
               <p className="text-[13px]">
                 The template includes a sample row and a <b>Reference</b> sheet listing every
-                Department and Designation that currently exists. Copy names from there exactly
-                (case-insensitive). Required columns are marked with <code>*</code>.
+                Department and Designation that currently exists. If you type a Department or
+                Designation that doesn't exist yet, it will be <b>created automatically</b>, and
+                new Designations are mapped to the Department from the same row. Required
+                columns are marked with <code>*</code>.
               </p>
               <a
                 className="btn-secondary inline-block"
@@ -327,6 +329,30 @@ function ImportEmployeesModal({ onClose, onImported }) {
                 <code> changeme123</code> unless you specified one per row.
               </div>
             </div>
+
+            {(result.createdDepartments?.length > 0 || result.createdDesignations?.length > 0) && (
+              <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 space-y-2">
+                <div className="text-sm font-semibold text-amber-900">
+                  Auto-provisioned during this import
+                </div>
+                {result.createdDepartments?.length > 0 && (
+                  <div className="text-[12px] text-amber-800">
+                    <span className="font-semibold">New Departments ({result.createdDepartments.length}):</span>{' '}
+                    {result.createdDepartments.map((d) => d.name).join(', ')}
+                  </div>
+                )}
+                {result.createdDesignations?.length > 0 && (
+                  <div className="text-[12px] text-amber-800">
+                    <span className="font-semibold">New Designations ({result.createdDesignations.length}):</span>{' '}
+                    {result.createdDesignations.map((d) => `${d.title}${d.department ? ` → ${d.department}` : ''}`).join(', ')}
+                  </div>
+                )}
+                <div className="text-[11px] text-amber-700">
+                  Visit Organization → Departments / Designations to add descriptions or assign a Head of Department.
+                </div>
+              </div>
+            )}
+
             {result.created?.length > 0 && (
               <div className="max-h-72 overflow-y-auto border border-slate-200 rounded-lg">
                 <table className="w-full text-sm">

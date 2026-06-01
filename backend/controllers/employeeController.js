@@ -757,6 +757,16 @@ const importBulk = asyncHandler(async (req, res) => {
   const seenEmails = new Set();
   const seenIds = new Set();
 
+  // Auto-provision plan: missing-name -> canonical-spelling (preserves the
+  // first-seen casing so we don't end up creating "accounts" then needing
+  // it as "Accounts").
+  const deptsToCreate = new Map();          // lowerName -> displayName
+  // Designation needs a department too.  If the same new designation title
+  // is mapped to two different (new or existing) departments inside the
+  // file we'll reject -- titles are unique system-wide.
+  const desigsToCreate = new Map();         // lowerTitle -> { displayTitle, deptLowerName, deptDisplayName }
+  const desigDeptConflicts = new Map();     // lowerTitle -> Set(deptLowerName) for clean error messages
+
   dataRows.forEach((raw, i) => {
     const sheetRow = i + 2; // 1-indexed + 1 header row
     const rowErrs = [];
@@ -788,10 +798,32 @@ const importBulk = asyncHandler(async (req, res) => {
     if (!deptName) rowErrs.push('Department is required');
     if (!desigName) rowErrs.push('Designation is required');
 
-    const deptId = deptName ? deptByName.get(deptName.toLowerCase()) : null;
-    const desigId = desigName ? desigByName.get(desigName.toLowerCase()) : null;
-    if (deptName && !deptId) rowErrs.push(`Department "${deptName}" not found (see Reference sheet)`);
-    if (desigName && !desigId) rowErrs.push(`Designation "${desigName}" not found (see Reference sheet)`);
+    // Department: if not in DB, queue for auto-creation.
+    const deptLower = deptName.toLowerCase();
+    if (deptName && !deptByName.has(deptLower) && !deptsToCreate.has(deptLower)) {
+      deptsToCreate.set(deptLower, deptName);
+    }
+
+    // Designation: if not in DB, queue for auto-creation AND remember
+    // which department row asked for it.
+    const desigLower = desigName.toLowerCase();
+    if (desigName && !desigByName.has(desigLower)) {
+      if (!desigsToCreate.has(desigLower)) {
+        desigsToCreate.set(desigLower, {
+          displayTitle: desigName,
+          deptLowerName: deptLower,
+          deptDisplayName: deptName,
+        });
+      } else {
+        // Conflict check: same new designation appears with different
+        // departments inside this file.
+        const existing = desigsToCreate.get(desigLower);
+        if (existing.deptLowerName !== deptLower) {
+          if (!desigDeptConflicts.has(desigLower)) desigDeptConflicts.set(desigLower, new Set([existing.deptDisplayName]));
+          desigDeptConflicts.get(desigLower).add(deptName);
+        }
+      }
+    }
 
     if (email) {
       if (existingEmails.has(email)) rowErrs.push(`Email "${email}" already exists in the system`);
@@ -831,10 +863,24 @@ const importBulk = asyncHandler(async (req, res) => {
     }
     parsed.push({
       sheetRow, name, employeeId, email, phone, role,
-      department: deptId, designation: desigId,
+      deptLowerName: deptLower, desigLowerName: desigLower,
       joiningDate, monthlySalary, weeklyOff, password,
     });
   });
+
+  // Designation -> Department conflicts are file-level errors (one
+  // designation title can't be created twice with two different parents
+  // because the title is unique system-wide).
+  for (const [desigLower, deptSet] of desigDeptConflicts.entries()) {
+    const meta = desigsToCreate.get(desigLower);
+    errors.push({
+      row: '-',
+      name: meta?.displayTitle || desigLower,
+      errors: [
+        `Designation "${meta?.displayTitle || desigLower}" is mapped to multiple departments in this file (${[...deptSet].join(', ')}). A designation title is unique system-wide -- pick one parent department or pre-create the designation in Organization first.`,
+      ],
+    });
+  }
 
   if (errors.length) {
     return res.status(400).json({
@@ -845,9 +891,48 @@ const importBulk = asyncHandler(async (req, res) => {
     });
   }
 
-  // Phase 2: create.  Compensating-delete rollback on any failure.
+  // Phase 2: provision missing Departments + Designations, then create
+  // Users.  Track every entity we created so we can roll EVERYTHING back
+  // if user-creation fails mid-batch.
+  const createdDepts = [];
+  const createdDesigs = [];
   const created = [];
+
   try {
+    // 2a. Auto-create departments.
+    for (const [lower, displayName] of deptsToCreate.entries()) {
+      const d = await Department.create({ name: displayName });
+      createdDepts.push(d);
+      deptByName.set(lower, d._id);
+      logAudit(req, {
+        action: 'department.create',
+        targetType: 'Department',
+        targetId: d._id,
+        targetLabel: d.name,
+        meta: { via: 'bulk-import' },
+      });
+    }
+
+    // 2b. Auto-create designations, each mapped to the department it
+    //     was requested under (might itself be auto-created above).
+    for (const [lower, meta] of desigsToCreate.entries()) {
+      const deptId = deptByName.get(meta.deptLowerName) || null;
+      const d = await Designation.create({
+        title: meta.displayTitle,
+        department: deptId,
+      });
+      createdDesigs.push(d);
+      desigByName.set(lower, d._id);
+      logAudit(req, {
+        action: 'designation.create',
+        targetType: 'Designation',
+        targetId: d._id,
+        targetLabel: d.title,
+        meta: { via: 'bulk-import', department: meta.deptDisplayName },
+      });
+    }
+
+    // 2c. Create users using the resolved IDs (existing or just-created).
     for (const row of parsed) {
       const u = await User.create({
         name: row.name,
@@ -856,8 +941,8 @@ const importBulk = asyncHandler(async (req, res) => {
         phone: row.phone,
         password: row.password,
         role: row.role,
-        department: row.department,
-        designation: row.designation,
+        department: deptByName.get(row.deptLowerName),
+        designation: desigByName.get(row.desigLowerName),
         joiningDate: row.joiningDate,
         monthlySalary: row.monthlySalary,
         weeklyOff: row.weeklyOff,
@@ -873,12 +958,19 @@ const importBulk = asyncHandler(async (req, res) => {
       });
     }
   } catch (err) {
-    const ids = created.map((u) => u._id);
-    if (ids.length) {
-      try { await User.deleteMany({ _id: { $in: ids } }); } catch (_) { /* best-effort rollback */ }
-    }
+    // Full rollback: users first, then designations, then departments.
+    const undoneUsers = created.length;
+    const undoneDesigs = createdDesigs.length;
+    const undoneDepts = createdDepts.length;
+    try { if (created.length)       await User.deleteMany({ _id: { $in: created.map((u) => u._id) } }); } catch (_) {}
+    try { if (createdDesigs.length)  await Designation.deleteMany({ _id: { $in: createdDesigs.map((d) => d._id) } }); } catch (_) {}
+    try { if (createdDepts.length)   await Department.deleteMany({ _id: { $in: createdDepts.map((d) => d._id) } }); } catch (_) {}
     res.status(500);
-    throw new Error(`Import failed mid-batch and was rolled back (${created.length} of ${parsed.length} undone): ${err.message}`);
+    throw new Error(
+      `Import failed mid-batch and was rolled back (` +
+      `${undoneUsers}/${parsed.length} users, ${undoneDesigs} new designations, ` +
+      `${undoneDepts} new departments undone): ${err.message}`
+    );
   }
 
   // Fire-and-forget welcome emails (one per created row).  Identical
@@ -905,6 +997,18 @@ const importBulk = asyncHandler(async (req, res) => {
     totalRows: dataRows.length,
     created: created.map((u) => ({
       _id: u._id, name: u.name, email: u.email, employeeId: u.employeeId, role: u.role,
+    })),
+    createdDepartments: createdDepts.map((d) => ({ _id: d._id, name: d.name })),
+    createdDesignations: createdDesigs.map((d) => ({
+      _id: d._id,
+      title: d.title,
+      // Look up the parent department name so the modal can show what
+      // each new designation got mapped to.
+      department: (() => {
+        const parent = createdDepts.find((dp) => String(dp._id) === String(d.department))
+          || depts.find((dp) => String(dp._id) === String(d.department));
+        return parent ? parent.name : null;
+      })(),
     })),
   });
 });
