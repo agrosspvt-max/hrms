@@ -1,6 +1,8 @@
 const asyncHandler = require('express-async-handler');
+const XLSX = require('xlsx');
 const User = require('../models/User');
 const Department = require('../models/Department');
+const Designation = require('../models/Designation');
 const Submission = require('../models/Submission');
 const Leave = require('../models/Leave');
 const DependencyTask = require('../models/DependencyTask');
@@ -620,10 +622,298 @@ const adminAccounts = asyncHandler(async (req, res) => {
   res.json({ summary, accounts: users });
 });
 
+/* ============================================================
+ * Bulk Excel import (template download + transactional create).
+ * Required columns: Name, Employee ID, Email, Role, Department,
+ * Designation. Optional: Phone, Joining Date, Monthly Salary,
+ * Weekly Off, Initial Password.  All-or-nothing on errors.
+ * ============================================================ */
+
+const TEMPLATE_HEADER = [
+  'Name *',
+  'Employee ID *',
+  'Email *',
+  'Phone',
+  'Role *',
+  'Department *',
+  'Designation *',
+  'Joining Date (YYYY-MM-DD)',
+  'Monthly Salary',
+  'Weekly Off (e.g. Sun or Sun,Sat)',
+  'Initial Password',
+];
+
+const DAY_NAME_TO_NUM = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+
+// GET /api/employees/import-template
+// Streams a pre-filled xlsx with one example row PLUS a Reference sheet
+// listing every existing Department + Designation so HR copy-paste exact
+// names (the importer matches by name, case-insensitive).
+const importTemplate = asyncHandler(async (req, res) => {
+  const [depts, desigs] = await Promise.all([
+    Department.find({}).select('name').sort({ name: 1 }).lean(),
+    Designation.find({}).select('title').sort({ title: 1 }).lean(),
+  ]);
+
+  const wb = XLSX.utils.book_new();
+
+  const employeesAOA = [
+    TEMPLATE_HEADER,
+    [
+      'Jane Doe',
+      'EMP-1001',
+      'jane.doe@example.com',
+      '9000001234',
+      'employee',
+      depts[0]?.name || 'Accounts',
+      desigs[0]?.title || 'Junior Associate',
+      '2026-06-01',
+      30000,
+      'Sun',
+      '',
+    ],
+  ];
+  const ws1 = XLSX.utils.aoa_to_sheet(employeesAOA);
+  ws1['!cols'] = TEMPLATE_HEADER.map(() => ({ wch: 22 }));
+  XLSX.utils.book_append_sheet(wb, ws1, 'Employees');
+
+  const refRows = Math.max(depts.length, desigs.length);
+  const refAOA = [['Departments', 'Designations']];
+  for (let i = 0; i < refRows; i++) {
+    refAOA.push([depts[i]?.name || '', desigs[i]?.title || '']);
+  }
+  const ws2 = XLSX.utils.aoa_to_sheet(refAOA);
+  ws2['!cols'] = [{ wch: 32 }, { wch: 32 }];
+  XLSX.utils.book_append_sheet(wb, ws2, 'Reference');
+
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="hrms_employee_import_template.xlsx"');
+  res.send(buf);
+});
+
+// POST /api/employees/import   (multer single file, field name "file")
+// Two-phase: (1) parse + validate every row against the DB and itself,
+// returning a 400 with a row-by-row error list on any failure (no writes).
+// (2) Create all rows; on any mid-batch failure, delete every row we
+// just created so the operation is effectively transactional.
+const importBulk = asyncHandler(async (req, res) => {
+  if (!req.file || !req.file.buffer) {
+    res.status(400);
+    throw new Error('No file uploaded. Pick the filled Excel template.');
+  }
+
+  let wb;
+  try {
+    wb = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: true });
+  } catch (e) {
+    res.status(400);
+    throw new Error(`Could not read uploaded file: ${e.message}`);
+  }
+  const sheetName = wb.SheetNames.includes('Employees') ? 'Employees' : wb.SheetNames[0];
+  if (!sheetName) { res.status(400); throw new Error('Workbook has no sheets'); }
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1, defval: '' });
+  if (aoa.length < 2) { res.status(400); throw new Error('Sheet has no data rows'); }
+
+  const header = aoa[0].map((h) => String(h || '').trim());
+  const dataRows = aoa.slice(1).filter((r) => r.some((c) => c !== '' && c !== null));
+  if (dataRows.length === 0) { res.status(400); throw new Error('No data rows in the sheet'); }
+
+  // Locate columns by prefix-match so users can rename "* Name" etc.
+  const idxOf = (label) => header.findIndex((h) => h.toLowerCase().startsWith(label.toLowerCase()));
+  const col = {
+    name: idxOf('Name'),
+    employeeId: idxOf('Employee ID'),
+    email: idxOf('Email'),
+    phone: idxOf('Phone'),
+    role: idxOf('Role'),
+    department: idxOf('Department'),
+    designation: idxOf('Designation'),
+    joiningDate: idxOf('Joining Date'),
+    monthlySalary: idxOf('Monthly Salary'),
+    weeklyOff: idxOf('Weekly Off'),
+    password: idxOf('Initial Password'),
+  };
+  const requiredCols = ['name', 'employeeId', 'email', 'role', 'department', 'designation'];
+  const missingCols = requiredCols.filter((k) => col[k] < 0);
+  if (missingCols.length) {
+    res.status(400);
+    throw new Error(`Missing required column(s): ${missingCols.join(', ')}. Download a fresh template.`);
+  }
+
+  // Look-ups (case-insensitive match against existing dept/desig).
+  const [depts, desigs, existingUsers] = await Promise.all([
+    Department.find({}).select('name').lean(),
+    Designation.find({}).select('title').lean(),
+    User.find({}).select('email employeeId').lean(),
+  ]);
+  const deptByName = new Map(depts.map((d) => [d.name.toLowerCase(), d._id]));
+  const desigByName = new Map(desigs.map((d) => [d.title.toLowerCase(), d._id]));
+  const existingEmails = new Set(existingUsers.map((u) => (u.email || '').toLowerCase()));
+  const existingIds = new Set(existingUsers.map((u) => u.employeeId));
+
+  const errors = [];
+  const parsed = [];
+  const seenEmails = new Set();
+  const seenIds = new Set();
+
+  dataRows.forEach((raw, i) => {
+    const sheetRow = i + 2; // 1-indexed + 1 header row
+    const rowErrs = [];
+    const get = (k) => (col[k] >= 0 && raw[col[k]] !== undefined ? raw[col[k]] : '');
+
+    const name = String(get('name')).trim();
+    const employeeId = String(get('employeeId')).trim();
+    const email = String(get('email')).trim().toLowerCase();
+    const phone = String(get('phone')).trim();
+    const role = (String(get('role')).trim() || 'employee').toLowerCase();
+    const deptName = String(get('department')).trim();
+    const desigName = String(get('designation')).trim();
+    const joiningRaw = get('joiningDate');
+    const monthlySalary = Number(get('monthlySalary')) || 0;
+    const offRaw = String(get('weeklyOff')).trim();
+    const password = (String(get('password')).trim() || 'changeme123');
+
+    if (!name) rowErrs.push('Name is required');
+    if (!employeeId) rowErrs.push('Employee ID is required');
+    if (!email) rowErrs.push('Email is required');
+    else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) rowErrs.push('Email is not valid');
+
+    if (!['employee', 'hr'].includes(role)) {
+      rowErrs.push(`Role must be "employee" or "hr" (got "${role}")`);
+    } else if (req.user.role === 'hr' && role !== 'employee') {
+      rowErrs.push('HR can only create employees, not HR accounts');
+    }
+
+    if (!deptName) rowErrs.push('Department is required');
+    if (!desigName) rowErrs.push('Designation is required');
+
+    const deptId = deptName ? deptByName.get(deptName.toLowerCase()) : null;
+    const desigId = desigName ? desigByName.get(desigName.toLowerCase()) : null;
+    if (deptName && !deptId) rowErrs.push(`Department "${deptName}" not found (see Reference sheet)`);
+    if (desigName && !desigId) rowErrs.push(`Designation "${desigName}" not found (see Reference sheet)`);
+
+    if (email) {
+      if (existingEmails.has(email)) rowErrs.push(`Email "${email}" already exists in the system`);
+      if (seenEmails.has(email)) rowErrs.push(`Email "${email}" duplicated within file`);
+      seenEmails.add(email);
+    }
+    if (employeeId) {
+      if (existingIds.has(employeeId)) rowErrs.push(`Employee ID "${employeeId}" already exists in the system`);
+      if (seenIds.has(employeeId)) rowErrs.push(`Employee ID "${employeeId}" duplicated within file`);
+      seenIds.add(employeeId);
+    }
+
+    let joiningDate;
+    if (joiningRaw instanceof Date) joiningDate = joiningRaw;
+    else if (typeof joiningRaw === 'string' && joiningRaw.trim()) {
+      const d = new Date(joiningRaw);
+      if (Number.isNaN(d.getTime())) rowErrs.push(`Joining Date "${joiningRaw}" is not a valid date`);
+      else joiningDate = d;
+    }
+
+    let weeklyOff = [0];
+    if (offRaw) {
+      const tokens = offRaw.split(/[,;\s]+/).map((t) => t.trim().toLowerCase()).filter(Boolean);
+      const mapped = [];
+      const bad = [];
+      for (const t of tokens) {
+        const n = DAY_NAME_TO_NUM[t.slice(0, 3)];
+        if (n === undefined) bad.push(t); else mapped.push(n);
+      }
+      if (bad.length) rowErrs.push(`Weekly Off values not recognised: ${bad.join(', ')} (use Sun, Mon, ..., Sat)`);
+      else weeklyOff = Array.from(new Set(mapped)).sort();
+    }
+
+    if (rowErrs.length) {
+      errors.push({ row: sheetRow, name: name || '(blank)', errors: rowErrs });
+      return;
+    }
+    parsed.push({
+      sheetRow, name, employeeId, email, phone, role,
+      department: deptId, designation: desigId,
+      joiningDate, monthlySalary, weeklyOff, password,
+    });
+  });
+
+  if (errors.length) {
+    return res.status(400).json({
+      message: `Import aborted: ${errors.length} row(s) failed validation. No employees were created.`,
+      totalRows: dataRows.length,
+      validRows: parsed.length,
+      errors,
+    });
+  }
+
+  // Phase 2: create.  Compensating-delete rollback on any failure.
+  const created = [];
+  try {
+    for (const row of parsed) {
+      const u = await User.create({
+        name: row.name,
+        employeeId: row.employeeId,
+        email: row.email,
+        phone: row.phone,
+        password: row.password,
+        role: row.role,
+        department: row.department,
+        designation: row.designation,
+        joiningDate: row.joiningDate,
+        monthlySalary: row.monthlySalary,
+        weeklyOff: row.weeklyOff,
+        createdByUser: req.user._id,
+      });
+      created.push(u);
+      logAudit(req, {
+        action: u.role === 'hr' ? 'hr.create' : 'employee.create',
+        targetType: 'User',
+        targetId: u._id,
+        targetLabel: `${u.name} <${u.email}>`,
+        meta: { role: u.role, employeeId: u.employeeId, via: 'bulk-import' },
+      });
+    }
+  } catch (err) {
+    const ids = created.map((u) => u._id);
+    if (ids.length) {
+      try { await User.deleteMany({ _id: { $in: ids } }); } catch (_) { /* best-effort rollback */ }
+    }
+    res.status(500);
+    throw new Error(`Import failed mid-batch and was rolled back (${created.length} of ${parsed.length} undone): ${err.message}`);
+  }
+
+  // Fire-and-forget welcome emails (one per created row).  Identical
+  // semantics to single-employee creation -- failures only log.
+  for (const u of created) {
+    (async () => {
+      try {
+        if (!u.email) return;
+        let designationTitle = '';
+        if (u.designation) {
+          const d = await Designation.findById(u.designation).select('title').lean();
+          designationTitle = d?.title || '';
+        }
+        const loginUrl = process.env.HRMS_LOGIN_URL || 'https://hrms-alpha-weld.vercel.app';
+        await sendWelcomeEmail({ to: u.email, employeeName: u.name, designationTitle, loginUrl });
+      } catch (e) {
+        console.error(`[WELCOME] bulk-import welcome failed for ${u.email}: ${e.message}`);
+      }
+    })();
+  }
+
+  res.status(201).json({
+    message: `Imported ${created.length} employee(s) successfully.`,
+    totalRows: dataRows.length,
+    created: created.map((u) => ({
+      _id: u._id, name: u.name, email: u.email, employeeId: u.employeeId, role: u.role,
+    })),
+  });
+});
+
 module.exports = {
   listEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee,
   toggleStatus, resetPassword, exportCsv, teamList,
   workHistory, attendanceSummary, leaveHistory,
   addIncrement, editIncrement, deleteIncrement,
   adminAccounts,
+  importTemplate, importBulk,
 };

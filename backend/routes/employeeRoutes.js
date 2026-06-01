@@ -1,6 +1,14 @@
 const router = require('express').Router();
+const multer = require('multer');
 const { protect, authorize, requireHOD } = require('../middleware/auth');
 const c = require('../controllers/employeeController');
+
+// In-memory upload for bulk Excel imports.  5 MB cap is plenty for
+// thousands of employee rows in xlsx and avoids any disk persistence.
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 
 router.use(protect);
 
@@ -11,6 +19,8 @@ router.get('/team', requireHOD, c.teamList);
 router.use(authorize('hr'));
 
 router.get('/export.csv', c.exportCsv);
+router.get('/import-template', c.importTemplate);
+router.post('/import', upload.single('file'), c.importBulk);
 router.get('/', c.listEmployees);
 router.get('/:id', c.getEmployee);
 router.get('/:id/work-history', c.workHistory);

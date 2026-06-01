@@ -61,6 +61,7 @@ export default function Employees() {
   const [filterStatus, setFilterStatus] = useState('');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | { mode, data }
+  const [importOpen, setImportOpen] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
   const { user: currentUser } = useAuth();
@@ -94,6 +95,7 @@ export default function Employees() {
         <h1 className="text-2xl font-bold text-slate-900">Employees</h1>
         <div className="flex gap-2">
           <a className="btn-secondary" href={authUrl('/api/employees/export.csv')}>Export CSV</a>
+          <button className="btn-secondary" onClick={() => setImportOpen(true)}>Import from Excel</button>
           <button className="btn-primary" onClick={() => setModal({ mode: 'create', data: blank })}>+ Add Employee</button>
         </div>
       </div>
@@ -156,7 +158,203 @@ export default function Employees() {
           isHR={isHR}
         />
       )}
+
+      {importOpen && (
+        <ImportEmployeesModal
+          onClose={() => setImportOpen(false)}
+          onImported={() => { setImportOpen(false); load(); }}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Bulk import from Excel.  Two-step modal:
+ *   1. Download the pre-filled template (server-generated, with a
+ *      Reference sheet listing every existing Department + Designation).
+ *   2. Upload the filled file.  The server validates EVERY row before
+ *      creating anything -- on any validation failure we render the row-
+ *      by-row error list and no employees are created.
+ */
+function ImportEmployeesModal({ onClose, onImported }) {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null); // { mode: 'success'|'error', ... }
+  const toast = useToast();
+
+  const upload = async () => {
+    if (!file) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const { data } = await api.post('/employees/import', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setResult({ mode: 'success', ...data });
+      toast.success(data.message || 'Import succeeded');
+    } catch (err) {
+      const body = err?.response?.data;
+      if (body?.errors?.length) {
+        setResult({ mode: 'error', ...body });
+      } else {
+        toast.error(errMsg(err));
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Import Employees from Excel"
+      size="lg"
+      footer={result?.mode === 'success' ? (
+        <button className="btn-primary" onClick={onImported}>Done</button>
+      ) : (
+        <>
+          <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button
+            className="btn-primary"
+            onClick={upload}
+            disabled={!file || busy}
+          >
+            {busy ? 'Importing...' : 'Upload & Import'}
+          </button>
+        </>
+      )}
+    >
+      <div className="space-y-4">
+        {!result && (
+          <>
+            <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm text-slate-700 space-y-2">
+              <div className="font-semibold text-slate-900">Step 1 — Download the template</div>
+              <p className="text-[13px]">
+                The template includes a sample row and a <b>Reference</b> sheet listing every
+                Department and Designation that currently exists. Copy names from there exactly
+                (case-insensitive). Required columns are marked with <code>*</code>.
+              </p>
+              <a
+                className="btn-secondary inline-block"
+                href={authUrl('/api/employees/import-template')}
+              >
+                Download Excel Template
+              </a>
+            </div>
+
+            <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm text-slate-700 space-y-2">
+              <div className="font-semibold text-slate-900">Step 2 — Upload the filled file</div>
+              <p className="text-[13px]">
+                Every row is validated <b>before</b> any employees are created. If any row has
+                an error (missing field, duplicate email, unknown department, etc.) the entire
+                import is aborted and you'll see a row-by-row error list below — no partial
+                state.
+              </p>
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                className="block w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-brand-50 file:text-brand-700 file:font-semibold hover:file:bg-brand-100"
+              />
+              {file && (
+                <div className="text-[12px] text-slate-500">
+                  Selected: <b>{file.name}</b> ({Math.round(file.size / 1024)} KB)
+                </div>
+              )}
+            </div>
+
+            <div className="text-[11px] text-slate-500">
+              Welcome emails are sent automatically to each imported employee (same as
+              single-employee creation). Default initial password is <code>changeme123</code> if
+              the column is left blank.
+            </div>
+          </>
+        )}
+
+        {result?.mode === 'error' && (
+          <div className="space-y-3">
+            <div className="rounded-lg bg-red-50 border border-red-200 p-3">
+              <div className="text-sm font-semibold text-red-800">Import aborted</div>
+              <div className="text-[12px] text-red-700 mt-1">
+                {result.errors.length} of {result.totalRows} row(s) failed validation.
+                No employees were created. Fix the rows below and re-upload.
+              </div>
+            </div>
+            <div className="max-h-72 overflow-y-auto border border-slate-200 rounded-lg">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    <th className="text-left px-3 py-2 font-semibold text-slate-700 w-16">Row</th>
+                    <th className="text-left px-3 py-2 font-semibold text-slate-700">Name</th>
+                    <th className="text-left px-3 py-2 font-semibold text-slate-700">Problems</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {result.errors.map((e) => (
+                    <tr key={e.row} className="border-t border-slate-100 align-top">
+                      <td className="px-3 py-2 font-mono text-xs text-slate-500">{e.row}</td>
+                      <td className="px-3 py-2 text-slate-700">{e.name}</td>
+                      <td className="px-3 py-2 text-red-700">
+                        <ul className="list-disc pl-4 space-y-0.5">
+                          {e.errors.map((msg, i) => <li key={i}>{msg}</li>)}
+                        </ul>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex justify-end">
+              <button className="btn-secondary" onClick={() => { setResult(null); setFile(null); }}>
+                Try Again
+              </button>
+            </div>
+          </div>
+        )}
+
+        {result?.mode === 'success' && (
+          <div className="space-y-3">
+            <div className="rounded-lg bg-green-50 border border-green-200 p-3">
+              <div className="text-sm font-semibold text-green-800">
+                Imported {result.created?.length || 0} employee(s) successfully
+              </div>
+              <div className="text-[12px] text-green-700 mt-1">
+                Welcome emails are being sent in the background. Initial password defaults to
+                <code> changeme123</code> unless you specified one per row.
+              </div>
+            </div>
+            {result.created?.length > 0 && (
+              <div className="max-h-72 overflow-y-auto border border-slate-200 rounded-lg">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 sticky top-0">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-semibold text-slate-700">Employee ID</th>
+                      <th className="text-left px-3 py-2 font-semibold text-slate-700">Name</th>
+                      <th className="text-left px-3 py-2 font-semibold text-slate-700">Email</th>
+                      <th className="text-left px-3 py-2 font-semibold text-slate-700">Role</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.created.map((u) => (
+                      <tr key={u._id} className="border-t border-slate-100">
+                        <td className="px-3 py-2 font-mono text-xs text-slate-500">{u.employeeId}</td>
+                        <td className="px-3 py-2 text-slate-800">{u.name}</td>
+                        <td className="px-3 py-2 text-slate-600">{u.email}</td>
+                        <td className="px-3 py-2 text-slate-600 capitalize">{u.role}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
