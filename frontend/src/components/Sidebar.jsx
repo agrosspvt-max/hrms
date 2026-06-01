@@ -166,7 +166,9 @@ export default function Sidebar({ open, onClose }) {
         onClick={onClose}
         className={({ isActive }) =>
           `flex items-center gap-3 ${nested ? 'pl-9 pr-3' : 'px-3'} py-2 rounded-lg text-sm transition ${
-            isActive ? 'bg-brand-50 text-brand-700 font-medium' : 'text-slate-600 hover:bg-slate-50'
+            isActive
+              ? 'bg-brand-50 text-brand-700 font-medium dark:bg-brand-500/15 dark:text-brand-300'
+              : 'text-slate-600 hover:bg-slate-50 dark:text-slate-300 dark:hover:bg-slate-800'
           }`
         }
       >
@@ -186,13 +188,15 @@ export default function Sidebar({ open, onClose }) {
       <div className={`fixed inset-0 bg-black/30 z-40 md:hidden ${open ? '' : 'hidden'}`} onClick={onClose} />
       <aside
         className={`fixed md:static top-0 left-0 h-full w-64 bg-white border-r border-slate-200 z-50 overflow-y-auto
+          dark:bg-slate-900 dark:border-slate-800
           transform transition-transform md:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'}`}
       >
-        <div className="h-16 flex items-center px-5 border-b border-slate-100 sticky top-0 bg-white z-10">
+        <div className="h-16 flex items-center px-5 border-b border-slate-100 sticky top-0 bg-white z-10
+                        dark:bg-slate-900 dark:border-slate-800">
           <div className="w-8 h-8 rounded-lg bg-brand-600 text-white grid place-items-center font-bold">H</div>
           <div className="ml-2">
-            <div className="text-sm font-semibold text-slate-900">HRMS</div>
-            <div className="text-[10px] text-slate-500 -mt-0.5">Workflow & Salary</div>
+            <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">HRMS</div>
+            <div className="text-[10px] text-slate-500 dark:text-slate-400 -mt-0.5">Workflow &amp; Salary</div>
           </div>
         </div>
 
@@ -208,7 +212,9 @@ export default function Sidebar({ open, onClose }) {
                 <button
                   onClick={() => toggleGroup(entry.id)}
                   className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition ${
-                    groupActive ? 'text-brand-700 font-semibold' : 'text-slate-500 hover:bg-slate-50 font-medium'
+                    groupActive
+                      ? 'text-brand-700 font-semibold dark:text-brand-300'
+                      : 'text-slate-500 hover:bg-slate-50 font-medium dark:text-slate-400 dark:hover:bg-slate-800'
                   }`}
                 >
                   <Icon d={entry.icon} />
