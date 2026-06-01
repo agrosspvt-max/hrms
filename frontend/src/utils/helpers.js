@@ -29,10 +29,26 @@ export const monthKey = (date) => {
 
 /**
  * Build a URL with the JWT appended as a query param, so file-download
- * anchor links (PDF salary slips, CSV exports) authenticate correctly.
+ * anchor links (PDF salary slips, CSV exports, Excel templates) authenticate
+ * correctly and -- critically -- point at the API host in production.
+ *
+ * In dev (VITE_API_URL unset) the link stays as `/api/...`, which the Vite
+ * proxy forwards to the local backend.
+ *
+ * In production VITE_API_URL is the deployed backend URL ending in `/api`
+ * (e.g. `https://hrms-jvxy.onrender.com/api`).  Without this prefix the
+ * browser would navigate to the frontend host (Vercel), hit its SPA
+ * fallback, and bounce back to the dashboard.  This helper strips the
+ * leading `/api` from the path so the resulting URL is exactly the API
+ * endpoint we want, no `/api/api/` duplication.
  */
 export const authUrl = (path) => {
   const token = localStorage.getItem('hrms_token') || '';
-  const sep = path.includes('?') ? '&' : '?';
-  return `${path}${sep}token=${encodeURIComponent(token)}`;
+  const base = import.meta.env.VITE_API_URL || '';
+  // Strip a leading `/api` from the path ONLY when we have a configured
+  // base (which already ends in `/api`).  In dev the relative `/api/...`
+  // path is preserved as-is.
+  const trimmedPath = base && path.startsWith('/api/') ? path.slice(4) : path;
+  const sep = trimmedPath.includes('?') ? '&' : '?';
+  return `${base}${trimmedPath}${sep}token=${encodeURIComponent(token)}`;
 };
