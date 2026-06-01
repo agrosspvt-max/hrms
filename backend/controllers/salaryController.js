@@ -254,8 +254,12 @@ const downloadPdf = asyncHandler(async (req, res) => {
   const slip = await SalarySlip.findById(req.params.id);
   if (!slip) { res.status(404); throw new Error('Slip not found'); }
 
-  // Self-service: only allow employee themselves or HR.
-  if (req.user.role !== 'hr' && String(slip.employee) !== String(req.user._id)) {
+  // Self-service: HR / Super Admin can fetch anyone's slip; an employee
+  // may only fetch their own.  (Mirrors the "hr role implies super_admin"
+  // hierarchy used by the `authorize` middleware elsewhere.)
+  const isAdmin = req.user.role === 'hr' || req.user.role === 'super_admin';
+  const isOwner = String(slip.employee) === String(req.user._id);
+  if (!isAdmin && !isOwner) {
     res.status(403); throw new Error('Forbidden');
   }
 
