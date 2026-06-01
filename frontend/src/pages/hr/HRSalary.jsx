@@ -207,9 +207,9 @@ function AdjustModal({ modal, setModal, onSave }) {
       </>}
     >
       <div className="space-y-5">
-        {/* Bonuses */}
+        {/* Additional Compensation (per-payslip ad-hoc additions) */}
         <ItemEditor
-          title="Bonuses"
+          title="Additional Compensation"
           accent="green"
           items={bonusItems}
           onAdd={() => addRow('bonusItems')}
@@ -232,7 +232,7 @@ function AdjustModal({ modal, setModal, onSave }) {
         {/* Live preview */}
         <div className="bg-slate-50 rounded-lg p-3 border border-slate-200 text-sm">
           <div className="flex justify-between"><span className="text-slate-500">Gross</span><span>{fmtMoney(modal.grossSalary)}</span></div>
-          <div className="flex justify-between text-green-700"><span>Bonuses</span><span>+ {fmtMoney(totalBonus)}</span></div>
+          <div className="flex justify-between text-green-700"><span>Additional Compensation</span><span>+ {fmtMoney(totalBonus)}</span></div>
           <div className="flex justify-between text-red-700"><span>Deductions</span><span>- {fmtMoney(totalDeduction)}</span></div>
           <div className="border-t border-slate-200 mt-2 pt-2 flex justify-between font-semibold">
             <span>Net Salary</span><span>{fmtMoney(newNet)}</span>

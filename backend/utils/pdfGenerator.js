@@ -205,15 +205,20 @@ const streamSalarySlipPdf = (res, { slip, employee, company }) => {
   };
 
   const e = vm.earnings;
+  // Label swap (UI-only):
+  //   "Bonus"                  <- e.special      (DB: salaryStructure.specialAllowance)
+  //   "Special Allowance"      <- e.bonus        (DB: salaryStructure.bonus)
+  //   "Additional Compensation" <- e.incentives   (DB: salarySlip.bonuses / bonusItems)
+  // Values, math, and the gross total are unchanged.
   const earningRows = [
     ['Basic Salary', e.basic],
     ['HRA', e.hra],
     ['Conveyance', e.conveyance],
     ['Medical Allowance', e.medical],
-    ['Special Allowance', e.special],
+    ['Bonus', e.special],
     ['Other Allowances', e.other],
-    ['Bonus', e.bonus],
-    ['Incentives', e.incentives ?? e.bonuses],
+    ['Special Allowance', e.bonus],
+    ['Additional Compensation', e.incentives ?? e.bonuses],
   ].filter((r) => r[1]); // hide zero rows for a clean look
   if (earningRows.length === 0) earningRows.push(['Basic Salary', e.basic]);
 

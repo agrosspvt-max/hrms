@@ -58,10 +58,16 @@ function Payslip({ slip: s }) {
     catch { return s.month; }
   })();
 
+  // Label swap (UI-only):
+  //   Bonus                  <- e.special       (DB field: salaryStructure.specialAllowance)
+  //   Special Allowance      <- e.bonus         (DB field: salaryStructure.bonus)
+  //   Additional Compensation <- e.incentives    (DB field: salarySlip.bonuses / bonusItems)
+  // DB names, calculations, and totals are unchanged.
   const earningRows = [
     ['Basic Salary', e.basic], ['HRA', e.hra], ['Conveyance', e.conveyance],
-    ['Medical Allowance', e.medical], ['Special Allowance', e.special],
-    ['Other Allowances', e.other], ['Bonus', e.bonus], ['Incentives', e.incentives ?? e.bonuses],
+    ['Medical Allowance', e.medical], ['Bonus', e.special],
+    ['Other Allowances', e.other], ['Special Allowance', e.bonus],
+    ['Additional Compensation', e.incentives ?? e.bonuses],
   ].filter((r) => r[1]);
   if (earningRows.length === 0) earningRows.push(['Basic Salary', e.basic]);
 

@@ -575,9 +575,9 @@ function SalaryStructureEditor({ form, set }) {
         {field('HRA', 'hra')}
         {field('Conveyance', 'conveyance')}
         {field('Medical Allowance', 'medicalAllowance')}
-        {field('Special Allowance', 'specialAllowance')}
+        {field('Bonus', 'specialAllowance')}
         {field('Other Allowances', 'otherAllowance')}
-        {field('Bonus (fixed monthly)', 'bonus')}
+        {field('Special Allowance', 'bonus')}
       </div>
       <div className="text-[11px] text-slate-500">
         Monthly Gross is the sum of these components. All employee deductions (PF / ESIC / TDS %) are calculated on
@@ -643,7 +643,7 @@ function SalaryStructureEditor({ form, set }) {
       <div className="grid md:grid-cols-2 gap-4">
         <div className="bg-white rounded-lg border border-slate-200 p-3 text-sm">
           <div className="text-[10px] font-semibold text-green-700 uppercase tracking-wide mb-2">Gross Earnings</div>
-          {[['Basic', s.basicSalary], ['HRA', s.hra], ['Conveyance', s.conveyance], ['Medical', s.medicalAllowance], ['Special', s.specialAllowance], ['Other', s.otherAllowance], ['Bonus', s.bonus]]
+          {[['Basic', s.basicSalary], ['HRA', s.hra], ['Conveyance', s.conveyance], ['Medical', s.medicalAllowance], ['Bonus', s.specialAllowance], ['Other', s.otherAllowance], ['Special Allowance', s.bonus]]
             .filter((r) => num(r[1]))
             .map(([l, v]) => <div key={l} className="flex justify-between text-slate-600"><span>{l}</span><span>{fmtMoney(num(v))}</span></div>)}
           <div className="border-t border-slate-200 mt-1.5 pt-1.5 flex justify-between font-semibold text-green-700"><span>Monthly Gross</span><span>{fmtMoney(gross)}</span></div>
