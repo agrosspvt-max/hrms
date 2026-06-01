@@ -10,6 +10,75 @@ html, body, #root { height: 100%; }
 html.dark { color-scheme: dark; }
 html.dark body { @apply bg-slate-950 text-slate-100; }
 
+/* -------------------------------------------------------------------- */
+/*  Dark-mode safety net.                                               */
+/*                                                                      */
+/*  A lot of pages hard-code Tailwind text/bg colors like                */
+/*  `text-slate-900`, `bg-white`, `border-slate-200`.  Those win over   */
+/*  any element-level `dark:` variants we'd add, so dark mode was       */
+/*  rendering invisible black text on the dark page background.         */
+/*                                                                      */
+/*  These selectors are higher specificity than the single-class        */
+/*  Tailwind utilities, so they override only when html.dark is set     */
+/*  AND the element didn't already declare an explicit dark variant.    */
+/*  (`dark:text-slate-100` etc. uses Tailwind's `.dark` ancestor rule   */
+/*  which has the SAME specificity but comes later in the cascade --    */
+/*  it still wins because Tailwind inlines `dark:` variants after        */
+/*  these base rules in its component layer.)                           */
+/* -------------------------------------------------------------------- */
+
+/* ---- Text colors: lighten dark slates ---- */
+html.dark .text-slate-900,
+html.dark .text-slate-800 { color: #f1f5f9 !important; }   /* slate-100 */
+html.dark .text-slate-700 { color: #e2e8f0 !important; }   /* slate-200 */
+html.dark .text-slate-600 { color: #cbd5e1 !important; }   /* slate-300 */
+html.dark .text-slate-500 { color: #94a3b8 !important; }   /* slate-400 */
+html.dark .text-slate-400 { color: #94a3b8 !important; }
+html.dark .text-black     { color: #f1f5f9 !important; }
+
+/* ---- Backgrounds: darken light slates / white ---- */
+html.dark .bg-white       { background-color: #0f172a !important; } /* slate-900 */
+html.dark .bg-slate-50    { background-color: #1e293b !important; } /* slate-800 */
+html.dark .bg-slate-100   { background-color: #1e293b !important; }
+/* Some transluscent versions widely used as section panels. */
+html.dark [class*="bg-slate-50/"],
+html.dark [class*="bg-white/"] { background-color: rgba(15, 23, 42, 0.6) !important; }
+
+/* ---- Borders: lift up so they're visible on slate-900 ---- */
+html.dark .border-slate-100,
+html.dark .border-slate-200 { border-color: #334155 !important; }   /* slate-700 */
+html.dark .divide-slate-100 > * + *,
+html.dark .divide-slate-200 > * + * { border-color: #334155 !important; }
+
+/* ---- Soft tinted panels (success/warn/info backgrounds) ---- */
+/* Tailwind's bg-green-50 etc. become tinted overlays in dark mode. */
+html.dark .bg-green-50  { background-color: rgba(34, 197, 94, 0.10) !important; }
+html.dark .bg-red-50    { background-color: rgba(239, 68, 68, 0.10) !important; }
+html.dark .bg-amber-50  { background-color: rgba(245, 158, 11, 0.10) !important; }
+html.dark .bg-blue-50   { background-color: rgba(59, 130, 246, 0.10) !important; }
+html.dark .bg-purple-50 { background-color: rgba(168, 85, 247, 0.10) !important; }
+html.dark .bg-indigo-50 { background-color: rgba(99, 102, 241, 0.10) !important; }
+html.dark .border-green-200, html.dark .border-green-100   { border-color: rgba(34, 197, 94, 0.30) !important; }
+html.dark .border-red-200, html.dark .border-red-100       { border-color: rgba(239, 68, 68, 0.30) !important; }
+html.dark .border-amber-200, html.dark .border-amber-100   { border-color: rgba(245, 158, 11, 0.30) !important; }
+html.dark .border-blue-200, html.dark .border-blue-100     { border-color: rgba(59, 130, 246, 0.30) !important; }
+html.dark .border-purple-200, html.dark .border-purple-100 { border-color: rgba(168, 85, 247, 0.30) !important; }
+
+/* Light text on tinted panels: brighten so they're readable. */
+html.dark .text-green-800,  html.dark .text-green-700   { color: #86efac !important; }   /* green-300 */
+html.dark .text-red-800,    html.dark .text-red-700     { color: #fca5a5 !important; }   /* red-300 */
+html.dark .text-amber-900,  html.dark .text-amber-800, html.dark .text-amber-700 { color: #fcd34d !important; } /* amber-300 */
+html.dark .text-blue-800,   html.dark .text-blue-700    { color: #93c5fd !important; }   /* blue-300 */
+html.dark .text-purple-800, html.dark .text-purple-700  { color: #d8b4fe !important; }   /* purple-300 */
+html.dark .text-indigo-800, html.dark .text-indigo-700  { color: #a5b4fc !important; }   /* indigo-300 */
+
+/* ---- Form controls ---- */
+html.dark input::placeholder,
+html.dark textarea::placeholder { color: #64748b; } /* slate-500 */
+
+/* ---- Misc utility tweaks ---- */
+html.dark hr { border-color: #334155; }
+
 @layer components {
   .btn {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition
