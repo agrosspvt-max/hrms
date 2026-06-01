@@ -21,6 +21,7 @@ router.use(authorize('hr'));
 router.get('/export.csv', c.exportCsv);
 router.get('/import-template', c.importTemplate);
 router.post('/import', upload.single('file'), c.importBulk);
+router.post('/bulk-action', c.bulkAction);
 router.get('/', c.listEmployees);
 router.get('/:id', c.getEmployee);
 router.get('/:id/work-history', c.workHistory);

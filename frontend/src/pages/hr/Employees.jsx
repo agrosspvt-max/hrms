@@ -62,6 +62,10 @@ export default function Employees() {
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | { mode, data }
   const [importOpen, setImportOpen] = useState(false);
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkReasonModal, setBulkReasonModal] = useState(null); // null | { action: 'deactivate'|'delete' }
+  const [bulkResult, setBulkResult] = useState(null); // null | server response
+  const [bulkBusy, setBulkBusy] = useState(false);
   const toast = useToast();
   const navigate = useNavigate();
   const { user: currentUser } = useAuth();
@@ -89,6 +93,80 @@ export default function Employees() {
     } catch (err) { toast.error(errMsg(err)); }
   };
 
+  /* ----------------- Selection helpers ----------------- */
+  const toggleOne = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const visibleIds = users.map((u) => u._id);
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+  const someSelected = visibleIds.some((id) => selected.has(id)) && !allSelected;
+  const toggleAll = () => setSelected((prev) => {
+    if (allSelected) {
+      // Deselect only the currently visible rows; preserve any others (none today)
+      const next = new Set(prev);
+      visibleIds.forEach((id) => next.delete(id));
+      return next;
+    }
+    return new Set([...prev, ...visibleIds]);
+  });
+  const clearSelection = () => setSelected(new Set());
+
+  /* ----------------- Bulk actions ----------------- */
+  const runBulkAction = async (reason) => {
+    if (!bulkReasonModal) return;
+    const ids = Array.from(selected);
+    if (!ids.length) return;
+    setBulkBusy(true);
+    try {
+      const { data } = await api.post('/employees/bulk-action', {
+        action: bulkReasonModal.action,
+        ids,
+        reason,
+      });
+      setBulkResult(data);
+      setBulkReasonModal(null);
+      clearSelection();
+      load();
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  /* ----------------- Client-side CSV export of selected rows ----------------- */
+  const exportSelectedCsv = () => {
+    const rows = users.filter((u) => selected.has(u._id));
+    if (!rows.length) { toast.error('No rows selected'); return; }
+    const headers = ['Employee ID', 'Name', 'Email', 'Phone', 'Role', 'Department', 'Designation', 'Monthly Gross', 'Joining Date', 'Status'];
+    const esc = (v) => {
+      const s = String(v ?? '');
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [headers.join(',')];
+    rows.forEach((u) => {
+      lines.push([
+        u.employeeId, u.name, u.email, u.phone || '', u.role,
+        u.department?.name || '', u.designation?.title || '',
+        monthlyGrossOf(u),
+        u.joiningDate ? new Date(u.joiningDate).toISOString().substring(0, 10) : '',
+        u.status,
+      ].map(esc).join(','));
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `employees_selected_${new Date().toISOString().substring(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toast.success(`Exported ${rows.length} row(s)`);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -113,24 +191,57 @@ export default function Employees() {
         </select>
       </div>
 
+      {/* Sticky bulk action bar -- only shown when 1+ rows are selected */}
+      {selected.size > 0 && (
+        <div className="sticky top-2 z-10 rounded-lg bg-brand-50 border border-brand-200 px-4 py-2 flex items-center justify-between flex-wrap gap-2 shadow-sm">
+          <div className="text-sm text-brand-900">
+            <b>{selected.size}</b> selected
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            <button className="btn-secondary !py-1" onClick={exportSelectedCsv}>Export Selected CSV</button>
+            <button className="btn-secondary !py-1" onClick={() => setBulkReasonModal({ action: 'deactivate' })}>Deactivate</button>
+            <button className="btn-secondary !py-1 !text-red-700 !border-red-200 hover:!bg-red-50" onClick={() => setBulkReasonModal({ action: 'delete' })}>Delete</button>
+            <button className="btn-ghost !py-1 text-slate-600" onClick={clearSelection}>Clear</button>
+          </div>
+        </div>
+      )}
+
       <div className="card overflow-x-auto">
         {loading ? <Loader /> :
           users.length === 0 ? <EmptyState title="No employees" /> :
           <table className="table">
             <thead>
               <tr>
+                <th className="w-10">
+                  <input
+                    type="checkbox"
+                    aria-label="Select all visible employees"
+                    checked={allSelected}
+                    ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                    onChange={toggleAll}
+                  />
+                </th>
                 <th>ID</th><th>Name</th><th>Department</th><th>Designation</th><th>Role</th>
               </tr>
             </thead>
             <tbody>
               {users.map((u) => {
                 const isSelf = String(u._id) === String(currentUser?._id);
+                const isPicked = selected.has(u._id);
                 return (
                   <tr
                     key={u._id}
-                    className="cursor-pointer hover:bg-slate-50 transition"
+                    className={`cursor-pointer hover:bg-slate-50 transition ${isPicked ? 'bg-brand-50/40' : ''}`}
                     onClick={() => navigate(`/employees/${u._id}`)}
                   >
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${u.name}`}
+                        checked={isPicked}
+                        onChange={() => toggleOne(u._id)}
+                      />
+                    </td>
                     <td className="font-mono text-xs">{u.employeeId}</td>
                     <td className="font-medium text-slate-900">
                       {u.name}
@@ -165,7 +276,137 @@ export default function Employees() {
           onImported={() => { setImportOpen(false); load(); }}
         />
       )}
+
+      {bulkReasonModal && (
+        <BulkReasonModal
+          action={bulkReasonModal.action}
+          count={selected.size}
+          busy={bulkBusy}
+          onCancel={() => setBulkReasonModal(null)}
+          onSubmit={runBulkAction}
+        />
+      )}
+
+      {bulkResult && (
+        <BulkResultModal result={bulkResult} onClose={() => setBulkResult(null)} />
+      )}
     </div>
+  );
+}
+
+/**
+ * Asks HR for a single shared reason (audit-logged per row).  Defends
+ * against accidental destructive batches by requiring 5+ characters and
+ * showing a clear count of how many rows the operation will touch.
+ */
+function BulkReasonModal({ action, count, busy, onCancel, onSubmit }) {
+  const [reason, setReason] = useState('');
+  const isDelete = action === 'delete';
+  const title = isDelete ? `Delete ${count} account(s)` : `Deactivate ${count} account(s)`;
+  const canSubmit = reason.trim().length >= 5 && !busy;
+  return (
+    <Modal
+      open
+      onClose={onCancel}
+      title={title}
+      footer={<>
+        <button className="btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button
+          className={isDelete ? 'btn-primary !bg-red-600 hover:!bg-red-700' : 'btn-primary'}
+          disabled={!canSubmit}
+          onClick={() => onSubmit(reason.trim())}
+        >
+          {busy ? 'Working...' : isDelete ? 'Delete' : 'Deactivate'}
+        </button>
+      </>}
+    >
+      <div className="space-y-3">
+        <div className={`rounded-lg p-3 text-sm ${isDelete ? 'bg-red-50 border border-red-200 text-red-800' : 'bg-amber-50 border border-amber-200 text-amber-800'}`}>
+          {isDelete
+            ? 'This permanently deletes the selected employee records. The action is audit-logged but cannot be undone.'
+            : 'The selected accounts will be marked Inactive. They will not be able to log in. You can reactivate them later from the employee detail page.'}
+        </div>
+        <div>
+          <label className="label">Reason (required, shared by all {count} rows)</label>
+          <textarea
+            className="input min-h-[80px]"
+            placeholder="e.g. Annual offboarding, contract ended, department restructure"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            autoFocus
+          />
+          <div className="text-[11px] text-slate-500 mt-1">
+            Minimum 5 characters. The same reason is recorded against every successful row
+            in the audit log.
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Per-row summary of a bulk action.  Always shows both lists -- HR needs
+ * to know which rows succeeded and which were skipped (and why), since
+ * skip-and-continue means a bad row in the middle won't halt the batch.
+ */
+function BulkResultModal({ result, onClose }) {
+  const ok = result.succeeded || [];
+  const bad = result.failed || [];
+  const actionLabel = result.action === 'delete' ? 'Deleted' : 'Deactivated';
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Bulk ${actionLabel.toLowerCase()} complete`}
+      footer={<button className="btn-primary" onClick={onClose}>Close</button>}
+    >
+      <div className="space-y-3">
+        <div className="grid grid-cols-3 gap-3 text-sm">
+          <div className="rounded-lg bg-slate-50 border border-slate-200 p-3">
+            <div className="text-[11px] text-slate-500 uppercase">Requested</div>
+            <div className="text-2xl font-bold text-slate-900">{result.requested}</div>
+          </div>
+          <div className="rounded-lg bg-green-50 border border-green-200 p-3">
+            <div className="text-[11px] text-green-700 uppercase">{actionLabel}</div>
+            <div className="text-2xl font-bold text-green-700">{ok.length}</div>
+          </div>
+          <div className="rounded-lg bg-amber-50 border border-amber-200 p-3">
+            <div className="text-[11px] text-amber-700 uppercase">Skipped</div>
+            <div className="text-2xl font-bold text-amber-700">{bad.length}</div>
+          </div>
+        </div>
+
+        {ok.length > 0 && (
+          <div>
+            <div className="text-xs font-semibold text-green-800 mb-1">{actionLabel}</div>
+            <div className="max-h-40 overflow-y-auto border border-green-100 rounded-lg bg-green-50/40">
+              <ul className="divide-y divide-green-100">
+                {ok.map((r) => (
+                  <li key={r.id} className="px-3 py-1.5 text-sm text-slate-700">{r.name}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+
+        {bad.length > 0 && (
+          <div>
+            <div className="text-xs font-semibold text-amber-800 mb-1">Skipped (per-row reason)</div>
+            <div className="max-h-48 overflow-y-auto border border-amber-100 rounded-lg bg-amber-50/40">
+              <ul className="divide-y divide-amber-100">
+                {bad.map((r) => (
+                  <li key={r.id} className="px-3 py-1.5 text-sm flex justify-between gap-3">
+                    <span className="text-slate-700">{r.name}</span>
+                    <span className="text-[12px] text-amber-700 text-right">{r.reason}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 

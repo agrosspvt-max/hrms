@@ -1013,6 +1013,106 @@ const importBulk = asyncHandler(async (req, res) => {
   });
 });
 
+/**
+ * POST /api/employees/bulk-action
+ * Body: { action: 'deactivate' | 'delete', ids: [String], reason: String }
+ *
+ * Skip-and-continue: a row that fails validation (self-target, HR scope,
+ * last-Super-Admin guard, already-inactive, etc.) is recorded in `failed`
+ * with a per-row reason but does NOT abort the rest of the batch.  Each
+ * successful row is independently audit-logged so Manage Access still
+ * shows a per-account trail.
+ */
+const bulkAction = asyncHandler(async (req, res) => {
+  const { action, ids } = req.body || {};
+  const reason = (req.body?.reason || '').trim();
+
+  if (!['deactivate', 'delete'].includes(action)) {
+    res.status(400); throw new Error('Invalid bulk action');
+  }
+  if (!Array.isArray(ids) || ids.length === 0) {
+    res.status(400); throw new Error('No employees selected');
+  }
+  if (!reason) {
+    res.status(400); throw new Error('A reason is required for this bulk action');
+  }
+
+  const succeeded = [];
+  const failed = [];
+
+  for (const id of ids) {
+    try {
+      const target = await User.findById(id);
+      if (!target) { failed.push({ id, name: '(not found)', reason: 'Account no longer exists' }); continue; }
+
+      // Self-protection
+      if (String(target._id) === String(req.user._id)) {
+        failed.push({ id, name: target.name, reason: 'You cannot modify your own account' });
+        continue;
+      }
+      // HR can only touch employee-role accounts
+      if (req.user.role === 'hr' && (target.role === 'hr' || target.role === 'super_admin')) {
+        failed.push({ id, name: target.name, reason: 'Only a Super Admin can modify HR / Super Admin accounts' });
+        continue;
+      }
+      // Super-admin protection (non-SA caller cannot touch SA)
+      if (target.role === 'super_admin' && req.user.role !== 'super_admin') {
+        failed.push({ id, name: target.name, reason: 'Only a Super Admin can modify another Super Admin' });
+        continue;
+      }
+      // Last-Super-Admin guard for any operation that would remove the
+      // only active SA in the system.
+      if (target.role === 'super_admin') {
+        const remaining = await User.countDocuments({
+          role: 'super_admin', status: 'active', _id: { $ne: target._id },
+        });
+        if (remaining === 0) {
+          failed.push({ id, name: target.name, reason: 'Cannot remove the last active Super Admin' });
+          continue;
+        }
+      }
+
+      if (action === 'deactivate') {
+        if (target.status === 'inactive') {
+          failed.push({ id, name: target.name, reason: 'Already inactive' });
+          continue;
+        }
+        target.status = 'inactive';
+        await target.save();
+        logAudit(req, {
+          action: 'employee.status',
+          targetType: 'User',
+          targetId: target._id,
+          targetLabel: `${target.name} <${target.email}>`,
+          meta: { status: 'inactive', reason, via: 'bulk' },
+        });
+        succeeded.push({ id, name: target.name });
+      } else if (action === 'delete') {
+        await User.findByIdAndDelete(target._id);
+        logAudit(req, {
+          action: target.role === 'hr' ? 'hr.delete' : 'employee.delete',
+          targetType: 'User',
+          targetId: target._id,
+          targetLabel: `${target.name} <${target.email}>`,
+          meta: { role: target.role, employeeId: target.employeeId, reason, via: 'bulk' },
+        });
+        succeeded.push({ id, name: target.name });
+      }
+    } catch (err) {
+      failed.push({ id, name: '(error)', reason: err.message });
+    }
+  }
+
+  res.json({
+    action,
+    requested: ids.length,
+    succeededCount: succeeded.length,
+    failedCount: failed.length,
+    succeeded,
+    failed,
+  });
+});
+
 module.exports = {
   listEmployees, getEmployee, createEmployee, updateEmployee, deleteEmployee,
   toggleStatus, resetPassword, exportCsv, teamList,
@@ -1020,4 +1120,5 @@ module.exports = {
   addIncrement, editIncrement, deleteIncrement,
   adminAccounts,
   importTemplate, importBulk,
+  bulkAction,
 };
