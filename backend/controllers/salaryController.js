@@ -201,13 +201,18 @@ const generate = asyncHandler(async (req, res) => {
 
 /**
  * POST /api/salary/generate-all
- * Generate slips for all active employees for a payroll period.
+ * Generate slips for all active accounts (employee + HR + Super Admin)
+ * for a payroll period.  All three roles are real people with a salary
+ * structure on their User record, so they all need payslips.
  * Body: { startDate, endDate }  (legacy { year, month } still accepted)
  */
 const generateAll = asyncHandler(async (req, res) => {
   const { startDate, endDate } = resolveRange(req.body);
   if (startDate > endDate) { res.status(400); throw new Error('Start date must be on or before end date'); }
-  const employees = await User.find({ role: 'employee', status: 'active' });
+  const employees = await User.find({
+    role: { $in: ['employee', 'hr', 'super_admin'] },
+    status: 'active',
+  });
   const slips = [];
   for (const emp of employees) {
     try {

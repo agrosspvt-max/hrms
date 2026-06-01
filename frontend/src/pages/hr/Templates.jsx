@@ -521,9 +521,48 @@ function ExcelColumnsPreview({ cols }) {
 /* Task template form (unchanged shape, just lives here now)          */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Parse a clipboard paste from Excel / Google Sheets / Numbers / etc.
+ *
+ * Each non-empty line becomes one task.  Accepts (in order of preference):
+ *   - "Title\tPoints"     two columns, tab-separated (the native format
+ *                         when you copy two columns from a spreadsheet)
+ *   - "Title,Points"      comma-separated with a numeric tail
+ *   - "Title 5"           plain text where the last whitespace-separated
+ *                         token is a number
+ *   - "Title"             single column / no points -> defaults to 1pt
+ *
+ * Negative or NaN point values fall back to 1.  Empty lines are dropped.
+ */
+function parsePastedTasks(text) {
+  if (!text) return [];
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      if (line.includes('\t')) {
+        const [title, pts] = line.split('\t').map((s) => s.trim());
+        return { title, points: Math.max(0, Number(pts) || 1) };
+      }
+      if (line.includes(',')) {
+        const idx = line.lastIndexOf(',');
+        const tail = line.slice(idx + 1).trim();
+        if (/^\d+(\.\d+)?$/.test(tail)) {
+          return { title: line.slice(0, idx).trim(), points: Math.max(0, Number(tail)) };
+        }
+      }
+      const m = line.match(/^(.+?)\s+(\d+(?:\.\d+)?)$/);
+      if (m) return { title: m[1].trim(), points: Math.max(0, Number(m[2])) };
+      return { title: line, points: 1 };
+    })
+    .filter((t) => t.title);
+}
+
 function TaskTemplateForm({ modal, setModal, onSave }) {
   const form = modal.data;
   const set = (k, v) => setModal({ ...modal, data: { ...form, [k]: v } });
+  const [pasteOpen, setPasteOpen] = useState(false);
   const addTask = () => set('tasks', [...(form.tasks || []), { title: '', points: 1 }]);
   const updateTask = (i, patch) => {
     const arr = [...form.tasks];
@@ -544,7 +583,10 @@ function TaskTemplateForm({ modal, setModal, onSave }) {
         <div>
           <div className="flex justify-between items-center mb-2">
             <label className="label !mb-0">Tasks</label>
-            <button className="btn-secondary !py-1" onClick={addTask}>+ Add task</button>
+            <div className="flex gap-2">
+              <button className="btn-secondary !py-1" onClick={() => setPasteOpen(true)}>Paste from Excel</button>
+              <button className="btn-secondary !py-1" onClick={addTask}>+ Add task</button>
+            </div>
           </div>
           <div className="space-y-2">
             {(form.tasks || []).map((t, i) => (
@@ -557,6 +599,103 @@ function TaskTemplateForm({ modal, setModal, onSave }) {
             {!form.tasks?.length && <div className="text-sm text-slate-500">No tasks added yet.</div>}
           </div>
         </div>
+      </div>
+
+      {pasteOpen && (
+        <PasteTasksModal
+          existingCount={(form.tasks || []).length}
+          onClose={() => setPasteOpen(false)}
+          onSubmit={(rows, mode) => {
+            const next = mode === 'replace'
+              ? rows
+              : [...(form.tasks || []), ...rows];
+            set('tasks', next);
+            setPasteOpen(false);
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * Sub-modal that takes a clipboard paste (one or two columns from Excel /
+ * Sheets) and turns it into a list of { title, points }.  HR previews the
+ * parse below the textarea so they can spot bad rows BEFORE inserting,
+ * and chooses to Append (default) or Replace the template's task list.
+ */
+function PasteTasksModal({ existingCount, onClose, onSubmit }) {
+  const [text, setText] = useState('');
+  const [mode, setMode] = useState('append');
+  const parsed = parsePastedTasks(text);
+  const canSubmit = parsed.length > 0;
+  return (
+    <Modal
+      open
+      size="md"
+      onClose={onClose}
+      title="Paste tasks from Excel / Sheets"
+      footer={<>
+        <button className="btn-secondary" onClick={onClose}>Cancel</button>
+        <button className="btn-primary" disabled={!canSubmit} onClick={() => onSubmit(parsed, mode)}>
+          {mode === 'replace' ? 'Replace' : 'Append'} {parsed.length} task{parsed.length === 1 ? '' : 's'}
+        </button>
+      </>}
+    >
+      <div className="space-y-3">
+        <div className="text-[12px] text-slate-600">
+          Copy a column (titles) or two columns (titles + points) from Excel / Google Sheets
+          and paste below. Each non-empty line becomes one task. Tab, comma, or "Title 5"
+          are all accepted; rows with no points default to <code>1</code>.
+        </div>
+        <textarea
+          className="input font-mono text-[13px]"
+          rows={8}
+          autoFocus
+          placeholder={'Invoice Verification\t5\nBank Reconciliation\t10\nDaily Stock Check\t8'}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+        />
+
+        <div className="flex flex-col gap-1">
+          <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+            <input type="radio" name="paste-mode" checked={mode === 'append'} onChange={() => setMode('append')} />
+            Append to existing tasks ({existingCount} already in template)
+          </label>
+          <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+            <input type="radio" name="paste-mode" checked={mode === 'replace'} onChange={() => setMode('replace')} />
+            Replace all existing tasks
+          </label>
+        </div>
+
+        {parsed.length > 0 && (
+          <div className="rounded-lg border border-slate-200 max-h-56 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 sticky top-0">
+                <tr>
+                  <th className="text-left px-3 py-1.5 font-semibold text-slate-700 w-12">#</th>
+                  <th className="text-left px-3 py-1.5 font-semibold text-slate-700">Title</th>
+                  <th className="text-left px-3 py-1.5 font-semibold text-slate-700 w-20">Points</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parsed.map((t, i) => (
+                  <tr key={i} className="border-t border-slate-100">
+                    <td className="px-3 py-1 font-mono text-xs text-slate-500">{i + 1}</td>
+                    <td className="px-3 py-1 text-slate-800">{t.title}</td>
+                    <td className="px-3 py-1 font-mono text-xs text-slate-600">{t.points}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {text.trim() && parsed.length === 0 && (
+          <div className="text-xs text-amber-700">
+            No valid task lines detected. Each non-empty line becomes one task.
+          </div>
+        )}
       </div>
     </Modal>
   );
