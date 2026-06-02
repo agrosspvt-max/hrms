@@ -10,7 +10,13 @@ export default function Layout() {
   return (
     <div className="min-h-screen flex bg-slate-50 dark:bg-slate-950">
       <Sidebar open={open} onClose={() => setOpen(false)} />
-      <div className="flex-1 flex flex-col min-w-0">
+      {/*
+        The desktop sidebar is position:fixed (see Sidebar.jsx) so it
+        no longer participates in the flex flow.  Reserve its 16rem
+        (w-64) of horizontal space here with md:ml-64 so page content
+        sits to its right and the Topbar / footer don't slide underneath.
+      */}
+      <div className="flex-1 flex flex-col min-w-0 md:ml-64">
         <Topbar onMenu={() => setOpen(true)} />
         <main className="flex-1 p-4 md:p-6 max-w-[1600px] w-full mx-auto">
           <Outlet />

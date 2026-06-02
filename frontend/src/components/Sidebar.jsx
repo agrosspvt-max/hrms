@@ -186,8 +186,17 @@ export default function Sidebar({ open, onClose }) {
   return (
     <>
       <div className={`fixed inset-0 bg-black/30 z-40 md:hidden ${open ? '' : 'hidden'}`} onClick={onClose} />
+      {/*
+        Position policy:
+          - Mobile: position:fixed + translate-x slide drawer (unchanged).
+          - Desktop: stays position:fixed (NOT md:static) so it pins to
+            the viewport and never scrolls with page content.  The right
+            column reserves md:ml-64 so it doesn't slide under us.
+          - md:h-screen guarantees a 100vh container; nav items still get
+            overflow-y-auto for the rare case nav overflows the viewport.
+      */}
       <aside
-        className={`fixed md:static top-0 left-0 h-full w-64 bg-white border-r border-slate-200 z-50 overflow-y-auto
+        className={`fixed top-0 left-0 h-full md:h-screen w-64 bg-white border-r border-slate-200 z-50 overflow-y-auto
           dark:bg-slate-900 dark:border-slate-800
           transform transition-transform md:translate-x-0 ${open ? 'translate-x-0' : '-translate-x-full'}`}
       >
