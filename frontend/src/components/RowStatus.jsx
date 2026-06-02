@@ -107,7 +107,12 @@ export function TaskStatusTable({ tasks = [], deps, rowFilter, setRowFilter, sho
                 const dep = deps.get(String(t._id));
                 return (
                   <tr key={t._id}>
-                    <td className="font-medium text-slate-800">{t.title}</td>
+                    <td className="font-medium text-slate-800">
+                      {t.title}
+                      {t.addedByEmployee && (
+                        <span className="ml-2 badge-blue" title="Added by the employee. HR awards marks during review.">Added</span>
+                      )}
+                    </td>
                     <td>
                       <RowStatusBadge status={t.status} />
                       <div className="mt-1"><DependencyBadge dep={dep} /></div>
@@ -117,7 +122,11 @@ export function TaskStatusTable({ tasks = [], deps, rowFilter, setRowFilter, sho
                       {dep && <DependencyLine dep={dep} />}
                       {!dep && !(t.status === 'pending' && t.pendingReason) && <span className="text-slate-300">—</span>}
                     </td>
-                    {showPoints && <td className="text-right font-medium text-slate-700">{t.status === 'done' ? `+${t.points}` : `${t.points}`}</td>}
+                    {showPoints && <td className="text-right font-medium text-slate-700">
+                      {t.addedByEmployee
+                        ? (t.awardedMarks > 0 ? `+${t.awardedMarks}` : <span className="text-slate-400">pending</span>)
+                        : (t.status === 'done' ? `+${t.points}` : `${t.points}`)}
+                    </td>}
                   </tr>
                 );
               })}

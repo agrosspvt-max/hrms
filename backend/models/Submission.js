@@ -55,6 +55,12 @@ const submissionTaskSchema = new mongoose.Schema(
     pendingReason: { type: String, default: '' },
     pendingSince: { type: Date }, // first date the task became pending
     completedAt: { type: Date },  // when a backlog item is finally completed
+    // Employee-added rows: the employee can append extra tasks they did
+    // beyond the HR-defined template.  HR awards `awardedMarks` for each
+    // during review; HR-defined rows leave `awardedMarks` at 0 and use
+    // `points` directly.
+    addedByEmployee: { type: Boolean, default: false },
+    awardedMarks: { type: Number, default: 0 },
     ...dependencyFields,
   },
   { _id: true }

@@ -173,7 +173,7 @@ const getToday = asyncHandler(async (req, res) => {
 const VALID_FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 
 const submitOne = asyncHandler(async (req, res) => {
-  const { tasks = [], excelResponses = [], sheet, selfRating, selfNote, idea } = req.body;
+  const { tasks = [], addedTasks = [], excelResponses = [], sheet, selfRating, selfNote, idea } = req.body;
   const sub = await Submission.findOne({ _id: req.params.id, employee: req.user._id });
   if (!sub) { res.status(404); throw new Error('Submission not found'); }
   if (sub.submitted) { res.status(400); throw new Error('Submission already submitted for today'); }
@@ -343,6 +343,24 @@ const submitOne = asyncHandler(async (req, res) => {
         if (dep) pendingDeps.push(dep);
       }
     });
+
+    // Employee-added tasks: extra work the employee wrote in.  Stored
+    // with status='done' and awardedMarks=0; HR awards marks during
+    // review.  They contribute 0 to earned/total at submit time -- the
+    // review step recomputes earned/total to include awardedMarks.
+    if (Array.isArray(addedTasks) && addedTasks.length > 0) {
+      addedTasks.forEach((at) => {
+        const title = String(at?.title || '').trim();
+        if (!title) return;
+        sub.tasks.push({
+          title,
+          points: 0,
+          status: 'done',
+          addedByEmployee: true,
+          awardedMarks: 0,
+        });
+      });
+    }
   }
 
   // Snapshot the pure work scoring (immutable). Final earned/total may
@@ -640,6 +658,35 @@ const reviewSubmission = asyncHandler(async (req, res) => {
       excelEarned += m;
     });
     sub.workEarnedPoints = excelEarned;
+  }
+
+  // Task templates: most rows are HR-defined (points fixed at template
+  // time) -- those stay scored exactly as before.  Employee-added rows
+  // (addedByEmployee=true) had no template points; HR awards marks for
+  // them here via `taskMarks: [{ taskId, awardedMarks }]`.  We then
+  // recompute workEarned / workTotal so the employee-added marks flow
+  // into the final percentage.
+  if (sub.templateType === 'task') {
+    const marksByTaskId = new Map(
+      (Array.isArray(req.body.taskMarks) ? req.body.taskMarks : []).map(
+        (m) => [String(m.taskId), Math.max(0, Number(m.awardedMarks) || 0)],
+      ),
+    );
+    let earnedT = 0;
+    let totalT = 0;
+    sub.tasks.forEach((t) => {
+      if (t.addedByEmployee) {
+        if (marksByTaskId.has(String(t._id))) t.awardedMarks = marksByTaskId.get(String(t._id));
+        const awarded = Number(t.awardedMarks) || 0;
+        earnedT += awarded;
+        totalT  += awarded; // grows the denominator with the numerator
+      } else {
+        if (t.status === 'done') earnedT += Number(t.points) || 0;
+        if (t.status === 'done' || t.status === 'pending') totalT += Number(t.points) || 0;
+      }
+    });
+    sub.workEarnedPoints = earnedT;
+    sub.workTotalPoints  = totalT;
   }
 
   // Sheet templates: HR awards marks per scoring target (cell/row/column).

@@ -140,6 +140,15 @@ function buildHrDraft(s) {
       remark: sc.remark || '',
     };
   });
+  // Employee-added tasks (task templates only): seed each row's
+  // awardedMarks from the stored value when the submission has already
+  // been reviewed, otherwise leave blank so HR enters fresh marks.
+  const taskMarks = {};
+  (s.tasks || []).forEach((t) => {
+    if (t.addedByEmployee) {
+      taskMarks[String(t._id)] = reviewed && t.awardedMarks != null ? t.awardedMarks : '';
+    }
+  });
   return {
     disciplineMarks: reviewed ? (s.disciplineMarks ?? '') : '',
     maxDisciplineMarks: s.maxDisciplineMarks ?? 3,
@@ -149,6 +158,7 @@ function buildHrDraft(s) {
     ideaFeedback: s.ideaFeedback || '',
     fieldMarks,
     sheetMarks,
+    taskMarks,
   };
 }
 
@@ -205,13 +215,16 @@ function ReviewDetail({ submission: s, draft, setDraft, onSaved }) {
   // collapse / reopen / filter changes until save.
   const {
     disciplineMarks, maxDisciplineMarks, disciplineNote,
-    ideaMarks, maxIdeaMarks, ideaFeedback, fieldMarks, sheetMarks,
+    ideaMarks, maxIdeaMarks, ideaFeedback, fieldMarks, sheetMarks, taskMarks,
   } = draft;
   const setFieldMarks = (name, val) => setDraft({ fieldMarks: { ...fieldMarks, [name]: val } });
   const setSheetMark = (key, patch) => setDraft({ sheetMarks: { ...sheetMarks, [key]: { ...sheetMarks[key], ...patch } } });
+  const setTaskMark = (taskId, val) => setDraft({ taskMarks: { ...(taskMarks || {}), [taskId]: val } });
 
   // For excel, the "work" component comes from the sum of field marks
-  // entered here.  For task templates it's the cached workEarnedPoints.
+  // entered here.  For task templates it's the HR-defined points
+  // (cached) PLUS the per-row awardedMarks HR is entering live for any
+  // employee-added rows.
   const excelEarned = (s.excelResponses || [])
     .filter((r) => r.markEligible)
     .reduce((sum, r) => sum + (Number(fieldMarks[r.fieldName]) || 0), 0);
@@ -219,9 +232,29 @@ function ReviewDetail({ submission: s, draft, setDraft, onSaved }) {
   const sheetEarned = ((s.sheet && s.sheet.scores) || [])
     .reduce((sum, sc) => sum + (Number(sheetMarks[sc.key]?.marksAwarded) || 0), 0);
 
-  const workEarned = isSheet ? sheetEarned : isExcel ? excelEarned : (s.workEarnedPoints || 0);
+  // Employee-added rows live only on task templates.  We split the task
+  // points: HR-defined "done" rows keep their cached points, added rows
+  // contribute the live awardedMarks the reviewer is typing.
+  const isTask = !isExcel && !isSheet;
+  const taskHrEarned = isTask
+    ? (s.tasks || []).filter((t) => !t.addedByEmployee && t.status === 'done')
+        .reduce((sum, t) => sum + (Number(t.points) || 0), 0)
+    : 0;
+  const taskHrTotal = isTask
+    ? (s.tasks || []).filter((t) => !t.addedByEmployee && (t.status === 'done' || t.status === 'pending'))
+        .reduce((sum, t) => sum + (Number(t.points) || 0), 0)
+    : 0;
+  const taskAddedEarned = isTask
+    ? (s.tasks || []).filter((t) => t.addedByEmployee)
+        .reduce((sum, t) => sum + (Number((taskMarks || {})[String(t._id)]) || 0), 0)
+    : 0;
+  const taskEarned = taskHrEarned + taskAddedEarned;
+  const taskTotal  = taskHrTotal  + taskAddedEarned;
+
+  const workEarned = isSheet ? sheetEarned : isExcel ? excelEarned : taskEarned;
+  const workTotalLive = isTask ? taskTotal : (s.workTotalPoints || 0);
   const finalEarned = workEarned + Number(disciplineMarks || 0) + Number(ideaMarks || 0);
-  const finalTotal = (s.workTotalPoints || 0) + Number(maxDisciplineMarks || 0) + Number(maxIdeaMarks || 0);
+  const finalTotal = workTotalLive + Number(maxDisciplineMarks || 0) + Number(maxIdeaMarks || 0);
   const finalPct = finalTotal > 0 ? (finalEarned / finalTotal) * 100 : 0;
 
   const save = async () => {
@@ -273,6 +306,16 @@ function ReviewDetail({ submission: s, draft, setDraft, onSaved }) {
               marksAwarded: Number(sheetMarks[sc.key]?.marksAwarded) || 0,
               remark: sheetMarks[sc.key]?.remark || '',
             }))
+          : undefined,
+        // Task templates: employee-added row marks.  Backend recomputes
+        // workEarned / workTotal to include these.
+        taskMarks: isTask
+          ? (s.tasks || [])
+              .filter((t) => t.addedByEmployee)
+              .map((t) => ({
+                taskId: String(t._id),
+                awardedMarks: Number((taskMarks || {})[String(t._id)]) || 0,
+              }))
           : undefined,
       });
       toast.success('Review saved');
@@ -397,6 +440,51 @@ function ReviewDetail({ submission: s, draft, setDraft, onSaved }) {
       {/* Task templates: unified row-status table with inline dependency info */}
       {!isExcel && !isSheet && (
         <TaskStatusTable tasks={s.tasks} deps={deps} rowFilter={rowFilter} setRowFilter={setRowFilter} />
+      )}
+
+      {/* Employee-added tasks (task templates only): HR awards marks
+          here.  These rows have no pre-set points; the value HR enters
+          contributes equally to earned and total points. */}
+      {!isExcel && !isSheet && (s.tasks || []).some((t) => t.addedByEmployee) && (
+        <Section
+          title="Employee-Added Tasks"
+          badgeClass="badge-blue"
+          count={(s.tasks || []).filter((t) => t.addedByEmployee).length}
+        >
+          <div className="text-[11px] text-slate-500 mb-2">
+            Tasks the employee added on top of the assigned template. Marks you enter here
+            count toward both <b>earned</b> and <b>total</b> points.
+          </div>
+          <div className="overflow-x-auto">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Task (added by employee)</th>
+                  <th className="w-40">Awarded Marks</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(s.tasks || []).filter((t) => t.addedByEmployee).map((t) => (
+                  <tr key={t._id}>
+                    <td className="font-medium text-slate-800">{t.title}</td>
+                    <td>
+                      <input
+                        className="input w-28"
+                        type="number" min="0"
+                        placeholder="Marks"
+                        value={(taskMarks || {})[String(t._id)] ?? ''}
+                        onChange={(e) => setTaskMark(String(t._id), e.target.value === '' ? '' : Number(e.target.value))}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="mt-2 text-xs text-slate-600 text-right">
+            Additional marks subtotal: <b>{taskAddedEarned}</b>
+          </div>
+        </Section>
       )}
 
       <div className="grid md:grid-cols-3 gap-3">

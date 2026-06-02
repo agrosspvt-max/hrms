@@ -20,6 +20,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const [selfNote, setSelfNote] = useState({});
   const [idea, setIdea] = useState({});
   const [excelValues, setExcelValues] = useState({}); // { subId: { fieldName: value } }
+  // Employee-added tasks per submission: title-only rows the employee
+  // can append.  Marks come later from HR review.
+  const [addedTasks, setAddedTasks] = useState({}); // { subId: [{ title }] }
   const [sheetState, setSheetState] = useState({}); // { subId: workingSheet }
   // Per-row task status for sheet "task rows" (scored rows with statusTracking)
   // { subId: { [scoreKey]: { rowStatus, pendingReason, dependencyType, dependencyAssignedTo, dependencyRemark } } }
@@ -177,8 +180,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           setBusy(false);
           return;
         }
+        // Trim and drop empty employee-added rows before sending.
+        const myAdditions = (addedTasks[sub._id] || [])
+          .map((x) => ({ title: String(x.title || '').trim() }))
+          .filter((x) => x.title);
         await api.post(`/submissions/${sub._id}/submit`, {
           tasks: localTasks,
+          addedTasks: myAdditions,
           selfRating: selfRating[sub._id],
           selfNote: selfNote[sub._id],
           idea: idea[sub._id],
@@ -459,7 +467,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                         </tr>
                       </thead>
                       <tbody>
-                        {sub.tasks.map((t) => {
+                        {sub.tasks.filter((t) => !t.addedByEmployee).map((t) => {
                           const st = taskState[sub._id]?.[t._id]?.status || 'pending_submit';
                           return (
                             <tr key={t._id}>
@@ -491,6 +499,68 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                         })}
                       </tbody>
                     </table>
+                  </div>
+
+                  {/* ----- Employee-added tasks ----- */}
+                  <div className="mt-4 bg-indigo-50/60 border border-indigo-100 rounded-lg p-3">
+                    <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+                      <div>
+                        <div className="text-sm font-semibold text-indigo-900">Additional Tasks You Did</div>
+                        <div className="text-[11px] text-indigo-700">
+                          Anything extra you did today that isn't listed above. HR will award marks during review.
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="btn-secondary !py-1 !text-xs"
+                        onClick={() =>
+                          setAddedTasks((s) => ({
+                            ...s,
+                            [sub._id]: [...(s[sub._id] || []), { title: '' }],
+                          }))
+                        }
+                      >
+                        + Add my task
+                      </button>
+                    </div>
+                    {(addedTasks[sub._id] || []).length === 0 ? (
+                      <div className="text-xs text-indigo-600/80 italic">
+                        No additional tasks. Click "+ Add my task" to add one.
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {(addedTasks[sub._id] || []).map((row, i) => (
+                          <div key={i} className="flex items-center gap-2">
+                            <input
+                              className="input flex-1"
+                              placeholder="e.g. Helped onboard a new vendor"
+                              value={row.title}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setAddedTasks((s) => {
+                                  const arr = [...(s[sub._id] || [])];
+                                  arr[i] = { ...arr[i], title: v };
+                                  return { ...s, [sub._id]: arr };
+                                });
+                              }}
+                            />
+                            <button
+                              type="button"
+                              className="btn-ghost text-red-600 !px-2"
+                              onClick={() =>
+                                setAddedTasks((s) => ({
+                                  ...s,
+                                  [sub._id]: (s[sub._id] || []).filter((_, idx) => idx !== i),
+                                }))
+                              }
+                              aria-label="Remove"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* Self-observation */}
