@@ -49,7 +49,12 @@ const submissionTaskSchema = new mongoose.Schema(
     points: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ['pending_submit', 'done', 'pending', 'work_not_available'],
+      // 'ongoing' = work has been started and is actively in progress.
+      // Operationally identical to 'done' (earns points, reviewable,
+      // dependency-able) but reported separately in analytics; never
+      // contributes to pendency.  Existing 'pending' alone still drives
+      // pendency / backlog metrics.
+      enum: ['pending_submit', 'done', 'ongoing', 'pending', 'work_not_available'],
       default: 'pending_submit',
     },
     pendingReason: { type: String, default: '' },

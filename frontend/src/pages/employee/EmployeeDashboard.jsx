@@ -166,17 +166,54 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           idea: idea[sub._id],
         });
       } else {
-        const localTasks = sub.tasks.map((t) => {
+        // Build per-task payload with the new Work Type + Forward To
+        // fields.  When Dependent is chosen, the single Remark field
+        // doubles as the `dependencyRemark` the backend's stampDependency
+        // helper requires.
+        const localTasks = sub.tasks.filter((t) => !t.addedByEmployee).map((t) => {
           const st = taskState[sub._id]?.[t._id] || { status: 'pending_submit' };
-          return { taskId: t._id, status: st.status, pendingReason: st.pendingReason };
+          const remark = (st.pendingReason || '').trim();
+          // Dependency hand-off is meaningful for any actively-engaged
+          // status (done / ongoing / pending) -- not for WNA or unselected.
+          const engaged = st.status === 'done' || st.status === 'ongoing' || st.status === 'pending';
+          const depType = engaged && st.dependencyType === 'dependent' ? 'dependent' : 'independent';
+          const payload = {
+            taskId: t._id,
+            status: st.status,
+            pendingReason: remark,
+            dependencyType: depType,
+          };
+          if (depType === 'dependent') {
+            payload.dependencyAssignedTo = st.dependencyAssignedTo || '';
+            payload.dependencyRemark = remark;
+          }
+          return payload;
         });
+        // ---- Validation ----
         if (localTasks.some((t) => t.status === 'pending_submit')) {
           toast.error('Please choose a status for every task');
           setBusy(false);
           return;
         }
-        if (localTasks.some((t) => t.status === 'pending' && !t.pendingReason)) {
-          toast.error('Reason required for all pending tasks');
+        const missingRemark = localTasks.find((t) => t.status === 'pending' && !t.pendingReason);
+        if (missingRemark) {
+          toast.error('Remark required for all pending tasks');
+          setBusy(false);
+          return;
+        }
+        const dependentMissingAssignee = localTasks.find(
+          (t) => t.dependencyType === 'dependent' && !t.dependencyAssignedTo,
+        );
+        if (dependentMissingAssignee) {
+          toast.error('Select someone to forward to for every Dependent task');
+          setBusy(false);
+          return;
+        }
+        const dependentMissingRemark = localTasks.find(
+          (t) => t.dependencyType === 'dependent' && !t.pendingReason,
+        );
+        if (dependentMissingRemark) {
+          toast.error('Remark required for all Dependent tasks');
           setBusy(false);
           return;
         }
@@ -224,10 +261,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
 
       {!embedded && summary && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {/* Replaced "30-day Completion %" -- a scoring metric -- with a
+              plain submission count so employees still see their recent
+              activity but no completion/evaluation score. */}
           <StatCard
-            label="30-day Completion"
-            value={`${summary.last30Days.completionPercentage.toFixed(1)}%`}
-            sub={`${summary.last30Days.submissions} submissions`}
+            label="30-day Submissions"
+            value={summary.last30Days.submissions}
+            sub="submissions logged"
             accent="green"
           />
           <StatCard
@@ -461,36 +501,82 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                       <thead>
                         <tr>
                           <th>Task</th>
-                          <th>Points</th>
                           <th>Status</th>
-                          <th>Reason (if pending)</th>
+                          <th>Work Type</th>
+                          <th>Forward To</th>
+                          <th>Remark</th>
                         </tr>
                       </thead>
                       <tbody>
                         {sub.tasks.filter((t) => !t.addedByEmployee).map((t) => {
-                          const st = taskState[sub._id]?.[t._id]?.status || 'pending_submit';
+                          const taskRow = taskState[sub._id]?.[t._id] || {};
+                          const st = taskRow.status || 'pending_submit';
+                          const dt = taskRow.dependencyType || 'independent';
+                          const isDoneOrPending = st === 'done' || st === 'pending';
+                          const isDependent = isDoneOrPending && dt === 'dependent';
+                          const remarkRequired = st === 'pending' || isDependent;
                           return (
                             <tr key={t._id}>
-                              <td className="font-medium text-slate-800">{t.title}</td>
-                              <td>{t.points}</td>
-                              <td>
+                              <td className="font-medium text-slate-800 align-top">{t.title}</td>
+                              <td className="align-top">
                                 <select
-                                  className="input max-w-[160px]"
+                                  className="input max-w-[140px]"
                                   value={st}
                                   onChange={(e) => setTask(sub._id, t._id, { status: e.target.value })}
                                 >
                                   <option value="pending_submit">Select...</option>
                                   <option value="done">Done</option>
+                                  <option value="ongoing">Ongoing</option>
                                   <option value="pending">Pending</option>
                                   <option value="work_not_available">Work Not Available</option>
                                 </select>
                               </td>
-                              <td>
+                              <td className="align-top">
+                                {isDoneOrPending ? (
+                                  <select
+                                    className="input max-w-[140px]"
+                                    value={dt}
+                                    onChange={(e) => setTask(sub._id, t._id, {
+                                      dependencyType: e.target.value,
+                                      // Clear the assignee if we go back to Independent.
+                                      ...(e.target.value === 'independent' ? { dependencyAssignedTo: '' } : {}),
+                                    })}
+                                  >
+                                    <option value="independent">Independent</option>
+                                    <option value="dependent">Dependent</option>
+                                  </select>
+                                ) : (
+                                  <span className="text-slate-300">—</span>
+                                )}
+                              </td>
+                              <td className="align-top">
+                                {isDependent ? (
+                                  <select
+                                    className="input max-w-[200px]"
+                                    value={taskRow.dependencyAssignedTo || ''}
+                                    onChange={(e) => setTask(sub._id, t._id, { dependencyAssignedTo: e.target.value })}
+                                  >
+                                    <option value="">Select person...</option>
+                                    {assignable.map((u) => (
+                                      <option key={u._id} value={u._id}>
+                                        {u.name} ({u.employeeId || u.role})
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <span className="text-slate-300">—</span>
+                                )}
+                              </td>
+                              <td className="align-top">
                                 <input
                                   className="input"
-                                  placeholder={st === 'pending' ? 'Required' : 'N/A'}
-                                  disabled={st !== 'pending'}
-                                  value={taskState[sub._id]?.[t._id]?.pendingReason || ''}
+                                  placeholder={
+                                    !isDoneOrPending ? 'N/A'
+                                    : remarkRequired ? 'Required'
+                                    : 'Optional'
+                                  }
+                                  disabled={!isDoneOrPending}
+                                  value={taskRow.pendingReason || ''}
                                   onChange={(e) => setTask(sub._id, t._id, { pendingReason: e.target.value })}
                                 />
                               </td>
@@ -670,66 +756,90 @@ function SubmittedSummary({ sub }) {
   const reviewed = sub.reviewStatus === 'reviewed';
   return (
     <div className="space-y-3">
+      {/* Score / marks panels are intentionally hidden from the employee
+          view per spec.  Backend continues to compute & store every score
+          for HR analytics and reviews.  Employee only sees submission /
+          review status here and (further down) any qualitative feedback
+          notes the reviewer left. */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm text-slate-600">
-          Work: <b>{sub.workEarnedPoints ?? sub.earnedPoints}</b> / {sub.workTotalPoints ?? sub.totalPoints} points
+          Submitted{sub.submittedAt ? ` at ${new Date(sub.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}
         </div>
         {reviewed
-          ? <span className="badge-green">Reviewed</span>
+          ? <span className="badge-green">Reviewed by HR</span>
           : <span className="badge-amber">Awaiting HR review</span>}
       </div>
 
-      {reviewed && (
-        <div className="grid sm:grid-cols-3 gap-3">
-          <div className="bg-slate-50 rounded-lg p-3">
-            <div className="text-[11px] uppercase text-slate-500">Discipline</div>
-            <div className="text-lg font-semibold text-slate-900">
-              {sub.disciplineMarks}/{sub.maxDisciplineMarks}
+      {reviewed && (sub.disciplineNote || sub.ideaFeedback) && (
+        <div className="grid sm:grid-cols-2 gap-3">
+          {sub.disciplineNote && (
+            <div className="bg-slate-50 rounded-lg p-3">
+              <div className="text-[11px] uppercase text-slate-500">HR Note</div>
+              <div className="text-sm text-slate-700 mt-1 italic">"{sub.disciplineNote}"</div>
             </div>
-            {sub.disciplineNote && <div className="text-xs text-slate-600 mt-1 italic">"{sub.disciplineNote}"</div>}
-          </div>
-          <div className="bg-slate-50 rounded-lg p-3">
-            <div className="text-[11px] uppercase text-slate-500">Innovation</div>
-            <div className="text-lg font-semibold text-slate-900">
-              {sub.ideaMarks}/{sub.maxIdeaMarks}
-            </div>
-            {sub.ideaFeedback && <div className="text-xs text-slate-600 mt-1 italic">"{sub.ideaFeedback}"</div>}
-          </div>
-          <div className="bg-brand-50 rounded-lg p-3 border border-brand-100">
-            <div className="text-[11px] uppercase text-brand-700">Final</div>
-            <div className="text-lg font-semibold text-brand-700">
-              {sub.earnedPoints}/{sub.totalPoints} ({sub.completionPercentage.toFixed(1)}%)
-            </div>
-            <div className="text-[11px] text-brand-600 mt-1">includes discipline + innovation</div>
-          </div>
-        </div>
-      )}
-
-      {/* Sheet report: show the submitted grid (+ per-target marks once reviewed) */}
-      {sub.templateType === 'sheet' && sub.sheet && (
-        <div className="space-y-3">
-          <SheetGrid sheet={sub.sheet} mode="readonly" showHidden={false} scoreMap={reviewed ? buildScoreMapFromScores(sub.sheet.scores) : {}} height={280} />
-          {reviewed && (sub.sheet.scores || []).length > 0 && (
-            <div className="overflow-x-auto">
-              <table className="table">
-                <thead><tr><th>Scored area</th><th>Type</th><th>Marks</th><th>Remark</th></tr></thead>
-                <tbody>
-                  {sub.sheet.scores.map((sc) => (
-                    <tr key={sc.key}>
-                      <td className="font-medium">{sc.label || sc.key}</td>
-                      <td className="capitalize text-slate-500">{sc.type}</td>
-                      <td><b>{sc.marksAwarded}</b>/{sc.maxMarks}</td>
-                      <td className="text-slate-600">{sc.remark || <span className="text-slate-300">—</span>}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          )}
+          {sub.ideaFeedback && (
+            <div className="bg-blue-50 rounded-lg p-3">
+              <div className="text-[11px] uppercase text-blue-700">Feedback on your idea</div>
+              <div className="text-sm text-slate-700 mt-1 italic">"{sub.ideaFeedback}"</div>
             </div>
           )}
         </div>
       )}
 
-      {/* Excel report: show submitted values (+ per-field marks once reviewed) */}
+      {/* Task templates (read-only): status + remark + dependency only --
+          no points / marks / awarded values, per spec. */}
+      {sub.templateType === 'task' && (sub.tasks || []).length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Task</th>
+                <th>Status</th>
+                <th>Work Type</th>
+                <th>Remark</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(sub.tasks || [])
+                .filter((t) => ['done', 'ongoing', 'pending', 'work_not_available'].includes(t.status))
+                .map((t) => (
+                  <tr key={t._id}>
+                    <td className="font-medium text-slate-800">
+                      {t.title}
+                      {t.addedByEmployee && <span className="ml-2 badge-blue">Added</span>}
+                    </td>
+                    <td>
+                      {t.status === 'done'                 && <span className="badge-green">Done</span>}
+                      {t.status === 'ongoing'              && <span className="badge-blue">Ongoing</span>}
+                      {t.status === 'pending'              && <span className="badge-amber">Pending</span>}
+                      {t.status === 'work_not_available'   && <span className="badge-gray">Work N/A</span>}
+                    </td>
+                    <td>
+                      {t.dependencyType === 'dependent'
+                        ? <span className="badge bg-indigo-50 text-indigo-700">Forwarded</span>
+                        : <span className="text-slate-400 text-xs">Independent</span>}
+                    </td>
+                    <td className="text-slate-600 text-sm">
+                      {t.pendingReason || <span className="text-slate-300">—</span>}
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Sheet report: read-only grid only; per-target marks and remarks
+          are HR-only data so they're hidden from the employee view. */}
+      {sub.templateType === 'sheet' && sub.sheet && (
+        <div className="space-y-3">
+          <SheetGrid sheet={sub.sheet} mode="readonly" showHidden={false} scoreMap={{}} height={280} />
+        </div>
+      )}
+
+      {/* Excel report: show submitted values only; the per-field marks
+          column is hidden from the employee per spec. */}
       {sub.templateType === 'excel' && (sub.excelResponses || []).length > 0 && (
         <div className="overflow-x-auto">
           <table className="table">
@@ -737,20 +847,13 @@ function SubmittedSummary({ sub }) {
               <tr>
                 <th>Field</th>
                 <th>Your value</th>
-                {reviewed && <th>Marks</th>}
               </tr>
             </thead>
             <tbody>
               {sub.excelResponses.map((r) => (
                 <tr key={r._id || r.fieldName}>
-                  <td className="font-medium">
-                    {r.fieldName}
-                    {r.markEligible && <span className="ml-1 badge-blue">scored</span>}
-                  </td>
+                  <td className="font-medium">{r.fieldName}</td>
                   <td className="text-slate-700 whitespace-pre-wrap">{String(r.value ?? '') || <span className="text-slate-400">—</span>}</td>
-                  {reviewed && (
-                    <td>{r.markEligible ? <b>{r.marksAwarded}/{r.maxMarks}</b> : <span className="text-slate-400">n/a</span>}</td>
-                  )}
                 </tr>
               ))}
             </tbody>

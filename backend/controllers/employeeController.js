@@ -476,18 +476,22 @@ const workHistory = asyncHandler(async (req, res) => {
   const submissions = [];
   const pendingItems = [];
   for (const s of subs) {
-    let done = 0, pending = 0;
+    let done = 0, ongoing = 0, pending = 0;
     const pushPending = (title, reason, since) => { pending += 1; pendingItems.push({ title, reason: reason || '', since: since || s.date, date: s.date, template: s.template?.title || '', type: s.templateType }); };
     if (s.templateType === 'excel') {
       (s.excelResponses || []).forEach((r) => { if (r.rowStatus === 'done') done += 1; else if (r.rowStatus === 'pending') pushPending(r.fieldName, r.dependencyRemark, s.date); });
     } else if (s.templateType === 'sheet') {
       ((s.sheet && s.sheet.scores) || []).forEach((sc) => { if (sc.rowStatus === 'done') done += 1; else if (sc.rowStatus === 'pending') pushPending(sc.label || sc.key, sc.pendingReason, s.date); });
     } else {
-      (s.tasks || []).forEach((t) => { if (t.status === 'done') done += 1; else if (t.status === 'pending') pushPending(t.title, t.pendingReason, t.pendingSince); });
+      (s.tasks || []).forEach((t) => {
+        if (t.status === 'done')         done += 1;
+        else if (t.status === 'ongoing') ongoing += 1;
+        else if (t.status === 'pending') pushPending(t.title, t.pendingReason, t.pendingSince);
+      });
     }
     submissions.push({
       _id: s._id, date: s.date, template: s.template?.title || '', type: s.templateType,
-      frequency: s.frequency, reviewStatus: s.reviewStatus, done, pending,
+      frequency: s.frequency, reviewStatus: s.reviewStatus, done, ongoing, pending,
     });
   }
 

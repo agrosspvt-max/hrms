@@ -317,8 +317,13 @@ const submitOne = asyncHandler(async (req, res) => {
       if (!upd) return;
       const status = upd.status;
 
-      if (status === 'done') {
-        t.status = 'done';
+      if (status === 'done' || status === 'ongoing') {
+        t.status = status;
+        // The "Remark" field on the task form is optional for Done /
+        // Ongoing; if the employee wrote one, persist it on the same
+        // `pendingReason` string that Pending uses -- one field, one
+        // storage slot, label just reads as "Remark" on display.
+        t.pendingReason = upd.pendingReason || '';
         earned += t.points;
         total += t.points;
       } else if (status === 'pending') {
@@ -335,8 +340,9 @@ const submitOne = asyncHandler(async (req, res) => {
         // not counted at all
       }
 
-      // Dependency hand-off is only meaningful for done / pending work.
-      if (status === 'done' || status === 'pending') {
+      // Dependency hand-off is meaningful for any non-WNA work the
+      // employee actually engaged with: done / ongoing / pending.
+      if (status === 'done' || status === 'ongoing' || status === 'pending') {
         const dep = stampDependency(t, upd, {
           kind: 'task', sourceTaskId: String(t._id), originalTaskName: t.title, byUserId: req.user._id,
         }, res);
@@ -681,8 +687,12 @@ const reviewSubmission = asyncHandler(async (req, res) => {
         earnedT += awarded;
         totalT  += awarded; // grows the denominator with the numerator
       } else {
-        if (t.status === 'done') earnedT += Number(t.points) || 0;
-        if (t.status === 'done' || t.status === 'pending') totalT += Number(t.points) || 0;
+        // Ongoing earns + counts exactly like Done.  Pending still
+        // contributes to the denominator only (employee owes the work).
+        if (t.status === 'done' || t.status === 'ongoing') earnedT += Number(t.points) || 0;
+        if (t.status === 'done' || t.status === 'ongoing' || t.status === 'pending') {
+          totalT += Number(t.points) || 0;
+        }
       }
     });
     sub.workEarnedPoints = earnedT;

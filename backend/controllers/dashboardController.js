@@ -36,7 +36,7 @@ const hrToday = asyncHandler(async (_req, res) => {
 
   const result = employees.map((emp) => {
     const subs = byEmployee[String(emp._id)] || [];
-    let done = 0, pending = 0, wna = 0, earned = 0, total = 0;
+    let done = 0, ongoing = 0, pending = 0, wna = 0, earned = 0, total = 0;
     let submittedAll = subs.length > 0 && subs.every((s) => s.submitted);
     let selfRatings = [];
     for (const s of subs) {
@@ -44,8 +44,9 @@ const hrToday = asyncHandler(async (_req, res) => {
       total += s.totalPoints || 0;
       if (s.selfRating !== undefined && s.selfRating !== null) selfRatings.push(s.selfRating);
       for (const t of s.tasks) {
-        if (t.status === 'done') done += 1;
-        else if (t.status === 'pending') pending += 1;
+        if (t.status === 'done')                 done += 1;
+        else if (t.status === 'ongoing')         ongoing += 1;
+        else if (t.status === 'pending')         pending += 1;
         else if (t.status === 'work_not_available') wna += 1;
       }
     }
@@ -53,7 +54,12 @@ const hrToday = asyncHandler(async (_req, res) => {
       employee: emp,
       hasSubmission: subs.length > 0,
       submitted: submittedAll,
-      doneCount: done,
+      // Ongoing is reported as its own category but rolled into the
+      // legacy `doneCount` shape so older HR widgets show it as
+      // "work performed".  Pendency stays driven by `pendingCount`.
+      doneCount: done + ongoing,
+      doneOnlyCount: done,
+      ongoingCount: ongoing,
       pendingCount: pending,
       workNotAvailableCount: wna,
       earnedPoints: earned,

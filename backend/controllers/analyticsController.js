@@ -41,7 +41,7 @@ const resolveRange = (q = {}) => {
  * work_not_available, pending_submit, and any row without a real status.
  */
 const countUnits = (s, asOf) => {
-  let done = 0, pending = 0;
+  let done = 0, ongoing = 0, pending = 0;
   const pendingAges = [];
   const ageOf = (origin) => Math.max(0, Math.round((startOfDay(asOf) - startOfDay(origin || s.date)) / 86400000));
 
@@ -56,12 +56,16 @@ const countUnits = (s, asOf) => {
       else if (sc.rowStatus === 'pending') { pending += 1; pendingAges.push(ageOf(s.date)); }
     }
   } else {
+    // Task templates: ongoing is tracked as its own bucket but, for
+    // completion-rate math, is rolled into `done` (counts as work
+    // performed).  Pendency still only counts true 'pending' rows.
     for (const t of s.tasks || []) {
-      if (t.status === 'done') done += 1;
+      if (t.status === 'done')         done += 1;
+      else if (t.status === 'ongoing') ongoing += 1;
       else if (t.status === 'pending') { pending += 1; pendingAges.push(ageOf(t.pendingSince)); }
     }
   }
-  return { done, pending, pendingAges };
+  return { done: done + ongoing, doneCount: done, ongoing, pending, pendingAges };
 };
 
 const rate = (pending, done) => {
@@ -500,7 +504,12 @@ const assignmentAnalytics = asyncHandler(async (_req, res) => {
     if (!subStats.has(k)) subStats.set(k, { pending: 0, done: 0, count: 0 });
     const m = subStats.get(k); m.count += 1;
     if (s.templateType === 'task') {
-      for (const t of s.tasks || []) { if (t.status === 'pending') m.pending += 1; else if (t.status === 'done') m.done += 1; }
+      // Ongoing rolls into the `done` (work-performed) bucket for the
+      // template-usage rollup -- it never inflates pendency.
+      for (const t of s.tasks || []) {
+        if (t.status === 'pending') m.pending += 1;
+        else if (t.status === 'done' || t.status === 'ongoing') m.done += 1;
+      }
     } else if (s.templateType === 'excel') {
       for (const r of s.excelResponses || []) { if (r.rowStatus === 'pending') m.pending += 1; else if (r.rowStatus === 'done') m.done += 1; }
     } else if (s.templateType === 'sheet') {

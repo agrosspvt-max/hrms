@@ -5,8 +5,11 @@
  */
 
 const STATUS_META = {
-  done: { text: 'Done', cls: 'badge-green' },
-  pending: { text: 'Pending', cls: 'badge-red' },
+  done:               { text: 'Done',     cls: 'badge-green' },
+  // Ongoing = active work-in-progress; treated as work performed by the
+  // backend.  Distinct blue badge so analytics can show it separately.
+  ongoing:            { text: 'Ongoing',  cls: 'badge-blue' },
+  pending:            { text: 'Pending',  cls: 'badge-red' },
   work_not_available: { text: 'Work N/A', cls: 'badge-gray' },
 };
 
@@ -63,6 +66,7 @@ export function depMap(dependencies = []) {
 export const ROW_FILTERS = [
   ['all', 'All rows'],
   ['done', 'Done'],
+  ['ongoing', 'Ongoing'],
   ['pending', 'Pending'],
   ['dependency', 'Dependency'],
   ['work_not_available', 'Work N/A'],
@@ -90,7 +94,7 @@ export function RowStatusFilter({ value, onChange, className = '' }) {
  * reason and points.  Includes a status filter.  Display-only.
  */
 export function TaskStatusTable({ tasks = [], deps, rowFilter, setRowFilter, showPoints = true }) {
-  const rows = tasks.filter((t) => ['done', 'pending', 'work_not_available'].includes(t.status));
+  const rows = tasks.filter((t) => ['done', 'ongoing', 'pending', 'work_not_available'].includes(t.status));
   const visible = rows.filter((t) => matchRowFilter(t.status, deps.get(String(t._id)), rowFilter));
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-4">
@@ -125,7 +129,7 @@ export function TaskStatusTable({ tasks = [], deps, rowFilter, setRowFilter, sho
                     {showPoints && <td className="text-right font-medium text-slate-700">
                       {t.addedByEmployee
                         ? (t.awardedMarks > 0 ? `+${t.awardedMarks}` : <span className="text-slate-400">pending</span>)
-                        : (t.status === 'done' ? `+${t.points}` : `${t.points}`)}
+                        : ((t.status === 'done' || t.status === 'ongoing') ? `+${t.points}` : `${t.points}`)}
                     </td>}
                   </tr>
                 );
