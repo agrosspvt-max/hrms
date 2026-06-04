@@ -26,6 +26,19 @@ const blankSheet = {
   statusTracking: false,
   sheet: { sheetName: 'Sheet1', rowCount: 0, colCount: 0, columns: [], rows: [], cells: [], scoring: [], allowEmployeeAddRows: false },
 };
+// Custom Assignment: the field builder UI ships in a follow-up; the
+// metadata + clone-from-existing flow lives here so HR can create new
+// custom templates (e.g. Site Visit Report, Dealer Visit Report) by
+// either starting blank or cloning an existing custom template (such
+// as the seeded Daily Calling Report) as a starting point.
+const blankCustom = {
+  templateType: 'custom',
+  title: '',
+  description: '',
+  customKind: '',
+  isActive: true,
+  customFields: [],
+};
 const FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 
 /* Scoring helpers shared across the sheet builder */
@@ -75,8 +88,21 @@ export default function Templates({ embedded = false } = {}) {
   };
 
   const startCreate = (type) => {
-    const base = type === 'excel' ? blankExcel : type === 'sheet' ? blankSheet : blankTask;
+    const base = type === 'excel'  ? blankExcel
+               : type === 'sheet'  ? blankSheet
+               : type === 'custom' ? blankCustom
+               : blankTask;
     setModal({ mode: 'create', data: JSON.parse(JSON.stringify(base)) });
+  };
+
+  // Clone a template: copies the source's structure into a new draft so
+  // HR doesn't start from scratch.  Satisfies the Phase-1 "Clone
+  // Templates" requirement for every template type.
+  const startClone = (t) => {
+    const data = JSON.parse(JSON.stringify(t));
+    delete data._id; delete data.createdAt; delete data.updatedAt;
+    data.title = `${data.title || 'Untitled'} (Copy)`;
+    setModal({ mode: 'create', data });
   };
 
   return (
@@ -86,7 +112,8 @@ export default function Templates({ embedded = false } = {}) {
         <div className="flex gap-2 flex-wrap">
           <button className="btn-secondary" onClick={() => startCreate('task')}>+ Task Template</button>
           <button className="btn-secondary" onClick={() => startCreate('excel')}>+ Excel Report Template</button>
-          <button className="btn-primary" onClick={() => startCreate('sheet')}>+ Spreadsheet Template</button>
+          <button className="btn-secondary" onClick={() => startCreate('sheet')}>+ Spreadsheet Template</button>
+          <button className="btn-primary"   onClick={() => startCreate('custom')}>+ Custom Assignment Template</button>
         </div>
       </div>
 
@@ -99,6 +126,8 @@ export default function Templates({ embedded = false } = {}) {
             ? `${t.excelColumns?.length || 0} field(s) • ${(t.excelColumns || []).filter((c) => c.markEligible).reduce((s, c) => s + (c.maxMarks || 0), 0)} total marks`
             : t.templateType === 'sheet'
             ? `${t.sheet?.rowCount || 0}×${t.sheet?.colCount || 0} grid • ${(t.sheet?.scoring || []).length} scoring target(s) • ${totalSheetMarks(t.sheet?.scoring)} total marks`
+            : t.templateType === 'custom'
+            ? `${(t.customFields || []).length} field(s)${t.customKind ? ` • kind: ${t.customKind}` : ''}${t.isActive === false ? ' • inactive' : ''}`
             : `${t.tasks.length} task(s) • ${t.tasks.reduce((s, x) => s + (x.points || 0), 0)} total points`;
           const usageSub = st.total > 0
             ? ` • ${st.total} assignment(s) (${st.active} active, ${st.total - st.active} paused) • ${[...st.freq].join(', ')}`
@@ -113,6 +142,8 @@ export default function Templates({ embedded = false } = {}) {
                   ? <span className="badge-blue">Excel Report</span>
                   : t.templateType === 'sheet'
                   ? <span className="badge-green">Spreadsheet</span>
+                  : t.templateType === 'custom'
+                  ? <span className="badge bg-indigo-50 text-indigo-700">Custom</span>
                   : <span className="badge-gray">Task</span>}
                 {st.total > 0 && <span className="badge-amber">{st.total} assigned</span>}
               </span>
@@ -120,6 +151,7 @@ export default function Templates({ embedded = false } = {}) {
             subtitle={baseSub + usageSub}
             right={<div className="flex gap-1">
               <button className="btn-ghost" onClick={() => setModal({ mode: 'edit', data: t })}>Edit</button>
+              <button className="btn-ghost" onClick={() => startClone(t)}>Clone</button>
               <button className="btn-ghost text-red-600" onClick={() => del(t._id)}>Delete</button>
             </div>}
           >
@@ -127,6 +159,8 @@ export default function Templates({ embedded = false } = {}) {
               ? <ExcelColumnsPreview cols={t.excelColumns} />
               : t.templateType === 'sheet'
               ? <SheetGrid sheet={t.sheet} mode="readonly" showHidden scoreMap={buildScoreMap(t.sheet?.scoring)} height={260} />
+              : t.templateType === 'custom'
+              ? <CustomFieldsPreview tpl={t} />
               : <TaskPreview tasks={t.tasks} />}
           </Collapsible>
         ); })}
@@ -136,8 +170,139 @@ export default function Templates({ embedded = false } = {}) {
         ? <ExcelTemplateForm modal={modal} setModal={setModal} onSave={save} />
         : modal.data.templateType === 'sheet'
         ? <SheetTemplateForm modal={modal} setModal={setModal} onSave={save} />
+        : modal.data.templateType === 'custom'
+        ? <CustomTemplateForm modal={modal} setModal={setModal} onSave={save} />
         : <TaskTemplateForm modal={modal} setModal={setModal} onSave={save} />)}
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Custom Assignment template -- read-only preview + metadata editor.  */
+/*                                                                     */
+/* The visual field-builder ships as a follow-up.  For now HR can:     */
+/*   - View every defined field (name, type, group, formula, required, */
+/*     visibility) in a clean table.                                   */
+/*   - Edit the metadata (title / description / kind / active flag).   */
+/*   - Clone an existing custom template (from the Templates list) so  */
+/*     they get the field structure as a starting point.               */
+/* ------------------------------------------------------------------ */
+function CustomFieldsPreview({ tpl }) {
+  const fields = (tpl.customFields || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  if (fields.length === 0) {
+    return (
+      <div className="text-sm text-slate-500 italic">
+        No fields defined yet. Use Clone on an existing custom template (e.g. Daily Calling Report) to copy its structure, or wait for the visual field builder.
+      </div>
+    );
+  }
+  // Group fields by their `group` for readability.
+  const groups = [];
+  const seen = new Map();
+  for (const f of fields) {
+    const g = f.group || 'General';
+    if (!seen.has(g)) { seen.set(g, groups.length); groups.push({ name: g, items: [] }); }
+    groups[seen.get(g)].items.push(f);
+  }
+  return (
+    <div className="space-y-3">
+      {tpl.customKind && (
+        <div className="text-[12px] text-slate-600">
+          Analytics kind: <code className="px-1 py-0.5 bg-slate-100 rounded">{tpl.customKind}</code>
+          {tpl.customKind === 'calling' && <span className="ml-2 text-slate-500">(surfaced in Performance → Calling Analytics)</span>}
+        </div>
+      )}
+      {groups.map((g) => (
+        <div key={g.name} className="rounded-lg border border-slate-200">
+          <div className="px-3 py-2 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-700">{g.name}</div>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Label</th><th>Key</th><th>Type</th>
+                <th>Required</th><th>Visible To</th><th>Formula</th>
+              </tr>
+            </thead>
+            <tbody>
+              {g.items.map((f) => (
+                <tr key={f.key}>
+                  <td className="font-medium text-slate-800">{f.label}</td>
+                  <td className="font-mono text-[11px] text-slate-500">{f.key}</td>
+                  <td><span className="badge-gray">{f.fieldType}</span></td>
+                  <td>{f.required ? <span className="badge-amber">required</span> : <span className="text-slate-400">-</span>}</td>
+                  <td className="text-[11px] text-slate-600">{(f.visibleTo || []).join(', ') || 'everyone'}</td>
+                  <td className="font-mono text-[11px] text-slate-600">
+                    {f.formula ? f.formula : f.systemGenerated ? <span className="text-indigo-600">system-generated</span> : <span className="text-slate-300">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CustomTemplateForm({ modal, setModal, onSave }) {
+  const form = modal.data;
+  const set = (k, v) => setModal({ ...modal, data: { ...form, [k]: v } });
+  return (
+    <Modal
+      open
+      size="lg"
+      onClose={() => setModal(null)}
+      title={modal.mode === 'create' ? 'Create Custom Assignment Template' : `Edit ${form.title || 'Custom Template'}`}
+      footer={<>
+        <button className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
+        <button className="btn-primary" onClick={() => onSave(form)}>Save</button>
+      </>}
+    >
+      <div className="space-y-3">
+        <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3 text-[12px] text-indigo-800">
+          Custom Assignments are field-driven reports (Calling, Site Visit, Dealer Visit, Dispatch, etc.) with auto-calculated KPIs.
+          The visual <b>field builder</b> ships in a follow-up; for now you can edit metadata and clone existing custom templates
+          (use <b>Clone</b> on a row) to inherit their field structure.
+        </div>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div>
+            <label className="label">Title</label>
+            <input className="input" value={form.title || ''} onChange={(e) => set('title', e.target.value)} placeholder="e.g. Daily Calling Report" />
+          </div>
+          <div>
+            <label className="label">Analytics Kind</label>
+            <input
+              className="input"
+              value={form.customKind || ''}
+              onChange={(e) => set('customKind', e.target.value.trim().toLowerCase())}
+              placeholder="e.g. calling, site_visit, dealer_visit"
+            />
+            <div className="text-[11px] text-slate-500 mt-1">Used by Performance Analytics to discover this template's data.</div>
+          </div>
+        </div>
+        <div>
+          <label className="label">Description</label>
+          <textarea
+            className="input"
+            rows={2}
+            value={form.description || ''}
+            onChange={(e) => set('description', e.target.value)}
+            placeholder="Short description for HR and employees"
+          />
+        </div>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={form.isActive !== false} onChange={(e) => set('isActive', e.target.checked)} />
+          Active (assignable to employees)
+        </label>
+        {(form.customFields || []).length > 0 && (
+          <>
+            <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide pt-2">
+              Fields ({(form.customFields || []).length}) — read-only preview
+            </div>
+            <CustomFieldsPreview tpl={form} />
+          </>
+        )}
+      </div>
+    </Modal>
   );
 }
 

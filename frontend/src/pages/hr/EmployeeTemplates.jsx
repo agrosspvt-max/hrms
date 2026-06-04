@@ -6,7 +6,7 @@ import ScheduleTag from '../../components/ScheduleTag.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { fmtDate, errMsg } from '../../utils/helpers';
 
-const TYPE_LABEL = { task: 'Task', excel: 'Excel', sheet: 'Spreadsheet' };
+const TYPE_LABEL = { task: 'Task', excel: 'Excel', sheet: 'Spreadsheet', custom: 'Custom' };
 const PRIORITY_CLS = { high: 'badge-red', normal: 'badge-gray', low: 'badge-blue' };
 const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
@@ -104,7 +104,7 @@ export default function EmployeeTemplates({ employee }) {
               {assignments.map((a) => (
                 <tr key={a._id}>
                   <td className="font-medium text-slate-900">{a.template?.title || '—'}</td>
-                  <td><span className="badge-gray">{TYPE_LABEL[a.template?.templateType] || 'Task'}</span></td>
+                  <td><span className="badge-gray">{TYPE_LABEL[a.template?.templateType] || a.template?.templateType || '—'}</span></td>
                   <td><ScheduleTag frequency={a.frequency} label={a.scheduleLabel} /></td>
                   <td className="text-xs text-slate-500">{fmtDate(a.createdAt)}</td>
                   <td>
@@ -173,7 +173,7 @@ function AssignmentModal({ mode, initial, templates, onCancel, onSave }) {
             <select className="input" value={f.template} onChange={(e) => set('template', e.target.value)}>
               <option value="">Select a template…</option>
               {filtered.map((t) => (
-                <option key={t._id} value={t._id}>{t.title} · {TYPE_LABEL[t.templateType] || 'Task'}</option>
+                <option key={t._id} value={t._id}>{t.title} · {TYPE_LABEL[t.templateType] || t.templateType || '—'}</option>
               ))}
             </select>
           </div>

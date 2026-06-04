@@ -108,8 +108,11 @@ const get = asyncHandler(async (req, res) => {
  * Normalise the incoming body so we never persist a mismatched shape -
  * task templates shouldn't carry excel columns, and vice-versa.
  */
+const CUSTOM_FIELD_TYPES = ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date'];
+const CUSTOM_VISIBLE_ROLES = ['employee', 'hod', 'hr', 'super_admin'];
+
 const normalisePayload = (body) => {
-  const type = ['excel', 'sheet'].includes(body.templateType) ? body.templateType : 'task';
+  const type = ['excel', 'sheet', 'custom'].includes(body.templateType) ? body.templateType : 'task';
   const out = {
     title: body.title,
     description: body.description || '',
@@ -117,9 +120,12 @@ const normalisePayload = (body) => {
     tasks: [],
     excelColumns: [],
     sheet: undefined,
+    customFields: [],
+    customKind: '',
+    isActive: body.isActive !== false,
     // Status tracking (Done / Pending / Work Not Available + dependency
     // hand-off) only applies to excel + sheet templates.
-    statusTracking: type !== 'task' ? !!body.statusTracking : false,
+    statusTracking: type !== 'task' && type !== 'custom' ? !!body.statusTracking : false,
   };
   if (type === 'task') {
     out.tasks = Array.isArray(body.tasks) ? body.tasks : [];
@@ -132,9 +138,25 @@ const normalisePayload = (body) => {
       options: Array.isArray(c.options) ? c.options.map((o) => String(o).trim()).filter(Boolean) : [],
       hint: c.hint || '',
     })).filter((c) => c.fieldName);
-  } else {
-    // sheet
+  } else if (type === 'sheet') {
     out.sheet = normaliseSheet(body.sheet);
+  } else if (type === 'custom') {
+    out.customKind = String(body.customKind || '').trim().toLowerCase();
+    out.customFields = (Array.isArray(body.customFields) ? body.customFields : []).map((f) => ({
+      key:    String(f.key || '').trim(),
+      label:  String(f.label || '').trim(),
+      fieldType: CUSTOM_FIELD_TYPES.includes(f.fieldType) ? f.fieldType : 'number',
+      required: !!f.required,
+      options:  Array.isArray(f.options) ? f.options.map((o) => String(o).trim()).filter(Boolean) : [],
+      group:    String(f.group || '').trim(),
+      description: String(f.description || '').trim(),
+      formula:  String(f.formula || '').trim(),
+      systemGenerated: !!f.systemGenerated,
+      visibleTo: Array.isArray(f.visibleTo)
+        ? f.visibleTo.filter((r) => CUSTOM_VISIBLE_ROLES.includes(r))
+        : CUSTOM_VISIBLE_ROLES.slice(),
+      order: Number(f.order) || 0,
+    })).filter((f) => f.key && f.label);
   }
   return out;
 };

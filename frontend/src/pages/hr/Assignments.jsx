@@ -146,7 +146,7 @@ export default function Assignments({ embedded = false } = {}) {
           {designations.map((d) => <option key={d._id} value={d._id}>{d.title}</option>)}
         </select>
         <select className="input" value={fType} onChange={(e) => setFType(e.target.value)}>
-          <option value="">All types</option><option value="task">Task</option><option value="excel">Excel</option><option value="sheet">Spreadsheet</option>
+          <option value="">All types</option><option value="task">Task</option><option value="excel">Excel</option><option value="sheet">Spreadsheet</option><option value="custom">Custom</option>
         </select>
         <select className="input" value={fRecurrence} onChange={(e) => setFRecurrence(e.target.value)}>
           <option value="">All recurrences</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="one-time">One-time</option>
@@ -336,7 +336,18 @@ function AssignmentDetailDrawer({ detail, onClose, resolveTarget }) {
       {a && (
         <div className="space-y-4">
           <div className="grid sm:grid-cols-2 gap-4 text-sm">
-            <div><span className="text-slate-400">Template:</span> <b>{a.template?.title}</b> <span className="badge-gray ml-1 capitalize">{a.template?.templateType || 'task'}</span></div>
+            <div>
+              <span className="text-slate-400">Template:</span> <b>{a.template?.title}</b>{' '}
+              {(() => {
+                const tt = a.template?.templateType || 'task';
+                const cls = tt === 'excel' ? 'badge-blue'
+                  : tt === 'sheet' ? 'badge-green'
+                  : tt === 'custom' ? 'badge bg-indigo-50 text-indigo-700'
+                  : 'badge-gray';
+                const label = tt === 'custom' ? 'Custom' : tt.charAt(0).toUpperCase() + tt.slice(1);
+                return <span className={`${cls} ml-1`}>{label}</span>;
+              })()}
+            </div>
             <div><span className="text-slate-400">Target:</span> <span className="capitalize">{a.targetType}</span> — <b>{resolveTarget ? resolveTarget(a) : ''}</b></div>
             <div><span className="text-slate-400">Schedule:</span> <ScheduleTag frequency={a.frequency} label={a.scheduleLabel} /></div>
             <div><span className="text-slate-400">Active:</span> {a.active ? <span className="badge-green">Yes</span> : <span className="badge-gray">No</span>}</div>
