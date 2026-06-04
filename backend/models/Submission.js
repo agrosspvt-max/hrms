@@ -172,10 +172,14 @@ const submissionSchema = new mongoose.Schema(
     // to repopulate the template just to branch on type.
     templateType: {
       type: String,
-      enum: ['task', 'excel', 'sheet'],
+      enum: ['task', 'excel', 'sheet', 'custom'],
       default: 'task',
       index: true,
     },
+
+    // Custom kind cached from the template (e.g. 'calling') so analytics
+    // can scope by domain without re-populating the template document.
+    customKind: { type: String, default: '', index: true },
 
     // Recurrence info cached from the assignment at creation time so every
     // surface that shows a submission (dashboard, reviews, backlog) can
@@ -200,6 +204,22 @@ const submissionSchema = new mongoose.Schema(
     tasks: { type: [submissionTaskSchema], default: [] },
     excelResponses: { type: [excelResponseSchema], default: [] },
     sheet: { type: submissionSheetSchema, default: undefined },
+
+    /* ---- Custom-template responses ----
+       Flat { key, value } pairs.  Auto fields are evaluated server-side
+       at submit and stored alongside employee-entered values so analytics
+       can read everything from one shape.  System-generated fields (e.g.
+       yesterdayPending) are populated by the daily engine. */
+    customResponses: {
+      type: [new mongoose.Schema(
+        {
+          key: { type: String, required: true },
+          value: { type: mongoose.Schema.Types.Mixed, default: '' },
+        },
+        { _id: false },
+      )],
+      default: [],
+    },
 
     submitted: { type: Boolean, default: false },
     submittedAt: { type: Date },

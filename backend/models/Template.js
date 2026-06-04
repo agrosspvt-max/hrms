@@ -144,6 +144,53 @@ const sheetSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/* ------------------------------------------------------------------ */
+/* Custom Assignment ('custom') schemas                               */
+/*                                                                    */
+/* Generic per-field builder so HR can spin up structured reports     */
+/* (Daily Calling Report, Site Visit, Dispatch, etc.) without code    */
+/* changes.  Each field has a stable `key` (used by formulas + the    */
+/* analytics layer), a type, role-based visibility, and -- for type   */
+/* 'auto' -- a formula string evaluated server-side at submit time.   */
+/*                                                                    */
+/* `kind` lets analytics pre-built dashboards (e.g. Calling) discover */
+/* their templates without hardcoding template IDs.  e.g. `kind:      */
+/* 'calling'` is the well-known kind the Calling Analytics tab reads. */
+/* ------------------------------------------------------------------ */
+const customFieldSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true, trim: true },   // stable id (e.g. 'attendedCalls')
+    label: { type: String, required: true, trim: true }, // HR-facing display name
+    fieldType: {
+      type: String,
+      enum: ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date'],
+      default: 'number',
+    },
+    required: { type: Boolean, default: false },
+    options: { type: [String], default: [] }, // dropdown options
+    group: { type: String, default: '' },     // visually groups fields in the form
+    description: { type: String, default: '' },
+    // Auto-calculated formula: a JS-like expression over other field
+    // keys, e.g. "yesterdayCallsCompleted + todayCallsCompleted".  Only
+    // arithmetic + parentheses are supported by the evaluator -- no
+    // function calls, no property access.
+    formula: { type: String, default: '' },
+    // System-managed fields (e.g. yesterdayPending) are populated by the
+    // daily engine on submission creation and are never employee-edited.
+    systemGenerated: { type: Boolean, default: false },
+    // Role visibility: which roles can SEE this field's value.  Hidden
+    // fields still get computed server-side; they just don't render.
+    visibleTo: {
+      type: [String],
+      enum: ['employee', 'hod', 'hr', 'super_admin'],
+      default: ['employee', 'hod', 'hr', 'super_admin'],
+    },
+    // Display ordering inside the form / report.
+    order: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 const templateSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true, index: true },
@@ -151,7 +198,7 @@ const templateSchema = new mongoose.Schema(
 
     templateType: {
       type: String,
-      enum: ['task', 'excel', 'sheet'],
+      enum: ['task', 'excel', 'sheet', 'custom'],
       default: 'task',
       index: true,
     },
@@ -164,6 +211,16 @@ const templateSchema = new mongoose.Schema(
 
     // Used when templateType === 'sheet'
     sheet: { type: sheetSchema, default: undefined },
+
+    // Used when templateType === 'custom'
+    customFields: { type: [customFieldSchema], default: [] },
+    // Well-known kind that targeted analytics surfaces (e.g. Calling
+    // Analytics) use to discover their templates.  Free-form for HR-
+    // authored custom templates; the seeded Daily Calling Report uses
+    // `kind: 'calling'`.
+    customKind: { type: String, default: '', index: true },
+    // Lifecycle toggle so HR can deactivate templates without deleting.
+    isActive: { type: Boolean, default: true },
 
     // When enabled (excel / sheet templates), each scored row gets a
     // Done / Pending / Work Not Available status dropdown + optional

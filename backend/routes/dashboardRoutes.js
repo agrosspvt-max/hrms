@@ -15,4 +15,9 @@ router.get('/hr/completion', authorize('hr'), analytics.completion);
 router.get('/hr/assignment-analytics', authorize('hr'), analytics.assignmentAnalytics);
 router.get('/hr/summary', authorize('hr'), c.hrSummary);
 
+// Calling Analytics (HR / SA / HOD via in-controller role scoping)
+router.get('/calling/analytics', analytics.callingAnalytics);
+// Employee self-view of their own calling KPIs.
+router.get('/calling/mine', analytics.myCallingAnalytics);
+
 module.exports = router;

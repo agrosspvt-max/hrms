@@ -65,7 +65,13 @@ export default function Performance() {
     if (templateType) params.templateType = templateType;
     if (recurrence) params.recurrence = recurrence;
     setLoading(true);
-    api.get(`/dashboard/hr/${mode}`, { params })
+    // Calling mode hits its own analytics endpoint (role-scoped at the
+    // controller).  Other modes keep their original pendency/completion
+    // endpoints unchanged.
+    const url = mode === 'calling'
+      ? '/dashboard/calling/analytics'
+      : `/dashboard/hr/${mode}`;
+    api.get(url, { params })
       .then(({ data }) => { setData(data); setLoading(false); })
       .catch(() => setLoading(false));
   }, [mode, range, from, to, department, designation, employee, templateType, recurrence]);
@@ -81,7 +87,7 @@ export default function Performance() {
 
       {/* Mode toggle */}
       <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
-        {[['pendency', 'Pendency Review'], ['completion', 'Completion Review']].map(([k, label]) => (
+        {[['pendency', 'Pendency Review'], ['completion', 'Completion Review'], ['calling', 'Calling Analytics']].map(([k, label]) => (
           <button key={k} onClick={() => { setMode(k); setData(null); }}
             className={`px-5 py-2 text-sm font-medium rounded-lg transition ${mode === k ? 'bg-white shadow text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
             {label}
@@ -139,9 +145,9 @@ export default function Performance() {
       </div>
 
       {loading || !data ? <Loader /> : (
-        mode === 'pendency'
-          ? <PendencyMode data={data} onDrill={openDrill} />
-          : <CompletionMode data={data} onDrill={openDrill} />
+        mode === 'pendency' ? <PendencyMode data={data} onDrill={openDrill} />
+        : mode === 'completion' ? <CompletionMode data={data} onDrill={openDrill} />
+        : <CallingMode data={data} />
       )}
 
       {drill && (
@@ -399,6 +405,157 @@ function Breakdown({ metricId, mode, data, navigate, onClose }) {
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/* ===================================================================== */
+/* CALLING ANALYTICS                                                     */
+/*                                                                       */
+/* Reads /dashboard/calling/analytics (role-scoped at the controller --   */
+/* HR / SA see everything they're allowed to filter; HOD is auto-scoped  */
+/* to their own department).                                              */
+/*                                                                       */
+/* Renders:                                                              */
+/*   - 8 KPI cards (assigned, completed, attended, unattended,           */
+/*     conversions + old/new, total pending)                              */
+/*   - Rate-strip (connection / conversion / pending / completion %)     */
+/*   - Six "Top callers by ..." leaderboards                              */
+/*   - Three "Bottom performers" leaderboards                             */
+/*   - Daily trend chart (calls / conversions / pending)                  */
+/*   - Per-employee summary table                                         */
+/* ===================================================================== */
+function CallingMode({ data }) {
+  const k = data.kpis || {};
+  const lb = data.leaderboards || {};
+  const trend = data.trend || [];
+  const employees = data.employees || [];
+
+  return (
+    <div className="space-y-6">
+      {/* 8 KPI cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard label="Total Assigned Calls"     value={k.totalAssignedCalls   ?? 0} accent="brand" />
+        <StatCard label="Total Calls Completed"    value={k.totalCallsCompleted  ?? 0} accent="green" />
+        <StatCard label="Total Attended Calls"     value={k.totalAttendedCalls   ?? 0} accent="blue" />
+        <StatCard label="Total Unattended Calls"   value={k.totalUnattendedCalls ?? 0} accent="amber" />
+        <StatCard label="Total Conversions"        value={k.totalConversions     ?? 0} accent="green" />
+        <StatCard label="Old Customer Conversions" value={k.oldConversions       ?? 0} accent="blue" />
+        <StatCard label="New Customer Conversions" value={k.newConversions       ?? 0} accent="green" />
+        <StatCard label="Total Pending Calls"      value={k.totalPendingCalls    ?? 0} accent="red" />
+      </div>
+
+      {/* Rate strip */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard label="Connection Rate"      value={`${k.connectionRate     ?? 0}%`} accent={(k.connectionRate     || 0) >= 60 ? 'green' : 'amber'} />
+        <StatCard label="Conversion Rate"      value={`${k.conversionRate     ?? 0}%`} accent={(k.conversionRate     || 0) >= 20 ? 'green' : 'amber'} />
+        <StatCard label="Pending Rate"         value={`${k.pendingRate        ?? 0}%`} accent={(k.pendingRate        || 0) <= 20 ? 'green' : 'red'} />
+        <StatCard label="Call Completion Rate" value={`${k.callCompletionRate ?? 0}%`} accent={(k.callCompletionRate || 0) >= 80 ? 'green' : 'amber'} />
+      </div>
+
+      {/* Daily trend chart */}
+      <ChartCard title="Daily Trend" subtitle="Calls, conversions, pending — per day across the filter range">
+        <AreaChart data={trend}>
+          <CartesianGrid stroke="#eef2f7" />
+          <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+          <YAxis tick={{ fontSize: 11 }} />
+          <Tooltip />
+          <Legend wrapperStyle={{ fontSize: 11 }} />
+          <Area type="monotone" dataKey="assigned"    stroke={BLUE}   fill={BLUE}   fillOpacity={0.18} name="Assigned" />
+          <Area type="monotone" dataKey="completed"   stroke={GREEN}  fill={GREEN}  fillOpacity={0.18} name="Completed" />
+          <Area type="monotone" dataKey="attended"    stroke={VIOLET} fill={VIOLET} fillOpacity={0.0}  name="Attended" />
+          <Area type="monotone" dataKey="conversions" stroke={AMBER}  fill={AMBER}  fillOpacity={0.0}  name="Conversions" />
+          <Area type="monotone" dataKey="pending"     stroke={RED}    fill={RED}    fillOpacity={0.0}  name="Pending" />
+        </AreaChart>
+      </ChartCard>
+
+      {/* Six "Top" leaderboards */}
+      <div>
+        <div className="text-sm font-semibold text-slate-800 mb-2">Top Callers</div>
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+          <Leaderboard title="By Calls Completed"    rows={lb.topCallsCompleted}   metric="totalCallsCompleted" suffix="" />
+          <Leaderboard title="By Conversion Rate"    rows={lb.topConversionRate}   metric="conversionRate"      suffix="%" />
+          <Leaderboard title="By New Customers"      rows={lb.topNewCustomers}     metric="newConversions"      suffix="" />
+          <Leaderboard title="By Total Conversions"  rows={lb.topTotalConversions} metric="totalConversions"    suffix="" />
+          <Leaderboard title="Lowest Pending Calls"  rows={lb.lowestPending}       metric="totalPending"        suffix="" accent="green" />
+          <Leaderboard title="Best Connection Rate"  rows={lb.bestConnectionRate}  metric="connectionRate"      suffix="%" />
+        </div>
+      </div>
+
+      {/* Three "Bottom" leaderboards */}
+      <div>
+        <div className="text-sm font-semibold text-slate-800 mb-2">Needs Attention</div>
+        <div className="grid md:grid-cols-3 gap-4">
+          <Leaderboard title="Highest Pending"       rows={lb.bottomHighestPending}    metric="totalPending"        suffix=""  accent="red" />
+          <Leaderboard title="Lowest Conversion"     rows={lb.bottomLowestConversion}  metric="conversionRate"      suffix="%" accent="red" />
+          <Leaderboard title="Lowest Call Completion" rows={lb.bottomLowestCompletion} metric="callCompletionRate" suffix="%" accent="red" />
+        </div>
+      </div>
+
+      {/* Per-employee summary table */}
+      <div className="card overflow-x-auto">
+        <div className="px-5 py-3 border-b border-slate-100 text-sm font-semibold text-slate-800">
+          Per-Employee Summary ({employees.length})
+        </div>
+        {employees.length === 0
+          ? <div className="p-5"><EmptyState title="No calling submissions in range" /></div>
+          : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Employee</th><th>Department</th>
+                  <th className="text-right">Assigned</th>
+                  <th className="text-right">Completed</th>
+                  <th className="text-right">Attended</th>
+                  <th className="text-right">Conversions</th>
+                  <th className="text-right">Pending</th>
+                  <th className="text-right">Conn %</th>
+                  <th className="text-right">Conv %</th>
+                  <th className="text-right">Pend %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {employees.map((r) => (
+                  <tr key={r._id}>
+                    <td className="font-medium text-slate-800">{r.name}<div className="text-[11px] text-slate-500">{r.employeeId}</div></td>
+                    <td>{r.department}</td>
+                    <td className="text-right">{r.assignedCalls}</td>
+                    <td className="text-right">{r.totalCallsCompleted}</td>
+                    <td className="text-right">{r.attendedCalls}</td>
+                    <td className="text-right">{r.totalConversions}</td>
+                    <td className={`text-right ${(r.totalPending || 0) > 0 ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>{r.totalPending}</td>
+                    <td className="text-right">{r.connectionRate}%</td>
+                    <td className="text-right">{r.conversionRate}%</td>
+                    <td className="text-right">{r.pendingRate}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+      </div>
+    </div>
+  );
+}
+
+/** Compact leaderboard card -- one row per employee with the named metric. */
+function Leaderboard({ title, rows = [], metric, suffix = '', accent }) {
+  const accentCls = accent === 'red' ? 'text-red-600' : accent === 'green' ? 'text-green-600' : 'text-slate-800';
+  return (
+    <div className="card card-body">
+      <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">{title}</div>
+      {rows.length === 0 ? <div className="text-xs text-slate-400 italic">No data in range.</div> : (
+        <ol className="space-y-1.5">
+          {rows.map((r, i) => (
+            <li key={r._id} className="flex items-center justify-between text-sm">
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="w-5 text-[11px] text-slate-400 text-right">{i + 1}.</span>
+                <span className="truncate text-slate-800">{r.name}</span>
+              </span>
+              <span className={`font-semibold ${accentCls}`}>{r[metric] ?? 0}{suffix}</span>
+            </li>
+          ))}
+        </ol>
+      )}
     </div>
   );
 }

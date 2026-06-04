@@ -603,4 +603,217 @@ const assignmentAnalytics = asyncHandler(async (_req, res) => {
   });
 });
 
-module.exports = { pendency, completion, assignmentAnalytics };
+/* ====================================================================== */
+/*  CALLING ANALYTICS                                                     */
+/*                                                                        */
+/*  Aggregates every submitted Custom Assignment with kind='calling'      */
+/*  in a [from, to) window, scoped by role:                               */
+/*    - HR / Super Admin: all departments (HR can filter by department)   */
+/*    - HOD: their team only (Super Admin override gives full view)       */
+/*    - employee (via /api/analytics/calling/mine): self only             */
+/*                                                                        */
+/*  Output is exactly what the Calling Analytics tab needs:               */
+/*    - kpis: { totalAssignedCalls, totalCallsCompleted, ... 8 metrics }  */
+/*    - leaderboards: top callers by 6 metrics, bottom by 3               */
+/*    - trend: per-day totals for sparkline / table rendering             */
+/*    - employees: per-employee rollup with all metrics                   */
+/* ====================================================================== */
+
+/** Sum a key across submission.customResponses (defaulting to 0). */
+const sumCustom = (subs, key) => {
+  let s = 0;
+  for (const sub of subs) {
+    const r = (sub.customResponses || []).find((x) => x.key === key);
+    s += Number(r?.value) || 0;
+  }
+  return s;
+};
+const safeRate = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : 0);
+
+const callingAnalytics = asyncHandler(async (req, res) => {
+  const { from, to } = resolveRange(req.query);
+
+  // ---- Role-scoped employee filter ----
+  const empWhere = { status: 'active' };
+  if (req.user.role === 'super_admin') {
+    // full org
+  } else if (req.user.role === 'hr') {
+    // full org (HR may filter via query)
+  } else if (req.user.isHOD && req.user.hodDepartment) {
+    empWhere.department = req.user.hodDepartment;
+  } else {
+    res.status(403);
+    throw new Error('Calling analytics is restricted to HR / Super Admin / HOD.');
+  }
+  if (req.query.department) empWhere.department = req.query.department;
+  if (req.query.designation) empWhere.designation = req.query.designation;
+  if (req.query.employee) empWhere._id = req.query.employee;
+  const employees = await User.find(empWhere)
+    .populate('department', 'name')
+    .populate('designation', 'title')
+    .lean();
+  const empMap = new Map(employees.map((e) => [String(e._id), e]));
+  const empIds = employees.map((e) => e._id);
+
+  // ---- Pull every submitted calling submission in range ----
+  const subs = await Submission.find({
+    submitted: true,
+    employee: { $in: empIds },
+    templateType: 'custom',
+    customKind: 'calling',
+    date: { $gte: from, $lt: to },
+  }).select('employee date customResponses').lean();
+
+  // ---- Headline KPIs (org-wide for the filtered scope) ----
+  const totalAssignedCalls    = sumCustom(subs, 'assignedCalls');
+  const totalCallsCompleted   = sumCustom(subs, 'totalCallsCompleted');
+  const totalAttendedCalls    = sumCustom(subs, 'attendedCalls');
+  const totalUnattendedCalls  = sumCustom(subs, 'unattendedCalls');
+  const totalConversions      = sumCustom(subs, 'totalConversions');
+  const oldConversions        = sumCustom(subs, 'oldCustomerConversions');
+  const newConversions        = sumCustom(subs, 'newCustomerConversions');
+  const totalPendingCalls     = sumCustom(subs, 'totalPending');
+
+  const kpis = {
+    totalAssignedCalls,
+    totalCallsCompleted,
+    totalAttendedCalls,
+    totalUnattendedCalls,
+    totalConversions,
+    oldConversions,
+    newConversions,
+    totalPendingCalls,
+    connectionRate:    safeRate(totalAttendedCalls, totalCallsCompleted),
+    conversionRate:    safeRate(totalConversions,   totalAttendedCalls),
+    pendingRate:       safeRate(totalPendingCalls,  totalAssignedCalls),
+    callCompletionRate: safeRate(totalCallsCompleted, totalAssignedCalls),
+  };
+
+  // ---- Per-employee rollup ----
+  const perEmp = new Map();
+  for (const sub of subs) {
+    const k = String(sub.employee);
+    if (!perEmp.has(k)) perEmp.set(k, {
+      assignedCalls: 0, totalCallsCompleted: 0, attendedCalls: 0,
+      unattendedCalls: 0, totalConversions: 0,
+      oldConversions: 0, newConversions: 0, totalPending: 0,
+      submissions: 0,
+    });
+    const m = perEmp.get(k);
+    const r = (key) => Number((sub.customResponses || []).find((x) => x.key === key)?.value) || 0;
+    m.assignedCalls       += r('assignedCalls');
+    m.totalCallsCompleted += r('totalCallsCompleted');
+    m.attendedCalls       += r('attendedCalls');
+    m.unattendedCalls     += r('unattendedCalls');
+    m.totalConversions    += r('totalConversions');
+    m.oldConversions      += r('oldCustomerConversions');
+    m.newConversions      += r('newCustomerConversions');
+    m.totalPending        += r('totalPending');
+    m.submissions         += 1;
+  }
+  const employeeRows = [];
+  for (const [k, m] of perEmp.entries()) {
+    const e = empMap.get(k);
+    if (!e) continue;
+    employeeRows.push({
+      _id: k,
+      name: e.name,
+      employeeId: e.employeeId,
+      department: e.department?.name || 'Unassigned',
+      designation: e.designation?.title || 'Unassigned',
+      ...m,
+      connectionRate:    safeRate(m.attendedCalls, m.totalCallsCompleted),
+      conversionRate:    safeRate(m.totalConversions, m.attendedCalls),
+      pendingRate:       safeRate(m.totalPending, m.assignedCalls),
+      callCompletionRate: safeRate(m.totalCallsCompleted, m.assignedCalls),
+    });
+  }
+
+  // ---- Leaderboards (top N, descending unless noted) ----
+  const sortDesc = (arr, key) => [...arr].sort((a, b) => (b[key] || 0) - (a[key] || 0));
+  const sortAsc  = (arr, key) => [...arr].sort((a, b) => (a[key] || 0) - (b[key] || 0));
+  const top = (arr, key, n = 5, dir = 'desc') => (dir === 'asc' ? sortAsc(arr, key) : sortDesc(arr, key)).slice(0, n);
+  const leaderboards = {
+    topCallsCompleted:    top(employeeRows, 'totalCallsCompleted'),
+    topConversionRate:    top(employeeRows.filter((r) => r.attendedCalls >= 1), 'conversionRate'),
+    topNewCustomers:      top(employeeRows, 'newConversions'),
+    topTotalConversions:  top(employeeRows, 'totalConversions'),
+    lowestPending:        top(employeeRows.filter((r) => r.assignedCalls >= 1), 'totalPending', 5, 'asc'),
+    bestConnectionRate:   top(employeeRows.filter((r) => r.totalCallsCompleted >= 1), 'connectionRate'),
+    bottomHighestPending: top(employeeRows.filter((r) => r.assignedCalls >= 1), 'totalPending'),
+    bottomLowestConversion: top(employeeRows.filter((r) => r.attendedCalls >= 1), 'conversionRate', 5, 'asc'),
+    bottomLowestCompletion: top(employeeRows.filter((r) => r.assignedCalls >= 1), 'callCompletionRate', 5, 'asc'),
+  };
+
+  // ---- Per-day trend (org-wide totals for the filter) ----
+  const perDay = new Map();
+  for (const sub of subs) {
+    const dk = formatYMD(sub.date);
+    if (!perDay.has(dk)) perDay.set(dk, { date: dk, assigned: 0, completed: 0, attended: 0, conversions: 0, pending: 0 });
+    const m = perDay.get(dk);
+    const r = (key) => Number((sub.customResponses || []).find((x) => x.key === key)?.value) || 0;
+    m.assigned    += r('assignedCalls');
+    m.completed   += r('totalCallsCompleted');
+    m.attended    += r('attendedCalls');
+    m.conversions += r('totalConversions');
+    m.pending     += r('totalPending');
+  }
+  const trend = [...perDay.values()].sort((a, b) => a.date.localeCompare(b.date));
+
+  res.json({
+    range: { from, to },
+    kpis,
+    leaderboards,
+    employees: employeeRows.sort((a, b) => (b.totalCallsCompleted || 0) - (a.totalCallsCompleted || 0)),
+    trend,
+  });
+});
+
+/**
+ * GET /api/analytics/calling/mine
+ * Employee self-view of their calling performance over the same range.
+ * Returns the same shape minus org-wide leaderboards.
+ */
+const myCallingAnalytics = asyncHandler(async (req, res) => {
+  const { from, to } = resolveRange(req.query);
+  const subs = await Submission.find({
+    submitted: true,
+    employee: req.user._id,
+    templateType: 'custom',
+    customKind: 'calling',
+    date: { $gte: from, $lt: to },
+  }).select('date customResponses').lean();
+
+  const totalAssignedCalls    = sumCustom(subs, 'assignedCalls');
+  const totalCallsCompleted   = sumCustom(subs, 'totalCallsCompleted');
+  const totalAttendedCalls    = sumCustom(subs, 'attendedCalls');
+  const totalConversions      = sumCustom(subs, 'totalConversions');
+  const totalPendingCalls     = sumCustom(subs, 'totalPending');
+
+  const perDay = new Map();
+  for (const sub of subs) {
+    const dk = formatYMD(sub.date);
+    if (!perDay.has(dk)) perDay.set(dk, { date: dk, assigned: 0, completed: 0, attended: 0, conversions: 0, pending: 0 });
+    const m = perDay.get(dk);
+    const r = (key) => Number((sub.customResponses || []).find((x) => x.key === key)?.value) || 0;
+    m.assigned    += r('assignedCalls');
+    m.completed   += r('totalCallsCompleted');
+    m.attended    += r('attendedCalls');
+    m.conversions += r('totalConversions');
+    m.pending     += r('totalPending');
+  }
+  res.json({
+    range: { from, to },
+    kpis: {
+      totalAssignedCalls, totalCallsCompleted, totalAttendedCalls,
+      totalConversions, totalPendingCalls,
+      connectionRate:    safeRate(totalAttendedCalls, totalCallsCompleted),
+      conversionRate:    safeRate(totalConversions,   totalAttendedCalls),
+      pendingRate:       safeRate(totalPendingCalls,  totalAssignedCalls),
+      callCompletionRate: safeRate(totalCallsCompleted, totalAssignedCalls),
+    },
+    trend: [...perDay.values()].sort((a, b) => a.date.localeCompare(b.date)),
+  });
+});
+
+module.exports = { pendency, completion, assignmentAnalytics, callingAnalytics, myCallingAnalytics };

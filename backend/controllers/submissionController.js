@@ -134,7 +134,7 @@ const getToday = asyncHandler(async (req, res) => {
   const submissions = await Submission.find({
     employee: employee._id,
     date: today,
-  }).populate('template', 'title');
+  }).populate('template', 'title customFields customKind');
 
   // Effective working status: if HR pushed override work onto a weekly-off
   // or holiday, today is a working day for the employee -- otherwise the
@@ -173,7 +173,7 @@ const getToday = asyncHandler(async (req, res) => {
 const VALID_FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 
 const submitOne = asyncHandler(async (req, res) => {
-  const { tasks = [], addedTasks = [], excelResponses = [], sheet, selfRating, selfNote, idea } = req.body;
+  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], selfRating, selfNote, idea } = req.body;
   const sub = await Submission.findOne({ _id: req.params.id, employee: req.user._id });
   if (!sub) { res.status(404); throw new Error('Submission not found'); }
   if (sub.submitted) { res.status(400); throw new Error('Submission already submitted for today'); }
@@ -309,6 +309,45 @@ const submitOne = asyncHandler(async (req, res) => {
       });
     }
     sub.markModified('sheet');
+  } else if (sub.templateType === 'custom') {
+    /* ---- Custom Assignment submit ----
+       Reads the employee-entered values, validates required fields,
+       resolves all `auto` formulas server-side, and persists the full
+       responses array.  Scoring follows the existing pattern: workEarned
+       starts at 0 (HR awards discipline + idea marks during review).
+       The `yesterdayPending` field is system-generated -- always
+       preserved from what the daily engine seeded, never overwritten by
+       the client. */
+    const { computeAutoFields } = require('../services/customTemplate');
+    const tpl = await Template.findById(sub.template).select('customFields customKind');
+    if (!tpl || !Array.isArray(tpl.customFields)) {
+      res.status(400);
+      throw new Error('Custom template is missing field definitions.');
+    }
+    // Build a working map from the incoming responses; respect
+    // system-generated fields by overlaying their seeded values from sub.
+    const incoming = {};
+    (customResponses || []).forEach((r) => { if (r && r.key) incoming[r.key] = r.value; });
+    (sub.customResponses || []).forEach((r) => {
+      const def = tpl.customFields.find((f) => f.key === r.key);
+      if (def && def.systemGenerated) incoming[r.key] = r.value;
+    });
+    // Validate: required + employee-editable fields must be present.
+    for (const f of tpl.customFields) {
+      if (!f.required) continue;
+      if (f.systemGenerated || f.fieldType === 'auto' || f.fieldType === 'readonly') continue;
+      const v = incoming[f.key];
+      if (v === undefined || v === null || v === '') {
+        res.status(400);
+        throw new Error(`Required field missing: ${f.label}`);
+      }
+    }
+    const evaluated = computeAutoFields(tpl, incoming);
+    sub.customResponses = evaluated;
+    sub.customKind = tpl.customKind || sub.customKind || '';
+    sub.markModified('customResponses');
+    total = 0; // custom templates earn marks via HR review (discipline + idea)
+    earned = 0;
   } else {
     const updateMap = new Map(tasks.map((t) => [String(t.taskId), t]));
 

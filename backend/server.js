@@ -109,6 +109,11 @@ const syncSalaryIndexes = async () => {
 const start = async () => {
   await connectDB();
   try { await syncSalaryIndexes(); } catch (e) { console.error('[migrate] salary period migration failed:', e.message); }
+  // Seed default Custom Assignment templates (idempotent).
+  try {
+    const { seedDefaultCallingTemplate } = require('./services/customTemplate');
+    await seedDefaultCallingTemplate();
+  } catch (e) { console.error('[seed] custom template seed failed:', e.message); }
   // Fire-and-forget SMTP self-check.  Result is logged for debugging;
   // never blocks the HTTP listener from coming up.
   try {

@@ -10,6 +10,38 @@ import ScheduleTag from '../../components/ScheduleTag.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { delayBadgeClass, delayLabel, errMsg, fmtDate } from '../../utils/helpers';
 
+/* ------------------------------------------------------------------ */
+/* Tiny client-side mirror of the backend formula evaluator.           */
+/* Same alphabet whitelist + key substitution.  Used only for the live */
+/* preview as the employee types; the server re-evaluates on submit.   */
+/* ------------------------------------------------------------------ */
+const CUSTOM_SAFE_RE = /^[\s\d+\-*/().a-zA-Z_]+$/;
+const customEval = (expr, values) => {
+  if (!expr || !CUSTOM_SAFE_RE.test(expr)) return 0;
+  let s = expr;
+  const keys = Object.keys(values).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    const v = Number(values[k]) || 0;
+    s = s.replace(new RegExp(`\\b${k}\\b`, 'g'), `(${v})`);
+  }
+  s = s.replace(/[a-zA-Z_][a-zA-Z0-9_]*/g, '0');
+  try {
+    // eslint-disable-next-line no-new-func
+    const out = Number(new Function(`"use strict"; return (${s});`)());
+    return Number.isFinite(out) ? out : 0;
+  } catch (_) { return 0; }
+};
+const customCompute = (fields, raw) => {
+  const ctx = { ...raw };
+  const ordered = (fields || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  for (const f of ordered) {
+    if (f.fieldType === 'auto' && f.formula) ctx[f.key] = customEval(f.formula, ctx);
+    else if (f.fieldType === 'number') ctx[f.key] = Number(ctx[f.key]) || 0;
+    else if (ctx[f.key] === undefined) ctx[f.key] = '';
+  }
+  return ctx;
+};
+
 export default function EmployeeDashboard({ embedded = false } = {}) {
   const [data, setData] = useState(null);
   const [summary, setSummary] = useState(null);
@@ -23,6 +55,8 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   // Employee-added tasks per submission: title-only rows the employee
   // can append.  Marks come later from HR review.
   const [addedTasks, setAddedTasks] = useState({}); // { subId: [{ title }] }
+  // Custom-template field values per submission: { subId: { key: value } }.
+  const [customValues, setCustomValues] = useState({});
   const [sheetState, setSheetState] = useState({}); // { subId: workingSheet }
   // Per-row task status for sheet "task rows" (scored rows with statusTracking)
   // { subId: { [scoreKey]: { rowStatus, pendingReason, dependencyType, dependencyAssignedTo, dependencyRemark } } }
@@ -55,11 +89,18 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     ]);
     // Seed editable working copies for unsubmitted sheet reports.
     const seed = {};
+    const customSeed = {};
     (a.data.submissions || []).forEach((s) => {
       if (s.templateType === 'sheet' && !s.submitted && s.sheet) {
         seed[s._id] = JSON.parse(JSON.stringify(s.sheet));
       }
+      if (s.templateType === 'custom' && !s.submitted) {
+        const ctx = {};
+        (s.customResponses || []).forEach((r) => { ctx[r.key] = r.value; });
+        customSeed[s._id] = ctx;
+      }
     });
+    setCustomValues((prev) => ({ ...customSeed, ...prev }));
     setSheetState(seed);
     setData(a.data);
     setSummary(b.data);
@@ -161,6 +202,29 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         }));
         await api.post(`/submissions/${sub._id}/submit`, {
           excelResponses: responses,
+          selfRating: selfRating[sub._id],
+          selfNote: selfNote[sub._id],
+          idea: idea[sub._id],
+        });
+      } else if (sub.templateType === 'custom') {
+        // Custom Assignment: send the employee-entered values; backend
+        // will resolve `auto` formulas and validate `required` fields.
+        const fields = sub.template?.customFields || [];
+        const raw = customValues[sub._id] || {};
+        // Required-field guard (matches backend); skip system / auto / readonly.
+        for (const f of fields) {
+          if (!f.required) continue;
+          if (f.systemGenerated || f.fieldType === 'auto' || f.fieldType === 'readonly') continue;
+          const v = raw[f.key];
+          if (v === undefined || v === null || v === '') {
+            toast.error(`Required field missing: ${f.label}`);
+            setBusy(false);
+            return;
+          }
+        }
+        const payload = Object.entries(raw).map(([key, value]) => ({ key, value }));
+        await api.post(`/submissions/${sub._id}/submit`, {
+          customResponses: payload,
           selfRating: selfRating[sub._id],
           selfNote: selfNote[sub._id],
           idea: idea[sub._id],
@@ -407,6 +471,25 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
             >
               {sub.submitted ? (
                 <SubmittedSummary sub={sub} />
+              ) : sub.templateType === 'custom' ? (
+                <CustomTemplateForm
+                  sub={sub}
+                  values={customValues[sub._id] || {}}
+                  onChange={(key, value) =>
+                    setCustomValues((s) => ({
+                      ...s,
+                      [sub._id]: { ...(s[sub._id] || {}), [key]: value },
+                    }))
+                  }
+                  selfRating={selfRating[sub._id]}
+                  setSelfRating={(v) => setSelfRating((s) => ({ ...s, [sub._id]: v }))}
+                  selfNote={selfNote[sub._id]}
+                  setSelfNote={(v) => setSelfNote((s) => ({ ...s, [sub._id]: v }))}
+                  idea={idea[sub._id]}
+                  setIdea={(v) => setIdea((s) => ({ ...s, [sub._id]: v }))}
+                  busy={busy}
+                  onSubmit={() => submit(sub)}
+                />
               ) : sub.templateType === 'sheet' ? (
                 <>
                   <SheetReportForm
@@ -747,6 +830,131 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
 }
 
 /**
+ * Custom-template form.  Renders fields grouped by `field.group`,
+ * ordered by `field.order`.  Live-computes `auto` fields against the
+ * current employee inputs using customCompute() (same shape as the
+ * server-side evaluator); `readonly` / `auto` / `systemGenerated`
+ * fields render as muted, non-editable values so the employee sees
+ * the running calculation.
+ *
+ * Visibility: only fields with 'employee' in `visibleTo` render here.
+ */
+function CustomTemplateForm({ sub, values, onChange, selfRating, setSelfRating, selfNote, setSelfNote, idea, setIdea, busy, onSubmit }) {
+  const fields = (sub.template?.customFields || [])
+    .filter((f) => !f.visibleTo || f.visibleTo.includes('employee'))
+    .slice()
+    .sort((a, b) => (a.order || 0) - (b.order || 0));
+
+  // Live-derived view including auto fields.
+  const computed = customCompute(sub.template?.customFields || [], values);
+
+  // Bucket fields by group, preserving order.
+  const groups = [];
+  const seen = new Map();
+  for (const f of fields) {
+    const g = f.group || 'General';
+    if (!seen.has(g)) { seen.set(g, groups.length); groups.push({ name: g, items: [] }); }
+    groups[seen.get(g)].items.push(f);
+  }
+
+  const renderField = (f) => {
+    const isEditable = f.fieldType !== 'auto' && f.fieldType !== 'readonly' && !f.systemGenerated;
+    const valueForDisplay = computed[f.key];
+
+    if (!isEditable) {
+      // Read-only / auto / system field: show the live-computed value.
+      const display = typeof valueForDisplay === 'number'
+        ? (Number.isInteger(valueForDisplay) ? valueForDisplay : valueForDisplay.toFixed(1))
+        : (valueForDisplay ?? '');
+      return (
+        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+          <div className="text-[11px] uppercase tracking-wide text-slate-500">{f.label}</div>
+          <div className="text-base font-semibold text-slate-900 mt-0.5">
+            {display}
+          </div>
+        </div>
+      );
+    }
+
+    if (f.fieldType === 'dropdown') {
+      return (
+        <div>
+          <label className="label">{f.label}{f.required && <span className="text-red-500"> *</span>}</label>
+          <select className="input" value={values[f.key] ?? ''} onChange={(e) => onChange(f.key, e.target.value)}>
+            <option value="">Select...</option>
+            {(f.options || []).map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+          </select>
+        </div>
+      );
+    }
+    if (f.fieldType === 'textarea') {
+      return (
+        <div>
+          <label className="label">{f.label}{f.required && <span className="text-red-500"> *</span>}</label>
+          <textarea className="input" rows={3} value={values[f.key] ?? ''} onChange={(e) => onChange(f.key, e.target.value)} />
+        </div>
+      );
+    }
+    return (
+      <div>
+        <label className="label">{f.label}{f.required && <span className="text-red-500"> *</span>}</label>
+        <input
+          className="input"
+          type={f.fieldType === 'number' ? 'number' : f.fieldType === 'date' ? 'date' : 'text'}
+          min={f.fieldType === 'number' ? '0' : undefined}
+          value={values[f.key] ?? ''}
+          onChange={(e) => onChange(f.key, f.fieldType === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value)}
+        />
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-4">
+      {groups.map((g) => (
+        <div key={g.name}>
+          <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">{g.name}</div>
+          <div className="grid md:grid-cols-3 gap-3">
+            {g.items.map((f) => (
+              <div key={f.key}>{renderField(f)}</div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Self-observation + Idea (same as task/excel/sheet flows) */}
+      <div className="bg-slate-50 rounded-lg p-3">
+        <div className="text-sm font-semibold text-slate-800 mb-2">Self Observation (informational only)</div>
+        <div className="grid md:grid-cols-3 gap-3">
+          <div>
+            <label className="label">Rating (0-10)</label>
+            <input className="input" type="number" min="0" max="10" step="0.5" placeholder="0 - 10"
+              value={selfRating || ''}
+              onChange={(e) => setSelfRating(Number(e.target.value))} />
+          </div>
+          <div className="md:col-span-2">
+            <label className="label">Note</label>
+            <input className="input" placeholder="Anything you want HR to know"
+              value={selfNote ?? ''}
+              onChange={(e) => setSelfNote(e.target.value)} />
+          </div>
+        </div>
+      </div>
+      <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
+        <div className="text-sm font-semibold text-blue-900 mb-1">Business Idea / Innovation</div>
+        <textarea className="input" rows={2} placeholder="Optional - share any improvement idea"
+          value={idea ?? ''}
+          onChange={(e) => setIdea(e.target.value)} />
+      </div>
+
+      <div className="flex justify-end">
+        <button className="btn-primary" disabled={busy} onClick={onSubmit}>Submit Report</button>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Post-submission summary shown on the employee dashboard.  Reveals the
  * HR review (discipline + innovation marks + feedback) once it has been
  * completed; otherwise shows the work-only score with a "Pending Review"
@@ -786,6 +994,46 @@ function SubmittedSummary({ sub }) {
           )}
         </div>
       )}
+
+      {/* Custom templates (read-only): the submitted values grouped by
+          field group.  Only employee-visible fields are rendered (the
+          system already filters when the API responds, but we
+          double-check here for defence in depth). */}
+      {sub.templateType === 'custom' && (sub.customResponses || []).length > 0 && (() => {
+        const fields = (sub.template?.customFields || [])
+          .filter((f) => !f.visibleTo || f.visibleTo.includes('employee'))
+          .slice()
+          .sort((a, b) => (a.order || 0) - (b.order || 0));
+        const map = {};
+        (sub.customResponses || []).forEach((r) => { map[r.key] = r.value; });
+        const groups = [];
+        const seen = new Map();
+        for (const f of fields) {
+          const g = f.group || 'General';
+          if (!seen.has(g)) { seen.set(g, groups.length); groups.push({ name: g, items: [] }); }
+          groups[seen.get(g)].items.push(f);
+        }
+        const fmt = (v) => typeof v === 'number'
+          ? (Number.isInteger(v) ? v : v.toFixed(1))
+          : (v === '' || v === null || v === undefined ? '—' : String(v));
+        return (
+          <div className="space-y-3">
+            {groups.map((g) => (
+              <div key={g.name} className="bg-slate-50 rounded-lg p-3">
+                <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">{g.name}</div>
+                <div className="grid md:grid-cols-3 gap-3">
+                  {g.items.map((f) => (
+                    <div key={f.key} className="bg-white rounded-lg border border-slate-200 px-3 py-2">
+                      <div className="text-[11px] uppercase tracking-wide text-slate-500">{f.label}</div>
+                      <div className="text-base font-semibold text-slate-900 mt-0.5">{fmt(map[f.key])}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Task templates (read-only): status + remark + dependency only --
           no points / marks / awarded values, per spec. */}

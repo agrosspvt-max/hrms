@@ -147,6 +147,42 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
         }))
       : [];
 
+    /* ---- Custom-template fresh state + Yesterday-Pending carry-forward ---- */
+    let freshCustom = [];
+    let customKind = '';
+    if (tplType === 'custom') {
+      customKind = a.template.customKind || '';
+      // For every defined custom field, seed an entry on the new
+      // submission.  System-generated fields default to 0 / '' here and
+      // get populated below from the prior submission.
+      freshCustom = (a.template.customFields || [])
+        .slice()
+        .sort((x, y) => (x.order || 0) - (y.order || 0))
+        .map((f) => ({
+          key: f.key,
+          value: f.fieldType === 'number' ? 0 : '',
+        }));
+
+      // Carry-forward: for the well-known Calling kind, copy the prior
+      // day's `totalPending` (across the SAME employee + template) into
+      // today's `yesterdayPending` field.  Generic mechanism so future
+      // custom templates can opt in by declaring a `yesterdayPending`
+      // system-generated field.
+      const sysField = (a.template.customFields || []).find((f) => f.key === 'yesterdayPending' && f.systemGenerated);
+      if (sysField) {
+        const prior = await Submission.findOne({
+          employee: employee._id,
+          template: a.template._id,
+          date: { $lt: today },
+          submitted: true,
+        }).sort({ date: -1 }).select('customResponses');
+        const priorTotal = (prior?.customResponses || []).find((r) => r.key === 'totalPending');
+        const carry = Number(priorTotal?.value) || 0;
+        const slot = freshCustom.find((r) => r.key === 'yesterdayPending');
+        if (slot) slot.value = carry;
+      }
+    }
+
     // For 'sheet' templates, snapshot the entire grid onto the submission
     // so the report is self-contained.  Editable input cells start blank;
     // scoring targets are copied with marksAwarded = 0.
@@ -217,9 +253,11 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
       holidayOverride: nonWorking && !!a.holidayOverride,
       overrideReason: nonWorking && a.holidayOverride ? (a.overrideReason || '') : '',
       templateType: tplType,
+      customKind,
       tasks: fresh,
       excelResponses: freshExcel,
       sheet: freshSheet,
+      customResponses: freshCustom,
       totalPoints: 0,
       earnedPoints: 0,
     });
