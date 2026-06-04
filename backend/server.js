@@ -114,6 +114,13 @@ const start = async () => {
     const { seedDefaultCallingTemplate } = require('./services/customTemplate');
     await seedDefaultCallingTemplate();
   } catch (e) { console.error('[seed] custom template seed failed:', e.message); }
+  // Backfill Attendance records for every currently-approved Leave so the
+  // calendar reflects historical approvals + HR can revoke from there.
+  // Idempotent / safe to re-run; never modifies HR's manual overrides.
+  try {
+    const { migrateApprovedLeaves } = require('./services/leaveAttendance');
+    await migrateApprovedLeaves();
+  } catch (e) { console.error('[migrate] leave→attendance failed:', e.message); }
   // Fire-and-forget SMTP self-check.  Result is logged for debugging;
   // never blocks the HTTP listener from coming up.
   try {

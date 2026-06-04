@@ -165,6 +165,19 @@ const decide = asyncHandler(async (req, res) => {
   lv.hrNote = hrNote;
   await lv.save();
 
+  // Mirror the approval into Attendance so the calendar reflects the
+  // leave days immediately + HR can revoke from there.  Fire-and-forget
+  // shape so a transient Attendance write error never undoes the approval.
+  if (decision === 'approved') {
+    try {
+      const { syncAttendanceForLeave } = require('../services/leaveAttendance');
+      const result = await syncAttendanceForLeave(lv);
+      console.log(`[leave→att] approved ${lv._id}: created ${result.created} / kept ${result.kept}`);
+    } catch (e) {
+      console.error(`[leave→att] sync failed for ${lv._id}: ${e.message}`);
+    }
+  }
+
   logAudit(req, {
     action: requester?.role === 'hr' ? 'leave.decide.hr' : 'leave.decide.employee',
     targetType: 'Leave',
@@ -262,6 +275,18 @@ const revoke = asyncHandler(async (req, res) => {
   lv.revokedAt = new Date();
   lv.revokeReason = reason;
   await lv.save();
+
+  // Drop every leave-linked Attendance record so the calendar reverts to
+  // its derived state (Present / Absent / Weekly Off / etc.).  Manual
+  // overrides HR may have authored separately on the same days are NOT
+  // touched -- those records have leaveId=null.
+  try {
+    const { clearAttendanceForLeave } = require('../services/leaveAttendance');
+    const r = await clearAttendanceForLeave(lv._id);
+    console.log(`[leave→att] revoked ${lv._id}: deleted ${r.deleted} attendance record(s)`);
+  } catch (e) {
+    console.error(`[leave→att] clear failed for ${lv._id}: ${e.message}`);
+  }
 
   // Notify the employee out-of-band.
   Notification.create({

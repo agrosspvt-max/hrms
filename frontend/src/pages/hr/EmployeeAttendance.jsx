@@ -114,8 +114,34 @@ export default function EmployeeAttendance() {
       note: dayEntry.note || '',
       prevStatus: dayEntry.status,
       source: dayEntry.source,
+      leaveId: dayEntry.leaveId || null,
       saving: false,
     });
+  };
+
+  /**
+   * Revoke an approved leave directly from the attendance calendar.
+   * Same backend route the Leave Approvals page uses; this surfaces it
+   * where HR actually managing attendance is looking.
+   */
+  const revokeLeaveFromCalendar = async () => {
+    if (!editing?.leaveId) return;
+    const ok = window.confirm(
+      `Are you sure you want to revoke this approved leave for ${editing.employee.name}?\n` +
+      `Attendance for the affected day(s) will revert and the employee's leave balance will be restored.`,
+    );
+    if (!ok) return;
+    const reason = window.prompt('Reason for revoking this leave (optional):', '') || '';
+    setEditing((e) => ({ ...e, saving: true }));
+    try {
+      await api.post(`/leaves/${editing.leaveId}/revoke`, { reason: reason.trim() });
+      toast.success('Leave revoked. Balance restored.');
+      await fetchAttendance(editing.employee._id);
+      setEditing(null);
+    } catch (err) {
+      toast.error(errMsg(err));
+      setEditing((e) => (e ? { ...e, saving: false } : e));
+    }
   };
 
   const saveEdit = async () => {
@@ -254,6 +280,16 @@ export default function EmployeeAttendance() {
                 Remove override
               </button>
             )}
+            {editing.leaveId && (
+              <button
+                className="btn-secondary mr-auto !text-red-700 !border-red-200 hover:!bg-red-50"
+                disabled={editing.saving}
+                onClick={revokeLeaveFromCalendar}
+                title="Revoke the approved leave that owns this day. Balance is restored automatically."
+              >
+                Revoke Leave
+              </button>
+            )}
             <button className="btn-secondary" disabled={editing.saving} onClick={() => setEditing(null)}>Cancel</button>
             <button className="btn-primary" disabled={editing.saving} onClick={saveEdit}>
               {editing.saving ? 'Saving…' : 'Save changes'}
@@ -269,6 +305,13 @@ export default function EmployeeAttendance() {
                 {editing.source && <span className="text-slate-400"> ({editing.source})</span>}
               </span>
             </div>
+            {editing.leaveId && (
+              <div className="rounded-lg bg-indigo-50 border border-indigo-100 px-3 py-2 text-[12px] text-indigo-800">
+                This day is owned by an approved leave request. Use <b>Revoke Leave</b> to
+                cancel the approval and restore the employee's balance, or change the status
+                above to convert it into a manual override (the leave will stay approved).
+              </div>
+            )}
 
             <div>
               <label className="label">Attendance Status</label>

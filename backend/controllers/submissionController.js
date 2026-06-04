@@ -59,6 +59,10 @@ const HALFDAY_CUTOFF_HOUR = Number(process.env.ATTENDANCE_HALFDAY_CUTOFF_HOUR) |
 const applyAutoHalfDay = async (employee, day) => {
   const existing = await Attendance.findOne({ employee: employee._id, date: day });
   if (existing && existing.source === 'manual') return; // HR override wins
+  // Leave-linked records take precedence too -- the day already has an
+  // explicit owner (the approved Leave) and should not be silently
+  // converted to an 'auto' half-day by a normal submission.
+  if (existing && existing.source === 'leave') return;
 
   const beforeCutoff = new Date().getHours() < HALFDAY_CUTOFF_HOUR;
   if (!beforeCutoff) return; // full day - derivation handles "present"

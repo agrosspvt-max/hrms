@@ -389,6 +389,10 @@ const deriveAttendance = async (employee, from, to) => {
     const entry = { date: day, status, source: record?.source };
     if (holidayName) entry.holidayName = holidayName;
     if (record?.note) entry.note = record.note;
+    // Surface the originating leave so the calendar can offer a Revoke
+    // action directly on the day.  Only set when the record is leave-
+    // linked (manual / auto records have leaveId=null).
+    if (record?.leaveId) entry.leaveId = String(record.leaveId);
     perDay.push(entry);
 
     switch (status) {
