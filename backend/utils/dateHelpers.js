@@ -65,6 +65,41 @@ const eachDay = function* (from, to) {
   }
 };
 
+/**
+ * Effective leave-day count, excluding the employee's weekly off days
+ * (and -- when provided -- a set of holiday calendar dates).  This is
+ * the source of truth for "how many leave units does this request
+ * actually consume" used by the leave controller at apply / revoke and
+ * by any analytics that needs a billable-leave-day count.
+ *
+ * Behaviour:
+ *   - Half-day request: returns 0.5 normally, 0 if the single day is a
+ *     weekly off / holiday (no work was owed anyway).
+ *   - Full-day request: counts each UTC day in [from, to] (INCLUSIVE)
+ *     whose weekday is not in `weeklyOff` and whose YYYY-MM-DD is not
+ *     in the optional `holidaySet`.
+ *
+ *   weeklyOff defaults to [0] (Sunday) to match the User model default.
+ *
+ * Pure & side-effect-free so it's safe to import anywhere.
+ */
+const effectiveLeaveDays = ({ from, to, weeklyOff = [0], dayType = 'full', holidaySet } = {}) => {
+  if (!from || !to) return 0;
+  const f = startOfDay(from);
+  const t = startOfDay(to);
+  const offs = Array.isArray(weeklyOff) && weeklyOff.length ? weeklyOff : [0];
+  const hset = holidaySet instanceof Set ? holidaySet : null;
+  const isNonWorking = (d) => offs.includes(d.getUTCDay()) || (hset && hset.has(formatYMD(d)));
+  if (dayType === 'half') {
+    return f.getTime() === t.getTime() && !isNonWorking(f) ? 0.5 : 0;
+  }
+  let count = 0;
+  for (let d = new Date(f.getTime()); d.getTime() <= t.getTime(); d = addDays(d, 1)) {
+    if (!isNonWorking(d)) count += 1;
+  }
+  return count;
+};
+
 module.exports = {
   startOfDay,
   endOfDay,
@@ -76,4 +111,5 @@ module.exports = {
   formatYMD,
   parseDay,
   eachDay,
+  effectiveLeaveDays,
 };

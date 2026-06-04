@@ -3,7 +3,8 @@ const Leave = require('../models/Leave');
 const User = require('../models/User');
 const Department = require('../models/Department');
 const Notification = require('../models/Notification');
-const { startOfDay, daysBetween, addDays } = require('../utils/dateHelpers');
+const { startOfDay, daysBetween, addDays, effectiveLeaveDays } = require('../utils/dateHelpers');
+const Holiday = require('../models/Holiday');
 const { logAudit } = require('../utils/audit');
 
 /**
@@ -32,7 +33,27 @@ const apply = asyncHandler(async (req, res) => {
   // Half-day leave is only valid for a single-day request.
   const isSingleDay = from.getTime() === to.getTime();
   const dayType = req.body.dayType === 'half' && isSingleDay ? 'half' : 'full';
-  const days = dayType === 'half' ? 0.5 : daysBetween(from, addDays(to, 1));
+
+  // Effective leave-day count: excludes the employee's weekly-off days
+  // and any company holidays that fall in the requested range so the
+  // balance is never deducted for non-working days.  The employee's
+  // weeklyOff config (default [0] = Sunday) is the source of truth.
+  const requester = await User.findById(req.user._id).select('weeklyOff');
+  const holidays = await Holiday.find({
+    date: { $gte: from, $lte: to },
+  }).select('date').lean();
+  const { formatYMD } = require('../utils/dateHelpers');
+  const holidaySet = new Set(holidays.map((h) => formatYMD(h.date)));
+  const days = effectiveLeaveDays({
+    from, to,
+    weeklyOff: requester?.weeklyOff || [0],
+    dayType,
+    holidaySet,
+  });
+  if (days <= 0) {
+    res.status(400);
+    throw new Error('Requested period contains no working days (weekly off / holidays only). No leave to apply.');
+  }
 
   const lv = await Leave.create({
     employee: req.user._id,
@@ -187,4 +208,79 @@ const calendar = asyncHandler(async (req, res) => {
   res.json(items);
 });
 
-module.exports = { apply, myLeaves, listAll, decide, setBalance, calendar };
+/**
+ * POST /api/leaves/:id/revoke
+ * HR / Super Admin can pull back an already-approved leave.  Restores
+ * the consumed paid-leave units onto the employee's balance, marks the
+ * leave 'revoked' (so attendance derive + leave analytics ignore it),
+ * notifies the employee, and writes an audit log entry.
+ *
+ * Role guards mirror the decide() flow:
+ *   - HR cannot revoke an HR / Super Admin leave (Super Admin only).
+ *   - Caller cannot revoke their own leave.
+ *
+ * Attendance auto-clears: deriveAttendance() filters on status:'approved',
+ * so the day-by-day calendar reverts to its derived state (present /
+ * weekly off / etc.) without further action.
+ */
+const revoke = asyncHandler(async (req, res) => {
+  const lv = await Leave.findById(req.params.id);
+  if (!lv) { res.status(404); throw new Error('Leave not found'); }
+  if (lv.status !== 'approved') {
+    res.status(400);
+    throw new Error(`Only an approved leave can be revoked (current status: ${lv.status}).`);
+  }
+
+  const requester = await User.findById(lv.employee).select('role name email');
+  if (requester?.role === 'hr' && req.user.role !== 'super_admin') {
+    res.status(403);
+    throw new Error('Only a Super Admin can revoke HR leave approvals.');
+  }
+  if (String(lv.employee) === String(req.user._id)) {
+    res.status(403);
+    throw new Error('You cannot revoke your own leave.');
+  }
+
+  const reason = (req.body?.reason || '').trim();
+  // Reason is encouraged but not strictly required so HR can act quickly.
+
+  // Restore the exact units consumed (lv.days), but only if the leave
+  // was paid -- unpaid approvals never touched the balance.
+  if (lv.paid) {
+    const user = await User.findById(lv.employee);
+    if (user) {
+      const cur = Number(user.leaveBalance?.used) || 0;
+      // Math.max with 0 protects against accidental negatives if the
+      // balance was manually edited downstream.
+      user.leaveBalance.used = Math.max(0, Math.round((cur - lv.days) * 100) / 100);
+      await user.save();
+    }
+  }
+
+  lv.status = 'revoked';
+  lv.revokedBy = req.user._id;
+  lv.revokedAt = new Date();
+  lv.revokeReason = reason;
+  await lv.save();
+
+  // Notify the employee out-of-band.
+  Notification.create({
+    recipient: lv.employee,
+    sender: req.user._id,
+    type: 'leave_info',
+    title: 'Leave approval revoked',
+    message: `Your approved leave (${lv.fromDate.toISOString().slice(0, 10)} → ${lv.toDate.toISOString().slice(0, 10)}, ${lv.days} day(s)) has been revoked by HR.${reason ? ` Reason: ${reason}` : ''}`,
+  }).catch(() => {});
+
+  logAudit(req, {
+    action: requester?.role === 'hr' ? 'leave.revoke.hr' : 'leave.revoke.employee',
+    targetType: 'Leave',
+    targetId: lv._id,
+    targetLabel: `${requester?.name || 'user'} ${lv.fromDate.toISOString().slice(0, 10)} → ${lv.toDate.toISOString().slice(0, 10)}`,
+    meta: { days: lv.days, paid: lv.paid, reason, restored: lv.paid ? lv.days : 0 },
+  });
+
+  res.json(lv);
+});
+
+module.exports = { apply, myLeaves, listAll, decide, setBalance, calendar, revoke };

@@ -37,6 +37,25 @@ export default function HRLeaves() {
     } catch (err) { toast.error(errMsg(err)); }
   };
 
+  /**
+   * Revoke an approved leave.  Two-step confirm (yes/no + optional
+   * reason) so HR doesn't undo an approval by accident.  Backend
+   * restores the exact balance and audit-logs the revocation.
+   */
+  const revoke = async (lv) => {
+    const ok = window.confirm(
+      `Are you sure you want to revoke this approved leave for ${lv.employee?.name || 'this employee'}?\n` +
+      `This will restore the employee's leave balance by ${lv.days} day(s).`,
+    );
+    if (!ok) return;
+    const reason = window.prompt('Reason for revoking this leave (optional):', '') || '';
+    try {
+      await api.post(`/leaves/${lv._id}/revoke`, { reason: reason.trim() });
+      toast.success(`Leave revoked.${lv.paid ? ` ${lv.days} day(s) restored.` : ''}`);
+      load();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center flex-wrap gap-2">
@@ -63,6 +82,7 @@ export default function HRLeaves() {
             <option value="pending">Pending</option>
             <option value="approved">Approved</option>
             <option value="rejected">Rejected</option>
+            <option value="revoked">Revoked</option>
           </select>
         </div>
       </div>
@@ -92,12 +112,22 @@ export default function HRLeaves() {
                     {lv.status === 'pending' && <span className="badge-amber">Pending</span>}
                     {lv.status === 'approved' && <span className={lv.paid ? 'badge-green' : 'badge-amber'}>{lv.paid ? 'Approved' : 'Approved (Unpaid)'}</span>}
                     {lv.status === 'rejected' && <span className="badge-red">Rejected</span>}
+                    {lv.status === 'revoked'  && <span className="badge-gray">Revoked</span>}
                   </td>
                   <td className="text-right whitespace-nowrap">
                     {lv.status === 'pending' && <>
                       <button className="btn-ghost text-green-700" onClick={() => decide(lv._id, 'approved')}>Approve</button>
                       <button className="btn-ghost text-red-600" onClick={() => decide(lv._id, 'rejected')}>Reject</button>
                     </>}
+                    {lv.status === 'approved' && (
+                      <button
+                        className="btn-ghost text-red-600"
+                        title={`Restore ${lv.days} day(s) to the employee's balance.`}
+                        onClick={() => revoke(lv)}
+                      >
+                        Revoke
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

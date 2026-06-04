@@ -18,7 +18,11 @@ const leaveSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ['pending', 'approved', 'rejected'],
+      // 'revoked' = HR pulled back an already-approved leave; balance
+      // refunded, attendance auto-clears (since derive() only looks at
+      // status='approved' rows).  Distinct from 'rejected' so analytics
+      // can tell the two apart.
+      enum: ['pending', 'approved', 'rejected', 'revoked'],
       default: 'pending',
       index: true,
     },
@@ -27,6 +31,11 @@ const leaveSchema = new mongoose.Schema(
     decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     decidedAt: { type: Date },
     hrNote: { type: String, trim: true },
+
+    // Revocation audit
+    revokedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    revokedAt: { type: Date },
+    revokeReason: { type: String, trim: true },
 
     // If approved but employee has no balance left, mark as unpaid.
     paid: { type: Boolean, default: true },
