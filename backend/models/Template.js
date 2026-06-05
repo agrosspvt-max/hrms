@@ -219,6 +219,14 @@ const templateSchema = new mongoose.Schema(
     // authored custom templates; the seeded Daily Calling Report uses
     // `kind: 'calling'`.
     customKind: { type: String, default: '', index: true },
+    // Opt-in sub-tables a custom template wants on its submission.
+    // Currently supported:
+    //   'productSales'   -> repeating Product Sales rows (Product +
+    //                       Quantity dropdowns, auto Sales Value + NBV).
+    //   'farmerRecords'  -> repeating Farmer detail rows.
+    // Future templates (Dealer Visit, Site Visit, Collection Report)
+    // can re-use the same sections without code changes.
+    customSections: { type: [String], default: [] },
     // Lifecycle toggle so HR can deactivate templates without deleting.
     isActive: { type: Boolean, default: true },
 

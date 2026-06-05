@@ -57,6 +57,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const [addedTasks, setAddedTasks] = useState({}); // { subId: [{ title }] }
   // Custom-template field values per submission: { subId: { key: value } }.
   const [customValues, setCustomValues] = useState({});
+  // Product Sales rows per submission: { subId: [{ productId, quantityId }] }
+  const [productSales, setProductSales] = useState({});
+  // Farmer rows per submission: { subId: [{ name, mobile, ... }] }
+  const [farmerRecords, setFarmerRecords] = useState({});
+  // Master data (Products / Quantities) for the custom-template dropdowns.
+  const [products, setProducts] = useState([]);
+  const [quantities, setQuantities] = useState([]);
   const [sheetState, setSheetState] = useState({}); // { subId: workingSheet }
   // Per-row task status for sheet "task rows" (scored rows with statusTracking)
   // { subId: { [scoreKey]: { rowStatus, pendingReason, dependencyType, dependencyAssignedTo, dependencyRemark } } }
@@ -75,6 +82,14 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const loadDeps = () =>
     api.get('/dependencies/mine', { params: { status: 'all' } }).then((r) => setMyDeps(r.data || [])).catch(() => {});
   useEffect(() => { loadDeps(); }, []);
+
+  // Pre-load active master data so custom-template forms have ready
+  // dropdowns.  Cheap (small payload), single fetch on mount, used only
+  // when a custom template with productSales / farmerRecords surfaces.
+  useEffect(() => {
+    api.get('/products', { params: { activeOnly: 'true' } }).then((r) => setProducts(r.data || [])).catch(() => setProducts([]));
+    api.get('/quantities', { params: { activeOnly: 'true' } }).then((r) => setQuantities(r.data || [])).catch(() => setQuantities([]));
+  }, []);
 
   const resolveDep = async (id) => {
     try { await api.post(`/dependencies/${id}/resolve`, {}); toast.success('Dependency resolved'); loadDeps(); }
@@ -223,8 +238,29 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           }
         }
         const payload = Object.entries(raw).map(([key, value]) => ({ key, value }));
+        // Repeating sub-tables (any template that opts in via customSections).
+        const sections = sub.template?.customSections || [];
+        const cleanProductSales = sections.includes('productSales')
+          ? (productSales[sub._id] || [])
+              .filter((r) => r.productId && r.quantityId)
+              .map((r) => ({ productId: r.productId, quantityId: r.quantityId }))
+          : [];
+        const cleanFarmers = sections.includes('farmerRecords')
+          ? (farmerRecords[sub._id] || [])
+              .filter((r) => (r.name || '').trim())
+              .map((r) => ({
+                name: r.name.trim(),
+                mobile: (r.mobile || '').trim(),
+                village: (r.village || '').trim(),
+                dealerLocation: (r.dealerLocation || '').trim(),
+                productId: r.productId || undefined,
+                quantityId: r.quantityId || undefined,
+              }))
+          : [];
         await api.post(`/submissions/${sub._id}/submit`, {
           customResponses: payload,
+          productSales: cleanProductSales,
+          farmerRecords: cleanFarmers,
           selfRating: selfRating[sub._id],
           selfNote: selfNote[sub._id],
           idea: idea[sub._id],
@@ -481,6 +517,22 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                       [sub._id]: { ...(s[sub._id] || {}), [key]: value },
                     }))
                   }
+                  productSales={productSales[sub._id] || []}
+                  setProductSales={(updater) =>
+                    setProductSales((s) => ({
+                      ...s,
+                      [sub._id]: typeof updater === 'function' ? updater(s[sub._id] || []) : updater,
+                    }))
+                  }
+                  farmerRecords={farmerRecords[sub._id] || []}
+                  setFarmerRecords={(updater) =>
+                    setFarmerRecords((s) => ({
+                      ...s,
+                      [sub._id]: typeof updater === 'function' ? updater(s[sub._id] || []) : updater,
+                    }))
+                  }
+                  products={products}
+                  quantities={quantities}
                   selfRating={selfRating[sub._id]}
                   setSelfRating={(v) => setSelfRating((s) => ({ ...s, [sub._id]: v }))}
                   selfNote={selfNote[sub._id]}
@@ -839,7 +891,14 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
  *
  * Visibility: only fields with 'employee' in `visibleTo` render here.
  */
-function CustomTemplateForm({ sub, values, onChange, selfRating, setSelfRating, selfNote, setSelfNote, idea, setIdea, busy, onSubmit }) {
+function CustomTemplateForm({
+  sub, values, onChange,
+  productSales = [], setProductSales,
+  farmerRecords = [], setFarmerRecords,
+  products = [], quantities = [],
+  selfRating, setSelfRating, selfNote, setSelfNote, idea, setIdea,
+  busy, onSubmit,
+}) {
   const fields = (sub.template?.customFields || [])
     .filter((f) => !f.visibleTo || f.visibleTo.includes('employee'))
     .slice()
@@ -847,6 +906,10 @@ function CustomTemplateForm({ sub, values, onChange, selfRating, setSelfRating, 
 
   // Live-derived view including auto fields.
   const computed = customCompute(sub.template?.customFields || [], values);
+
+  const sections = sub.template?.customSections || [];
+  const showProductSales   = sections.includes('productSales');
+  const showFarmerRecords  = sections.includes('farmerRecords');
 
   // Bucket fields by group, preserving order.
   const groups = [];
@@ -922,6 +985,24 @@ function CustomTemplateForm({ sub, values, onChange, selfRating, setSelfRating, 
         </div>
       ))}
 
+      {showProductSales && (
+        <ProductSalesSection
+          rows={productSales}
+          setRows={setProductSales}
+          products={products}
+          quantities={quantities}
+        />
+      )}
+
+      {showFarmerRecords && (
+        <FarmerRecordsSection
+          rows={farmerRecords}
+          setRows={setFarmerRecords}
+          products={products}
+          quantities={quantities}
+        />
+      )}
+
       {/* Self-observation + Idea (same as task/excel/sheet flows) */}
       <div className="bg-slate-50 rounded-lg p-3">
         <div className="text-sm font-semibold text-slate-800 mb-2">Self Observation (informational only)</div>
@@ -950,6 +1031,157 @@ function CustomTemplateForm({ sub, values, onChange, selfRating, setSelfRating, 
       <div className="flex justify-end">
         <button className="btn-primary" disabled={busy} onClick={onSubmit}>Submit Report</button>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Product Sales sub-table                                             */
+/* ------------------------------------------------------------------ */
+function ProductSalesSection({ rows, setRows, products, quantities }) {
+  const addRow = () => setRows((cur) => [...cur, { productId: '', quantityId: '' }]);
+  const removeRow = (i) => setRows((cur) => cur.filter((_, idx) => idx !== i));
+  const editRow = (i, patch) => setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  // Live per-row + totals.  The backend re-derives these from the master
+  // snapshot, but showing them inline gives the employee instant feedback.
+  const productById = new Map((products || []).map((p) => [p._id, p]));
+  const qtyById     = new Map((quantities || []).map((q) => [q._id, q]));
+  const calcRow = (r) => {
+    const p = productById.get(r.productId);
+    const q = qtyById.get(r.quantityId);
+    if (!p || !q) return { sales: 0, nbv: 0, unit: '', label: '' };
+    const sales = (Number(p.pricePerUnit) || 0) * (Number(q.value) || 0);
+    const nbv   = sales * (Number(p.nbvPercentage) || 0) / 100;
+    return { sales: Math.round(sales * 100) / 100, nbv: Math.round(nbv * 100) / 100, unit: p.unit, label: q.label };
+  };
+  const totalSales = rows.reduce((s, r) => s + calcRow(r).sales, 0);
+  const totalNbv   = rows.reduce((s, r) => s + calcRow(r).nbv,   0);
+
+  return (
+    <div className="bg-indigo-50/60 border border-indigo-100 rounded-lg p-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+        <div>
+          <div className="text-sm font-semibold text-indigo-900">Product Sales</div>
+          <div className="text-[11px] text-indigo-700">Pick a product + quantity. Sales Value and NBV are auto-calculated.</div>
+        </div>
+        <button type="button" className="btn-secondary !py-1 !text-xs" onClick={addRow}>+ Add Product</button>
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-xs text-indigo-600/80 italic">No products yet. Click "+ Add Product" to record a sale.</div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r, i) => {
+            const c = calcRow(r);
+            // Filter quantities by selected product's unit if known.
+            const p = productById.get(r.productId);
+            const qtyOptions = p ? (quantities || []).filter((q) => q.unit === p.unit) : (quantities || []);
+            return (
+              <div key={i} className="grid grid-cols-12 gap-2 items-start bg-white rounded-lg p-2 border border-indigo-100">
+                <div className="col-span-4">
+                  <label className="label text-[10px] uppercase">Product</label>
+                  <select className="input" value={r.productId} onChange={(e) => editRow(i, { productId: e.target.value, quantityId: '' })}>
+                    <option value="">Select product...</option>
+                    {(products || []).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-3">
+                  <label className="label text-[10px] uppercase">Quantity</label>
+                  <select className="input" value={r.quantityId} onChange={(e) => editRow(i, { quantityId: e.target.value })} disabled={!r.productId}>
+                    <option value="">{r.productId ? 'Select quantity...' : 'Pick product first'}</option>
+                    {qtyOptions.map((q) => <option key={q._id} value={q._id}>{q.label}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-2">
+                  <label className="label text-[10px] uppercase">Sales Value</label>
+                  <div className="input bg-slate-50 font-mono text-sm">{c.sales > 0 ? `₹${c.sales}` : '—'}</div>
+                </div>
+                <div className="col-span-2">
+                  <label className="label text-[10px] uppercase">NBV</label>
+                  <div className="input bg-slate-50 font-mono text-sm">{c.nbv > 0 ? `₹${c.nbv}` : '—'}</div>
+                </div>
+                <div className="col-span-1 flex items-end justify-end">
+                  <button type="button" className="btn-ghost text-red-600 !px-2" onClick={() => removeRow(i)} title="Remove row">✕</button>
+                </div>
+              </div>
+            );
+          })}
+          <div className="flex justify-end gap-6 text-sm pt-1 px-1">
+            <span className="text-slate-600">Total Sales Value: <b className="text-slate-900">₹{Math.round(totalSales * 100) / 100}</b></span>
+            <span className="text-slate-600">Total NBV: <b className="text-slate-900">₹{Math.round(totalNbv * 100) / 100}</b></span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Farmer Records sub-table                                            */
+/* ------------------------------------------------------------------ */
+function FarmerRecordsSection({ rows, setRows, products, quantities }) {
+  const blank = { name: '', mobile: '', village: '', dealerLocation: '', productId: '', quantityId: '' };
+  const addRow = () => setRows((cur) => [...cur, { ...blank }]);
+  const removeRow = (i) => setRows((cur) => cur.filter((_, idx) => idx !== i));
+  const editRow = (i, patch) => setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  const productById = new Map((products || []).map((p) => [p._id, p]));
+
+  return (
+    <div className="bg-emerald-50/60 border border-emerald-100 rounded-lg p-3">
+      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
+        <div>
+          <div className="text-sm font-semibold text-emerald-900">Farmer Details</div>
+          <div className="text-[11px] text-emerald-700">Add as many farmer interactions as you want today.</div>
+        </div>
+        <button type="button" className="btn-secondary !py-1 !text-xs" onClick={addRow}>+ Add Farmer</button>
+      </div>
+      {rows.length === 0 ? (
+        <div className="text-xs text-emerald-700/80 italic">No farmers yet. Click "+ Add Farmer" to add one.</div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r, i) => {
+            const p = productById.get(r.productId);
+            const qtyOptions = p ? (quantities || []).filter((q) => q.unit === p.unit) : (quantities || []);
+            return (
+              <div key={i} className="grid grid-cols-12 gap-2 items-start bg-white rounded-lg p-2 border border-emerald-100">
+                <div className="col-span-3">
+                  <label className="label text-[10px] uppercase">Farmer Name *</label>
+                  <input className="input" value={r.name} onChange={(e) => editRow(i, { name: e.target.value })} placeholder="Full name" />
+                </div>
+                <div className="col-span-2">
+                  <label className="label text-[10px] uppercase">Mobile</label>
+                  <input className="input" value={r.mobile} onChange={(e) => editRow(i, { mobile: e.target.value })} placeholder="9000000000" />
+                </div>
+                <div className="col-span-2">
+                  <label className="label text-[10px] uppercase">Village</label>
+                  <input className="input" value={r.village} onChange={(e) => editRow(i, { village: e.target.value })} />
+                </div>
+                <div className="col-span-2">
+                  <label className="label text-[10px] uppercase">Dealer</label>
+                  <input className="input" value={r.dealerLocation} onChange={(e) => editRow(i, { dealerLocation: e.target.value })} />
+                </div>
+                <div className="col-span-1">
+                  <label className="label text-[10px] uppercase">Product</label>
+                  <select className="input" value={r.productId} onChange={(e) => editRow(i, { productId: e.target.value, quantityId: '' })}>
+                    <option value="">—</option>
+                    {(products || []).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-1">
+                  <label className="label text-[10px] uppercase">Qty</label>
+                  <select className="input" value={r.quantityId} onChange={(e) => editRow(i, { quantityId: e.target.value })} disabled={!r.productId}>
+                    <option value="">—</option>
+                    {qtyOptions.map((q) => <option key={q._id} value={q._id}>{q.label}</option>)}
+                  </select>
+                </div>
+                <div className="col-span-1 flex items-end justify-end">
+                  <button type="button" className="btn-ghost text-red-600 !px-2" onClick={() => removeRow(i)} title="Remove">✕</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

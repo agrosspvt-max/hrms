@@ -760,12 +760,140 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   }
   const trend = [...perDay.values()].sort((a, b) => a.date.localeCompare(b.date));
 
+  /* =================================================================
+   * PRODUCT & FARMER METRICS (additive -- existing calling KPIs above
+   * are unchanged).  Pulls every submitted custom submission in range
+   * whose productSales[] or farmerRecords[] is non-empty.  Templates
+   * opt in via customSections, so the same aggregation works for
+   * future Dealer Visit / Site Visit / Collection reports.
+   * ================================================================= */
+  const pfSubs = await Submission.find({
+    submitted: true,
+    employee: { $in: empIds },
+    templateType: 'custom',
+    date: { $gte: from, $lt: to },
+    $or: [
+      { 'productSales.0': { $exists: true } },
+      { 'farmerRecords.0': { $exists: true } },
+    ],
+  }).select('employee date productSales farmerRecords').lean();
+
+  let totalProductsSold     = 0;   // count of product-sale rows
+  let totalQuantitySold     = 0;   // sum of quantityValue
+  let totalSalesValue       = 0;
+  let totalNbvValue         = 0;
+  let totalFarmersAdded     = 0;
+
+  const productAgg = new Map();    // productName -> { rows, qty, sales, nbv }
+  const employeePFAgg = new Map(); // empId -> { sales, nbv, qty, products, farmers }
+
+  for (const sub of pfSubs) {
+    const empKey = String(sub.employee);
+    if (!employeePFAgg.has(empKey)) employeePFAgg.set(empKey, { sales: 0, nbv: 0, qty: 0, products: 0, farmers: 0 });
+    const peStats = employeePFAgg.get(empKey);
+
+    for (const row of (sub.productSales || [])) {
+      const sv = Number(row.salesValue) || 0;
+      const nv = Number(row.nbvValue)   || 0;
+      const qv = Number(row.quantityValue) || 0;
+      totalProductsSold += 1;
+      totalQuantitySold += qv;
+      totalSalesValue   += sv;
+      totalNbvValue     += nv;
+      peStats.sales    += sv;
+      peStats.nbv      += nv;
+      peStats.qty      += qv;
+      peStats.products += 1;
+      const pname = row.productName || '—';
+      if (!productAgg.has(pname)) productAgg.set(pname, { name: pname, rows: 0, qty: 0, sales: 0, nbv: 0 });
+      const pa = productAgg.get(pname);
+      pa.rows  += 1;
+      pa.qty   += qv;
+      pa.sales += sv;
+      pa.nbv   += nv;
+    }
+    const farmerCount = (sub.farmerRecords || []).length;
+    totalFarmersAdded += farmerCount;
+    peStats.farmers   += farmerCount;
+  }
+
+  // Round once at the end so display doesn't drift on long sums.
+  const round2 = (n) => Math.round(n * 100) / 100;
+  totalSalesValue = round2(totalSalesValue);
+  totalNbvValue   = round2(totalNbvValue);
+  totalQuantitySold = round2(totalQuantitySold);
+
+  const productKpis = {
+    totalProductsSold,
+    totalQuantitySold,
+    totalSalesValue,
+    totalNbvValue,
+  };
+  const farmerKpis = {
+    totalFarmersAdded,
+  };
+
+  // Per-product leaderboard (top by sales value).
+  const productsTable = [...productAgg.values()]
+    .map((p) => ({ ...p, sales: round2(p.sales), nbv: round2(p.nbv), qty: round2(p.qty) }))
+    .sort((a, b) => b.sales - a.sales);
+  const topSellingProducts    = productsTable.slice(0, 5);
+  const topRevenueProducts    = [...productsTable].sort((a, b) => b.sales - a.sales).slice(0, 5);
+  const topNbvProducts        = [...productsTable].sort((a, b) => b.nbv - a.nbv).slice(0, 5);
+
+  // Per-employee Product & Farmer rollup -- joined with the employee map.
+  const employeePF = [];
+  for (const [k, m] of employeePFAgg.entries()) {
+    const e = empMap.get(k);
+    if (!e) continue;
+    employeePF.push({
+      _id: k,
+      name: e.name,
+      employeeId: e.employeeId,
+      department: e.department?.name || 'Unassigned',
+      salesValue:    round2(m.sales),
+      nbvValue:      round2(m.nbv),
+      quantitySold:  round2(m.qty),
+      productsSold:  m.products,
+      farmersAdded:  m.farmers,
+    });
+  }
+  const topBy = (key) => [...employeePF].sort((a, b) => (b[key] || 0) - (a[key] || 0)).slice(0, 5);
+  const productEmployeeLeaderboards = {
+    topSales:    topBy('salesValue'),
+    topNbv:      topBy('nbvValue'),
+    topQuantity: topBy('quantitySold'),
+    topProducts: topBy('productsSold'),
+    topFarmers:  topBy('farmersAdded'),
+  };
+
+  // Combined calling + product metrics (per organisation total).
+  const combinedMetrics = {
+    revenuePerCall:        safeRate(totalSalesValue,    totalCallsCompleted) / 10, // un-x10 the safeRate's %
+    nbvPerCall:            safeRate(totalNbvValue,      totalCallsCompleted) / 10,
+    revenuePerConversion:  safeRate(totalSalesValue,    totalConversions)    / 10,
+    nbvPerConversion:      safeRate(totalNbvValue,      totalConversions)    / 10,
+    farmersPerEmployee:    employees.length > 0 ? round2(totalFarmersAdded   / employees.length) : 0,
+    revenuePerEmployee:    employees.length > 0 ? round2(totalSalesValue     / employees.length) : 0,
+    nbvPerEmployee:        employees.length > 0 ? round2(totalNbvValue       / employees.length) : 0,
+  };
+
   res.json({
     range: { from, to },
     kpis,
     leaderboards,
     employees: employeeRows.sort((a, b) => (b.totalCallsCompleted || 0) - (a.totalCallsCompleted || 0)),
     trend,
+    // ---- Product & Farmer extension ----
+    productKpis,
+    farmerKpis,
+    productsTable,
+    topSellingProducts,
+    topRevenueProducts,
+    topNbvProducts,
+    productEmployeeLeaderboards,
+    combinedMetrics,
+    employeesPF: employeePF.sort((a, b) => (b.salesValue || 0) - (a.salesValue || 0)),
   });
 });
 

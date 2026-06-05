@@ -76,6 +76,7 @@ function buildNav(user) {
         { to: '/attendance', label: 'Attendance', icon: I.attendance },
         { to: '/backlog', label: 'Global Pendency', icon: I.clock },
         { to: '/organization', label: 'Departments', icon: I.grid },
+        { to: '/products', label: 'Products', icon: I.tools },
         { to: '/assignments', label: 'Assignments', icon: I.tasks },
         { to: '/leaves', label: 'Leave Approvals', icon: I.leave },
       ],

@@ -145,9 +145,37 @@ const seedDefaultCallingTemplate = async () => {
   console.log('[seed] created default Daily Calling Report custom template');
 };
 
+/**
+ * Default Product & Farmer Report template.  Uses the customSections
+ * opt-in mechanism to surface the repeating Product Sales + Farmer
+ * Records sub-tables -- no scalar customFields needed because all the
+ * numbers (sales / NBV) are computed per-row.
+ *
+ * Future templates (Dealer Visit, Site Visit, Collection Report) can
+ * subscribe to the same sections by listing them in customSections.
+ */
+const PRODUCT_FARMER_TEMPLATE_KIND = 'product_farmer';
+
+const seedDefaultProductFarmerTemplate = async () => {
+  const existing = await Template.findOne({ customKind: PRODUCT_FARMER_TEMPLATE_KIND }).select('_id');
+  if (existing) return;
+  await Template.create({
+    title: 'Product & Farmer Report',
+    description: 'Daily field report: record product sales (auto Sales Value + NBV) and farmer interactions.',
+    templateType: 'custom',
+    customKind: PRODUCT_FARMER_TEMPLATE_KIND,
+    customSections: ['productSales', 'farmerRecords'],
+    customFields: [],
+    isActive: true,
+  });
+  console.log('[seed] created default Product & Farmer Report custom template');
+};
+
 module.exports = {
   evalFormula,
   computeAutoFields,
   seedDefaultCallingTemplate,
+  seedDefaultProductFarmerTemplate,
   CALLING_TEMPLATE_KIND,
+  PRODUCT_FARMER_TEMPLATE_KIND,
 };

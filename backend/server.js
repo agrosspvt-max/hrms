@@ -32,6 +32,7 @@ app.use('/api/events', require('./routes/eventRoutes'));
 app.use('/api/holidays', require('./routes/holidayRoutes'));
 app.use('/api/password-reset', require('./routes/passwordResetRoutes'));
 app.use('/api/audit', require('./routes/auditRoutes'));
+app.use('/api', require('./routes/productRoutes'));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date() }));
 
@@ -111,8 +112,9 @@ const start = async () => {
   try { await syncSalaryIndexes(); } catch (e) { console.error('[migrate] salary period migration failed:', e.message); }
   // Seed default Custom Assignment templates (idempotent).
   try {
-    const { seedDefaultCallingTemplate } = require('./services/customTemplate');
+    const { seedDefaultCallingTemplate, seedDefaultProductFarmerTemplate } = require('./services/customTemplate');
     await seedDefaultCallingTemplate();
+    await seedDefaultProductFarmerTemplate();
   } catch (e) { console.error('[seed] custom template seed failed:', e.message); }
   // Backfill Attendance records for every currently-approved Leave so the
   // calendar reflects historical approvals + HR can revoke from there.

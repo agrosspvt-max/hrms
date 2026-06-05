@@ -20,6 +20,7 @@ import Departments from './pages/hr/Departments.jsx';
 import Designations from './pages/hr/Designations.jsx';
 import Templates from './pages/hr/Templates.jsx';
 import Assignments from './pages/hr/Assignments.jsx';
+import Products from './pages/hr/Products.jsx';
 import GlobalBacklog from './pages/hr/GlobalBacklog.jsx';
 import SubmissionReviews from './pages/hr/SubmissionReviews.jsx';
 import Performance from './pages/hr/Performance.jsx';
@@ -73,6 +74,7 @@ export default function App() {
             render the same tabbed page so existing deep links keep working. */}
         <Route path="/assignments" element={<ProtectedRoute role="hr"><WorkAssignments /></ProtectedRoute>} />
         <Route path="/templates" element={<ProtectedRoute role="hr"><WorkAssignments /></ProtectedRoute>} />
+        <Route path="/products" element={<ProtectedRoute role="hr"><Products /></ProtectedRoute>} />
         <Route path="/backlog" element={<ProtectedRoute role="hr"><GlobalBacklog /></ProtectedRoute>} />
         <Route path="/reviews" element={<ProtectedRoute role="hr"><SubmissionReviews /></ProtectedRoute>} />
         <Route path="/sent-alerts" element={<ProtectedRoute role="hr"><SentAlerts /></ProtectedRoute>} />

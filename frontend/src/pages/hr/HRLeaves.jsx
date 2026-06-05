@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../../api/axios';
+import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
@@ -15,6 +16,10 @@ export default function HRLeaves() {
   // reason) are never accidentally hidden.
   const [audience, setAudience] = useState('all');
   const [loading, setLoading] = useState(true);
+  // Leave whose full details are being viewed (employee reason +
+  // HR note + revoke reason are all rendered in full here so long
+  // remarks aren't lost behind a CSS truncate).
+  const [viewing, setViewing] = useState(null);
   const toast = useToast();
 
   const load = async () => {
@@ -107,7 +112,20 @@ export default function HRLeaves() {
                   <td>{fmtDate(lv.fromDate)}</td>
                   <td>{fmtDate(lv.toDate)}</td>
                   <td>{lv.days}</td>
-                  <td className="text-slate-500 max-w-xs truncate">{lv.reason}</td>
+                  <td className="text-slate-500 max-w-xs">
+                    {lv.reason ? (
+                      <button
+                        type="button"
+                        onClick={() => setViewing(lv)}
+                        title="Click to view full reason"
+                        className="text-left w-full truncate hover:text-brand-700 hover:underline cursor-pointer"
+                      >
+                        {lv.reason}
+                      </button>
+                    ) : (
+                      <span className="text-slate-300">—</span>
+                    )}
+                  </td>
                   <td>
                     {lv.status === 'pending' && <span className="badge-amber">Pending</span>}
                     {lv.status === 'approved' && <span className={lv.paid ? 'badge-green' : 'badge-amber'}>{lv.paid ? 'Approved' : 'Approved (Unpaid)'}</span>}
@@ -115,6 +133,7 @@ export default function HRLeaves() {
                     {lv.status === 'revoked'  && <span className="badge-gray">Revoked</span>}
                   </td>
                   <td className="text-right whitespace-nowrap">
+                    <button className="btn-ghost" onClick={() => setViewing(lv)} title="View full leave details">View</button>
                     {lv.status === 'pending' && <>
                       <button className="btn-ghost text-green-700" onClick={() => decide(lv._id, 'approved')}>Approve</button>
                       <button className="btn-ghost text-red-600" onClick={() => decide(lv._id, 'rejected')}>Reject</button>
@@ -134,6 +153,103 @@ export default function HRLeaves() {
             </tbody>
           </table>}
       </div>
+
+      {viewing && (
+        <LeaveDetailsModal
+          lv={viewing}
+          onClose={() => setViewing(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * Full leave-details modal.  Surfaces the entire employee reason,
+ * the HR note (if any), and the revoke reason (if revoked) so long
+ * remarks aren't lost behind the table's truncate.
+ */
+function LeaveDetailsModal({ lv, onClose }) {
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="md"
+      title="Leave Details"
+      footer={<button className="btn-primary" onClick={onClose}>Close</button>}
+    >
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500">Employee</div>
+            <div className="text-slate-900 font-medium">{lv.employee?.name || '—'}</div>
+            <div className="text-[11px] text-slate-500">{lv.employee?.employeeId}</div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500">Type</div>
+            <div className="text-slate-900 capitalize">{lv.leaveType}</div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500">From</div>
+            <div className="text-slate-900">{fmtDate(lv.fromDate)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500">To</div>
+            <div className="text-slate-900">{fmtDate(lv.toDate)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500">Days</div>
+            <div className="text-slate-900">{lv.days}{lv.dayType === 'half' ? ' (half-day)' : ''}</div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500">Status</div>
+            <div>
+              {lv.status === 'pending'  && <span className="badge-amber">Pending</span>}
+              {lv.status === 'approved' && <span className={lv.paid ? 'badge-green' : 'badge-amber'}>{lv.paid ? 'Approved' : 'Approved (Unpaid)'}</span>}
+              {lv.status === 'rejected' && <span className="badge-red">Rejected</span>}
+              {lv.status === 'revoked'  && <span className="badge-gray">Revoked</span>}
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Reason from employee</div>
+          <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-700 whitespace-pre-wrap">
+            {lv.reason
+              ? lv.reason
+              : <span className="text-slate-400 italic">No reason provided.</span>}
+          </div>
+        </div>
+
+        {lv.hrNote && (
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">HR note</div>
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm text-slate-700 whitespace-pre-wrap">
+              {lv.hrNote}
+            </div>
+          </div>
+        )}
+
+        {lv.status === 'revoked' && (
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">Revoke reason</div>
+            <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 text-sm text-slate-700 whitespace-pre-wrap">
+              {lv.revokeReason || <span className="text-slate-400 italic">No reason recorded.</span>}
+            </div>
+            {lv.revokedAt && (
+              <div className="text-[11px] text-slate-500 mt-1">
+                Revoked on {new Date(lv.revokedAt).toLocaleString()}
+              </div>
+            )}
+          </div>
+        )}
+
+        {lv.decidedAt && (
+          <div className="text-[11px] text-slate-500">
+            Decided on {new Date(lv.decidedAt).toLocaleString()}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }

@@ -177,7 +177,7 @@ const getToday = asyncHandler(async (req, res) => {
 const VALID_FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 
 const submitOne = asyncHandler(async (req, res) => {
-  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], selfRating, selfNote, idea } = req.body;
+  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], productSales = [], farmerRecords = [], selfRating, selfNote, idea } = req.body;
   const sub = await Submission.findOne({ _id: req.params.id, employee: req.user._id });
   if (!sub) { res.status(404); throw new Error('Submission not found'); }
   if (sub.submitted) { res.status(400); throw new Error('Submission already submitted for today'); }
@@ -350,6 +350,68 @@ const submitOne = asyncHandler(async (req, res) => {
     sub.customResponses = evaluated;
     sub.customKind = tpl.customKind || sub.customKind || '';
     sub.markModified('customResponses');
+
+    /* ---- Product Sales sub-table (templates that opt in) ----
+       Master-data IDs are validated, fields snapshotted at submit time,
+       Sales Value + NBV recomputed server-side from the snapshot so the
+       client can never inflate the numbers. */
+    if (Array.isArray(tpl.customSections) && tpl.customSections.includes('productSales')) {
+      const Product  = require('../models/Product');
+      const Quantity = require('../models/Quantity');
+      const cleanedSales = [];
+      for (const row of (productSales || [])) {
+        if (!row || (!row.productId && !row.quantityId)) continue;
+        const prod = row.productId ? await Product.findById(row.productId).lean()  : null;
+        const qty  = row.quantityId ? await Quantity.findById(row.quantityId).lean() : null;
+        if (!prod || !qty) continue; // silently drop invalid rows
+        const price  = Number(prod.pricePerUnit) || 0;
+        const nbvPct = Math.max(0, Math.min(Number(prod.nbvPercentage) || 0, 100));
+        const qval   = Number(qty.value) || 0;
+        const sales  = Math.round(price * qval * 100) / 100;
+        const nbv    = Math.round(sales * nbvPct) / 100;
+        cleanedSales.push({
+          productId: prod._id,
+          productName: prod.name,
+          productUnit: prod.unit,
+          productPrice: price,
+          productNbvPercentage: nbvPct,
+          quantityId: qty._id,
+          quantityLabel: qty.label,
+          quantityValue: qval,
+          salesValue: sales,
+          nbvValue: nbv,
+        });
+      }
+      sub.productSales = cleanedSales;
+      sub.markModified('productSales');
+    }
+
+    /* ---- Farmer Records sub-table (templates that opt in) ---- */
+    if (Array.isArray(tpl.customSections) && tpl.customSections.includes('farmerRecords')) {
+      const Product  = require('../models/Product');
+      const Quantity = require('../models/Quantity');
+      const cleanedFarmers = [];
+      for (const row of (farmerRecords || [])) {
+        if (!row) continue;
+        const name = String(row.name || '').trim();
+        if (!name) continue; // require at least a name
+        const prod = row.productId ? await Product.findById(row.productId).lean() : null;
+        const qty  = row.quantityId ? await Quantity.findById(row.quantityId).lean() : null;
+        cleanedFarmers.push({
+          name,
+          mobile:         String(row.mobile || '').trim(),
+          village:        String(row.village || '').trim(),
+          dealerLocation: String(row.dealerLocation || '').trim(),
+          productId:      prod?._id,
+          productName:    prod?.name || '',
+          quantityId:     qty?._id,
+          quantityLabel:  qty?.label || '',
+        });
+      }
+      sub.farmerRecords = cleanedFarmers;
+      sub.markModified('farmerRecords');
+    }
+
     total = 0; // custom templates earn marks via HR review (discipline + idea)
     earned = 0;
   } else {

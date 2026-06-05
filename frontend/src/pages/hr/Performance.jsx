@@ -430,6 +430,15 @@ function CallingMode({ data }) {
   const lb = data.leaderboards || {};
   const trend = data.trend || [];
   const employees = data.employees || [];
+  // Product & Farmer extension payload (only present when the backend
+  // has product/farmer submissions in range; otherwise renders nothing).
+  const pk = data.productKpis || {};
+  const fk = data.farmerKpis || {};
+  const cm = data.combinedMetrics || {};
+  const pLb = data.productEmployeeLeaderboards || {};
+  const productsTable = data.productsTable || [];
+  const employeesPF   = data.employeesPF || [];
+  const hasPF = (pk.totalProductsSold || 0) > 0 || (fk.totalFarmersAdded || 0) > 0;
 
   return (
     <div className="space-y-6">
@@ -491,6 +500,112 @@ function CallingMode({ data }) {
           <Leaderboard title="Lowest Call Completion" rows={lb.bottomLowestCompletion} metric="callCompletionRate" suffix="%" accent="red" />
         </div>
       </div>
+
+      {/* =============================================================
+            PRODUCT & FARMER section (additive -- shown only when there
+            are product/farmer submissions in the filter range).  The
+            existing Calling KPIs above this block are untouched.
+          ============================================================= */}
+      {hasPF && (
+        <div className="space-y-4 pt-4">
+          <div className="flex items-center gap-2">
+            <h2 className="text-base font-semibold text-slate-800">Product &amp; Farmer Report</h2>
+            <span className="badge bg-indigo-50 text-indigo-700">Custom Assignment</span>
+          </div>
+          {/* Product / Farmer headline KPIs */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <StatCard label="Total Products Sold"  value={pk.totalProductsSold ?? 0} accent="brand" />
+            <StatCard label="Total Quantity Sold"  value={pk.totalQuantitySold ?? 0} accent="blue" sub="L / KG (canonical)" />
+            <StatCard label="Total Sales Value"    value={`₹${pk.totalSalesValue ?? 0}`} accent="green" />
+            <StatCard label="Total NBV Value"      value={`₹${pk.totalNbvValue ?? 0}`} accent="green" />
+            <StatCard label="Total Farmers Added"  value={fk.totalFarmersAdded ?? 0} accent="amber" />
+            <StatCard label="Revenue / Call"       value={`₹${cm.revenuePerCall ?? 0}`} accent="blue" />
+            <StatCard label="NBV / Call"           value={`₹${cm.nbvPerCall ?? 0}`} accent="blue" />
+            <StatCard label="Farmers / Employee"   value={cm.farmersPerEmployee ?? 0} accent="amber" />
+          </div>
+
+          {/* Product & Farmer leaderboards */}
+          <div>
+            <div className="text-sm font-semibold text-slate-800 mb-2">Top Employees — Product &amp; Farmer</div>
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
+              <Leaderboard title="By Sales Value (₹)"   rows={pLb.topSales}    metric="salesValue"   suffix="" />
+              <Leaderboard title="By NBV Value (₹)"     rows={pLb.topNbv}      metric="nbvValue"     suffix="" />
+              <Leaderboard title="By Quantity Sold"     rows={pLb.topQuantity} metric="quantitySold" suffix="" />
+              <Leaderboard title="By Products Sold"     rows={pLb.topProducts} metric="productsSold" suffix="" />
+              <Leaderboard title="By Farmers Added"     rows={pLb.topFarmers}  metric="farmersAdded" suffix="" />
+            </div>
+          </div>
+
+          {/* Product breakdown table */}
+          <div className="card overflow-x-auto">
+            <div className="px-5 py-3 border-b border-slate-100 text-sm font-semibold text-slate-800">
+              Per-Product Breakdown ({productsTable.length})
+            </div>
+            {productsTable.length === 0 ? (
+              <div className="p-5"><EmptyState title="No product sales in range" /></div>
+            ) : (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Product</th>
+                    <th className="text-right">Rows</th>
+                    <th className="text-right">Quantity</th>
+                    <th className="text-right">Sales (₹)</th>
+                    <th className="text-right">NBV (₹)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {productsTable.map((p) => (
+                    <tr key={p.name}>
+                      <td className="font-medium text-slate-800">{p.name}</td>
+                      <td className="text-right">{p.rows}</td>
+                      <td className="text-right">{p.qty}</td>
+                      <td className="text-right font-semibold text-green-700">{p.sales}</td>
+                      <td className="text-right">{p.nbv}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          {/* Per-employee Product & Farmer summary */}
+          <div className="card overflow-x-auto">
+            <div className="px-5 py-3 border-b border-slate-100 text-sm font-semibold text-slate-800">
+              Per-Employee Sales &amp; Farmer Summary ({employeesPF.length})
+            </div>
+            {employeesPF.length === 0 ? (
+              <div className="p-5"><EmptyState title="No product / farmer submissions in range" /></div>
+            ) : (
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Employee</th><th>Department</th>
+                    <th className="text-right">Sales (₹)</th>
+                    <th className="text-right">NBV (₹)</th>
+                    <th className="text-right">Quantity</th>
+                    <th className="text-right">Products</th>
+                    <th className="text-right">Farmers</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {employeesPF.map((e) => (
+                    <tr key={e._id}>
+                      <td className="font-medium text-slate-800">{e.name}<div className="text-[11px] text-slate-500">{e.employeeId}</div></td>
+                      <td>{e.department}</td>
+                      <td className="text-right font-semibold text-green-700">{e.salesValue}</td>
+                      <td className="text-right">{e.nbvValue}</td>
+                      <td className="text-right">{e.quantitySold}</td>
+                      <td className="text-right">{e.productsSold}</td>
+                      <td className="text-right">{e.farmersAdded}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Per-employee summary table */}
       <div className="card overflow-x-auto">

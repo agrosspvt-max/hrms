@@ -221,6 +221,52 @@ const submissionSchema = new mongoose.Schema(
       default: [],
     },
 
+    /* ---- Product Sales sub-table ----
+       Repeating rows for templates that declare customSections: ['productSales'].
+       Each row snapshots the product + quantity master values at submit
+       time so analytics + historical reports stay correct even when the
+       master catalogue is later edited or deactivated.
+       salesValue + nbvValue are RECOMPUTED server-side from the snapshot
+       (never trusted from the client). */
+    productSales: {
+      type: [new mongoose.Schema(
+        {
+          productId:           { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+          productName:         { type: String, default: '' },
+          productUnit:         { type: String, enum: ['L', 'KG'], default: 'L' },
+          productPrice:        { type: Number, default: 0 },
+          productNbvPercentage:{ type: Number, default: 0 },
+          quantityId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Quantity' },
+          quantityLabel:       { type: String, default: '' },
+          quantityValue:       { type: Number, default: 0 },
+          salesValue:          { type: Number, default: 0 },
+          nbvValue:            { type: Number, default: 0 },
+        },
+        { _id: true },
+      )],
+      default: [],
+    },
+
+    /* ---- Farmer records sub-table ----
+       Repeating farmer-detail rows for templates that declare
+       customSections: ['farmerRecords']. */
+    farmerRecords: {
+      type: [new mongoose.Schema(
+        {
+          name:            { type: String, default: '' },
+          mobile:          { type: String, default: '' },
+          village:         { type: String, default: '' },
+          dealerLocation:  { type: String, default: '' },
+          productId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+          productName:     { type: String, default: '' },
+          quantityId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Quantity' },
+          quantityLabel:   { type: String, default: '' },
+        },
+        { _id: true },
+      )],
+      default: [],
+    },
+
     submitted: { type: Boolean, default: false },
     submittedAt: { type: Date },
 
