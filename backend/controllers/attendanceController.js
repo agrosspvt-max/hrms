@@ -194,4 +194,101 @@ const clearStatus = asyncHandler(async (req, res) => {
   res.json({ cleared: true, revertedStatus, leaveBalance: employee.leaveBalance });
 });
 
-module.exports = { mine, ofEmployee, setStatus, clearStatus };
+/**
+ * POST /api/attendance/bulk    (HR / Super Admin)
+ *
+ * Apply one attendance status to many employees on one date.  Each row
+ * is processed independently using the exact same leave-accounting +
+ * audit-log path setStatus() uses on a single row -- so a bulk apply
+ * lands the same audit trail you'd get from N individual edits.
+ *
+ * Body: { employeeIds: [String], date: 'YYYY-MM-DD', status, note? }
+ * Returns: { requested, succeededCount, failedCount, succeeded[], failed[] }
+ */
+const bulkSetStatus = asyncHandler(async (req, res) => {
+  const { employeeIds, date, status, note } = req.body || {};
+  if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
+    res.status(400); throw new Error('No employees selected');
+  }
+  if (!date)   { res.status(400); throw new Error('date is required'); }
+  if (!MANUAL_STATUSES.includes(status)) {
+    res.status(400);
+    throw new Error(`status must be one of: ${MANUAL_STATUSES.join(', ')}`);
+  }
+  const day = startOfDay(new Date(date));
+  if (Number.isNaN(day.getTime())) { res.status(400); throw new Error('Invalid date'); }
+
+  const succeeded = [];
+  const failed = [];
+
+  for (const id of employeeIds) {
+    try {
+      const employee = await User.findById(id);
+      if (!employee) { failed.push({ id, name: '(deleted)', reason: 'Employee not found' }); continue; }
+
+      // Capture previous status for audit.
+      const previousStatus = await effectiveStatusForDay(employee, day);
+      const existing = await Attendance.findOne({ employee: employee._id, date: day });
+
+      // Same leave-accounting math the single-row setStatus uses.
+      const targetUnits = leaveUnitsForStatus(status);
+      const approvalUnits = await approvedPaidLeaveUnitsForDay(employee._id, day);
+      const existingOverrideDelta = existing && existing.source === 'manual' ? (existing.leaveDelta || 0) : 0;
+      const { overrideDelta, balanceChange } = computeOverrideLeaveDelta({
+        targetUnits, approvalUnits, existingOverrideDelta,
+      });
+
+      if (balanceChange !== 0) {
+        const used = (employee.leaveBalance?.used || 0) + balanceChange;
+        employee.leaveBalance.used = Math.max(0, round2(used));
+        await employee.save();
+      }
+
+      const record = await Attendance.findOneAndUpdate(
+        { employee: employee._id, date: day },
+        {
+          employee: employee._id,
+          date: day,
+          status,
+          source: 'manual',
+          note: note || '',
+          setBy: req.user._id,
+          leaveDelta: overrideDelta,
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+
+      logAudit(req, {
+        action: 'attendance.override',
+        targetType: 'Attendance',
+        targetId: record._id,
+        targetLabel: `${employee.name} · ${day.toISOString().slice(0, 10)} (bulk)`,
+        meta: {
+          employeeId: String(employee._id),
+          date: day.toISOString().slice(0, 10),
+          previousStatus, newStatus: status,
+          targetLeaveUnits: targetUnits, approvedLeaveUnits: approvalUnits,
+          leaveDelta: overrideDelta, balanceChange,
+          via: 'bulk',
+          note: note || '',
+        },
+      });
+
+      succeeded.push({ id: String(employee._id), name: employee.name });
+    } catch (err) {
+      failed.push({ id, name: '(error)', reason: err.message });
+    }
+  }
+
+  res.json({
+    date: day.toISOString().slice(0, 10),
+    status,
+    requested: employeeIds.length,
+    succeededCount: succeeded.length,
+    failedCount: failed.length,
+    succeeded,
+    failed,
+  });
+});
+
+module.exports = { mine, ofEmployee, setStatus, clearStatus, bulkSetStatus };

@@ -36,6 +36,15 @@ export default function SubmissionReviews() {
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
   const [drafts, setDrafts] = useState({}); // { [submissionId]: draft } - survives collapse/filter
+  // Bulk-marks selection state.  Selected rows show a sticky action bar
+  // that applies discipline + innovation marks to every picked row.
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkD, setBulkD]   = useState('');
+  const [bulkMD, setBulkMD] = useState('3');
+  const [bulkI, setBulkI]   = useState('');
+  const [bulkMI, setBulkMI] = useState('2');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
   const toast = useToast();
 
   const toggle = (s) => {
@@ -61,6 +70,47 @@ export default function SubmissionReviews() {
   const pendingCount = items.filter((i) => i.reviewStatus === 'pending').length;
   const reviewedCount = items.filter((i) => i.reviewStatus === 'reviewed').length;
 
+  /* ----------------- Bulk-marks helpers ----------------- */
+  const toggleOne = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const visibleIds = items.map((s) => s._id);
+  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+  const someSelected = visibleIds.some((id) => selected.has(id)) && !allSelected;
+  const toggleAll = () => setSelected((prev) => {
+    if (allSelected) {
+      const next = new Set(prev);
+      visibleIds.forEach((id) => next.delete(id));
+      return next;
+    }
+    return new Set([...prev, ...visibleIds]);
+  });
+  const clearSelection = () => setSelected(new Set());
+
+  const applyBulk = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    const hasAny = [bulkD, bulkI].some((v) => v !== '' && v !== null && v !== undefined);
+    if (!hasAny) { toast.error('Enter at least one of discipline / innovation marks.'); return; }
+    setBulkBusy(true);
+    try {
+      const body = { ids };
+      if (bulkD  !== '') { body.disciplineMarks = Number(bulkD); body.maxDisciplineMarks = Number(bulkMD); }
+      if (bulkI  !== '') { body.ideaMarks       = Number(bulkI); body.maxIdeaMarks       = Number(bulkMI); }
+      const { data } = await api.post('/submissions/review/bulk', body);
+      setBulkResult(data);
+      toast.success(`Applied marks to ${data.succeededCount} submission(s)`);
+      clearSelection();
+      load();
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -82,12 +132,52 @@ export default function SubmissionReviews() {
         </div>
       </div>
 
+      {/* Bulk-marks action bar -- visible only when 1+ rows are selected. */}
+      {selected.size > 0 && (
+        <div className="sticky top-2 z-10 rounded-lg bg-brand-50 border border-brand-200 px-4 py-3 flex items-center gap-3 flex-wrap shadow-sm">
+          <div className="text-sm text-brand-900"><b>{selected.size}</b> selected</div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-slate-600">Discipline</span>
+            <input className="input !py-1 w-16" type="number" min="0" placeholder="—" value={bulkD}  onChange={(e) => setBulkD(e.target.value)} />
+            <span className="text-slate-400">/</span>
+            <input className="input !py-1 w-16" type="number" min="0" value={bulkMD} onChange={(e) => setBulkMD(e.target.value)} />
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-slate-600">Innovation</span>
+            <input className="input !py-1 w-16" type="number" min="0" placeholder="—" value={bulkI}  onChange={(e) => setBulkI(e.target.value)} />
+            <span className="text-slate-400">/</span>
+            <input className="input !py-1 w-16" type="number" min="0" value={bulkMI} onChange={(e) => setBulkMI(e.target.value)} />
+          </div>
+          <button className="btn-primary !py-1" disabled={bulkBusy} onClick={applyBulk}>
+            {bulkBusy ? 'Applying…' : 'Apply Marks'}
+          </button>
+          <button className="btn-ghost !py-1 text-slate-600" disabled={bulkBusy} onClick={clearSelection}>Clear</button>
+        </div>
+      )}
+
+      {bulkResult && (
+        <div className={`rounded-lg p-3 text-sm ${bulkResult.failedCount > 0 ? 'bg-amber-50 border border-amber-200 text-amber-900' : 'bg-green-50 border border-green-200 text-green-800'}`}>
+          Applied marks to <b>{bulkResult.succeededCount}</b> submission(s).
+          {bulkResult.failedCount > 0 && <> {bulkResult.failedCount} skipped (see audit log).</>}
+          <button className="ml-3 underline text-xs" onClick={() => setBulkResult(null)}>Dismiss</button>
+        </div>
+      )}
+
       <div className="card overflow-x-auto">
         {loading ? <Loader /> :
           items.length === 0 ? <EmptyState title="No submissions for this date" /> : (
             <table className="table">
               <thead>
                 <tr>
+                  <th className="w-8">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all submissions"
+                      checked={allSelected}
+                      ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                      onChange={toggleAll}
+                    />
+                  </th>
                   <th className="w-10"></th>
                   <th>Employee</th>
                   <th>Department</th>
@@ -111,6 +201,8 @@ export default function SubmissionReviews() {
                     draft={drafts[s._id]}
                     setDraft={(patch) => setDraft(s._id, patch)}
                     onSaved={() => { clearDraft(s._id); load(); }}
+                    isSelected={selected.has(s._id)}
+                    onSelectToggle={() => toggleOne(s._id)}
                   />
                 ))}
               </tbody>
@@ -162,11 +254,21 @@ function buildHrDraft(s) {
   };
 }
 
-function ReviewRow({ submission: s, expanded, onToggle, draft, setDraft, onSaved }) {
+function ReviewRow({ submission: s, expanded, onToggle, draft, setDraft, onSaved, isSelected, onSelectToggle }) {
   const workPct = s.workTotalPoints > 0 ? (s.workEarnedPoints / s.workTotalPoints) * 100 : 0;
   return (
     <>
-      <tr className={expanded ? 'bg-slate-50' : ''}>
+      <tr className={expanded ? 'bg-slate-50' : (isSelected ? 'bg-brand-50/30' : '')}>
+        <td onClick={(e) => e.stopPropagation()}>
+          {onSelectToggle && (
+            <input
+              type="checkbox"
+              aria-label={`Select submission for ${s.employee?.name || ''}`}
+              checked={!!isSelected}
+              onChange={onSelectToggle}
+            />
+          )}
+        </td>
         <td>
           <button onClick={onToggle} className="p-1 hover:bg-slate-100 rounded">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
@@ -192,7 +294,7 @@ function ReviewRow({ submission: s, expanded, onToggle, draft, setDraft, onSaved
       </tr>
       {expanded && (
         <tr>
-          <td colSpan="11" className="bg-slate-50">
+          <td colSpan="12" className="bg-slate-50">
             <ReviewDetail submission={s} draft={draft || buildHrDraft(s)} setDraft={setDraft} onSaved={onSaved} />
           </td>
         </tr>

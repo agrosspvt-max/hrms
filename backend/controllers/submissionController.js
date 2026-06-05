@@ -43,43 +43,76 @@ const stampDependency = (unit, payload, { kind, sourceTaskId, originalTaskName, 
   };
 };
 
-// Submissions logged before this hour (server local time) trigger the
-// automatic half-day attendance rule.  Configurable via env.
-const HALFDAY_CUTOFF_HOUR = Number(process.env.ATTENDANCE_HALFDAY_CUTOFF_HOUR) || 16;
+// Submissions logged BEFORE this hour (server local time) trigger the
+// automatic half-day attendance rule.  Default 17 (5 PM) per spec --
+// configurable via env so tenants can shift it without code changes.
+const HALFDAY_CUTOFF_HOUR = Number(process.env.ATTENDANCE_HALFDAY_CUTOFF_HOUR) || 17;
 
 /**
  * Apply the automatic half-day attendance rule for `employee` on `day`,
- * driven by the time of submission.  Runs on every daily submit:
- *   - submitted BEFORE the cutoff -> half day
- *       * half_paid   if an approved half-day leave covers the day
- *       * half_unpaid otherwise (0.5 day salary cut, no leave used)
- *   - submitted AFTER the cutoff  -> full working day (no record needed)
- * A manual HR override is never touched.
+ * driven by SERVER TIME of submission.  Behaviour matrix:
+ *
+ *   Submit time     | Approved half-day leave?  | Result
+ *   ----------------|---------------------------|------------------------
+ *   before 5 PM     | no                        | half_unpaid (record)
+ *   before 5 PM     | yes                       | half_paid (record)
+ *   5 PM or later   | n/a                       | no record (derive=Present)
+ *
+ * Guards: NEVER create / overwrite a record when the day is already
+ * owned by something else --
+ *   - manual HR override   (existing.source === 'manual')
+ *   - leave-linked record  (existing.source === 'leave')
+ *   - approved full-day leave covering the day
+ *   - employee weekly off
+ *   - holiday
+ *
+ * Those days stay exactly as they are.  Auto-marking only ever runs on
+ * normal working days.
  */
 const applyAutoHalfDay = async (employee, day) => {
   const existing = await Attendance.findOne({ employee: employee._id, date: day });
   if (existing && existing.source === 'manual') return; // HR override wins
-  // Leave-linked records take precedence too -- the day already has an
-  // explicit owner (the approved Leave) and should not be silently
-  // converted to an 'auto' half-day by a normal submission.
-  if (existing && existing.source === 'leave') return;
+  if (existing && existing.source === 'leave')  return; // leave-linked wins
 
+  // Guard 1: employee's weekly off -- never touch.
+  const { isWeeklyOff } = require('../services/dailyEngine');
+  if (isWeeklyOff(employee, day)) return;
+
+  // Guard 2: any kind of holiday on this date.
+  const holidayToday = await Holiday.findOne({ date: day });
+  if (holidayToday) return;
+
+  // Guard 3: an approved FULL-day leave already owns this day (derive
+  // will surface full_paid / full_unpaid -- we must not stamp half_X
+  // on top).
+  const fullDayLeave = await Leave.findOne({
+    employee: employee._id,
+    status: 'approved',
+    dayType: { $ne: 'half' },
+    fromDate: { $lte: day },
+    toDate:   { $gte: day },
+  });
+  if (fullDayLeave) return;
+
+  // SERVER TIME determines the cutoff -- never the client.
   const beforeCutoff = new Date().getHours() < HALFDAY_CUTOFF_HOUR;
-  if (!beforeCutoff) return; // full day - derivation handles "present"
+  if (!beforeCutoff) return; // 5 PM or later -> Present (derived)
 
+  // Half-day at submit time.  If there's an approved half-day leave for
+  // the same date, the day is paid; otherwise unpaid.
   const halfLeave = await Leave.findOne({
     employee: employee._id,
     status: 'approved',
     dayType: 'half',
     fromDate: { $lte: day },
-    toDate: { $gte: day },
+    toDate:   { $gte: day },
   });
   const status = halfLeave ? 'half_paid' : 'half_unpaid';
 
   await Attendance.findOneAndUpdate(
     { employee: employee._id, date: day },
     { employee: employee._id, date: day, status, source: 'auto', setBy: employee._id },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
+    { upsert: true, new: true, setDefaultsOnInsert: true },
   );
 };
 
@@ -995,8 +1028,112 @@ const hodReviewSubmission = asyncHandler(async (req, res) => {
   res.json(sub);
 });
 
+/**
+ * POST /api/submissions/review/bulk     (HR / Super Admin)
+ *
+ * Apply discipline + innovation marks to many already-submitted
+ * submissions in one call.  Only those two mark fields are touched --
+ * task / excel / sheet / per-row marks are NEVER modified.  Each
+ * submission still goes through the same role guard the single-row
+ * reviewSubmission uses (HR can't review HR / SA, can't review own).
+ *
+ * Body: {
+ *   ids: [String],
+ *   disciplineMarks?, maxDisciplineMarks?,
+ *   ideaMarks?, maxIdeaMarks?,
+ *   disciplineNote?, ideaFeedback?
+ * }
+ *
+ * Returns: { requested, succeeded: [{ id, name }], failed: [{ id, reason }] }
+ */
+const bulkReview = asyncHandler(async (req, res) => {
+  const { ids } = req.body || {};
+  if (!Array.isArray(ids) || ids.length === 0) {
+    res.status(400);
+    throw new Error('No submissions selected');
+  }
+  // Inputs are optional; if omitted, the existing value on the doc is kept.
+  const d  = req.body.disciplineMarks;
+  const md = req.body.maxDisciplineMarks;
+  const i  = req.body.ideaMarks;
+  const mi = req.body.maxIdeaMarks;
+  const dNote = req.body.disciplineNote;
+  const iFb   = req.body.ideaFeedback;
+
+  if ([d, md, i, mi].every((x) => x === undefined || x === null || x === '')) {
+    res.status(400);
+    throw new Error('Provide at least one of discipline / innovation marks.');
+  }
+
+  const succeeded = [];
+  const failed = [];
+  for (const id of ids) {
+    try {
+      const sub = await Submission.findById(id);
+      if (!sub) { failed.push({ id, reason: 'Not found' }); continue; }
+      if (!sub.submitted) { failed.push({ id, reason: 'Not yet submitted' }); continue; }
+      // Same role guard as reviewSubmission.
+      if (req.user.role !== 'super_admin') {
+        if (String(sub.employee) === String(req.user._id)) { failed.push({ id, reason: 'Cannot review own submission' }); continue; }
+        const owner = await User.findById(sub.employee).select('role name');
+        if (owner?.role === 'hr' || owner?.role === 'super_admin') { failed.push({ id, reason: 'HR / SA submissions require Super Admin' }); continue; }
+      }
+
+      // Apply (only fields provided are updated; max-* set when paired).
+      const maxD = md !== undefined && md !== '' ? Math.max(0, Number(md)) : sub.maxDisciplineMarks;
+      const maxI = mi !== undefined && mi !== '' ? Math.max(0, Number(mi)) : sub.maxIdeaMarks;
+      const dM   = d !== undefined && d !== ''   ? Math.max(0, Math.min(Number(d) || 0, maxD)) : sub.disciplineMarks;
+      const iM   = i !== undefined && i !== ''   ? Math.max(0, Math.min(Number(i) || 0, maxI)) : sub.ideaMarks;
+
+      sub.maxDisciplineMarks = maxD;
+      sub.disciplineMarks    = dM;
+      if (dNote !== undefined) sub.disciplineNote = String(dNote);
+      sub.maxIdeaMarks = maxI;
+      sub.ideaMarks    = iM;
+      if (iFb !== undefined) sub.ideaFeedback = String(iFb);
+
+      // Recompute final scores from the cached work points.
+      sub.earnedPoints = (Number(sub.workEarnedPoints) || 0) + Number(dM) + Number(iM);
+      sub.totalPoints  = (Number(sub.workTotalPoints)  || 0) + Number(maxD) + Number(maxI);
+      sub.completionPercentage = sub.totalPoints > 0 ? (sub.earnedPoints / sub.totalPoints) * 100 : 0;
+
+      sub.reviewedBy = req.user._id;
+      sub.reviewedAt = new Date();
+      sub.reviewStatus = 'reviewed';
+      sub.currentReviewStage = 'finalized';
+      sub.reviewHistory.push({
+        reviewedBy: req.user._id,
+        reviewerName: req.user.name,
+        role: req.user.role,
+        stage: 'finalized',
+        action: 'bulk_review',
+        marks: sub.earnedPoints,
+        remarks: dNote || '',
+        timestamp: new Date(),
+      });
+      await sub.save();
+
+      // Audit per row so the audit log keeps full per-submission trail.
+      const { logAudit } = require('../utils/audit');
+      logAudit(req, {
+        action: 'submission.review.bulk',
+        targetType: 'Submission',
+        targetId: sub._id,
+        targetLabel: `bulk discipline=${dM}/${maxD} idea=${iM}/${maxI}`,
+        meta: { disciplineMarks: dM, maxDisciplineMarks: maxD, ideaMarks: iM, maxIdeaMarks: maxI },
+      });
+
+      const e = await User.findById(sub.employee).select('name');
+      succeeded.push({ id: String(sub._id), name: e?.name || '' });
+    } catch (err) {
+      failed.push({ id, reason: err.message });
+    }
+  }
+  res.json({ requested: ids.length, succeededCount: succeeded.length, failedCount: failed.length, succeeded, failed });
+});
+
 module.exports = {
   getToday, submitOne, completeBacklogTask, history,
-  listForReview, reviewSubmission,
+  listForReview, reviewSubmission, bulkReview,
   listForHodReview, hodReviewSubmission,
 };

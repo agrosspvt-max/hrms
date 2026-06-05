@@ -138,6 +138,65 @@ const remove = asyncHandler(async (req, res) => {
 });
 
 /**
+ * POST /api/assignments/:id/revoke    (HR / Super Admin)
+ *
+ * Soft revoke -- the assignment stays in the database for audit, but:
+ *   1. `active` flips to false so the daily engine stops generating
+ *      new submissions on subsequent days.
+ *   2. Every UN-SUBMITTED submission tied to this assignment is
+ *      deleted (employee instantly stops seeing the work).  Submitted
+ *      history is preserved untouched.
+ *   3. revokedAt / revokedBy / revokeReason are stamped.
+ *   4. Audit log entry written.
+ *
+ * Body: { reason?: string }
+ */
+const revoke = asyncHandler(async (req, res) => {
+  const a = await Assignment.findById(req.params.id).populate('template', 'title');
+  if (!a) { res.status(404); throw new Error('Assignment not found'); }
+  const denied = await guardHRTarget(req, a);
+  if (denied) { res.status(403); throw new Error(denied); }
+  if (!a.active && a.revokedAt) {
+    res.status(400); throw new Error('Assignment is already revoked.');
+  }
+
+  const reason = (req.body?.reason || '').trim();
+
+  // Snapshot how many un-submitted rows we're about to delete so the
+  // audit log captures the impact.  Submitted submissions are kept.
+  const unsubmittedDeleted = await Submission.deleteMany({
+    assignment: a._id,
+    submitted: false,
+  });
+
+  a.active = false;
+  a.revokedAt = new Date();
+  a.revokedBy = req.user._id;
+  a.revokeReason = reason;
+  await a.save();
+
+  // Audit log -- captures who / when / what / impact.
+  const { logAudit } = require('../utils/audit');
+  logAudit(req, {
+    action: 'assignment.revoke',
+    targetType: 'Assignment',
+    targetId: a._id,
+    targetLabel: `${a.template?.title || '(template gone)'} → ${a.targetType}:${a.targetRef}`,
+    meta: {
+      reason,
+      unsubmittedDeleted: unsubmittedDeleted?.deletedCount || 0,
+      frequency: a.frequency,
+    },
+  });
+
+  res.json({
+    message: 'Assignment revoked',
+    assignment: a,
+    unsubmittedDeleted: unsubmittedDeleted?.deletedCount || 0,
+  });
+});
+
+/**
  * GET /api/assignments/:id/stats
  * Per-assignment detail drawer payload: assignment + template + creator,
  * submission counts (done/pending units), reviewed share, dependency
@@ -179,4 +238,4 @@ const stats = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { list, create, update, remove, stats };
+module.exports = { list, create, update, remove, stats, revoke };

@@ -9,5 +9,6 @@ router.get('/:id/stats', c.stats);
 router.post('/', c.create);
 router.put('/:id', c.update);
 router.delete('/:id', c.remove);
+router.post('/:id/revoke', c.revoke);
 
 module.exports = router;

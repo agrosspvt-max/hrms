@@ -10,4 +10,8 @@ router.get('/employee/:id', authorize('hr'), c.ofEmployee);
 router.put('/employee/:id/status', authorize('hr'), c.setStatus);
 router.delete('/employee/:id/status', authorize('hr'), c.clearStatus);
 
+// Bulk attendance override (HR / Super Admin): same per-row leave
+// accounting + audit log as the single endpoint.
+router.post('/bulk', authorize('hr'), c.bulkSetStatus);
+
 module.exports = router;

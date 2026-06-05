@@ -60,6 +60,17 @@ const assignmentSchema = new mongoose.Schema(
     overrideReason: { type: String, default: '' },
 
     active: { type: Boolean, default: true },
+
+    /* ---- Revoke audit (soft revoke) ----
+       Set when HR explicitly revokes an assignment that has already
+       reached the employee.  `active` flips to false so the daily
+       engine stops generating new submissions; un-submitted submissions
+       are removed (handled by the controller).  Submitted history is
+       preserved untouched.  Cleared back to null on re-activate / edit. */
+    revokedAt:     { type: Date,    default: null },
+    revokedBy:     { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    revokeReason:  { type: String,  default: '' },
+
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

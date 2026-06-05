@@ -65,6 +65,15 @@ export default function EmployeeAttendance() {
   // Shape: { employee, date, status, note, prevStatus, saving }
   const [editing, setEditing] = useState(null);
 
+  // Bulk-attendance multi-select state.
+  const [selected, setSelected] = useState(() => new Set());
+  const today = new Date().toISOString().slice(0, 10);
+  const [bulkDate, setBulkDate] = useState(today);
+  const [bulkStatus, setBulkStatus] = useState('present');
+  const [bulkNote, setBulkNote] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
+
   const toast = useToast();
 
   useEffect(() => {
@@ -196,6 +205,39 @@ export default function EmployeeAttendance() {
   };
   const collapseAll = () => setOpenMap({});
 
+  /* ----------------- Bulk-attendance helpers ----------------- */
+  const toggleOne = (id) => setSelected((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const clearSelection = () => setSelected(new Set());
+  const applyBulkAttendance = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    if (!bulkDate) { toast.error('Pick a date.'); return; }
+    setBulkBusy(true);
+    try {
+      const { data } = await api.post('/attendance/bulk', {
+        employeeIds: ids,
+        date: bulkDate,
+        status: bulkStatus,
+        note: bulkNote.trim(),
+      });
+      setBulkResult(data);
+      toast.success(`Updated ${data.succeededCount} employee(s)`);
+      // Re-fetch open cards so the calendars reflect the change.
+      const openIds = Object.keys(openMap).filter((id) => openMap[id]);
+      openIds.forEach((id) => fetchAttendance(id));
+      clearSelection();
+      setBulkNote('');
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
   const filtered = employees.filter((e) => {
     if (filterDept && String(e.department?._id || e.department) !== filterDept) return false;
     if (q) {
@@ -255,6 +297,56 @@ export default function EmployeeAttendance() {
 
       {filtered.length === 0 && <EmptyState title="No employees match the current filter" />}
 
+      {filtered.length > 0 && (
+        <div className="card card-body flex flex-wrap items-center gap-3 py-3">
+          <label className="flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              checked={filtered.length > 0 && filtered.every((e) => selected.has(e._id))}
+              ref={(el) => {
+                if (!el) return;
+                const some = filtered.some((e) => selected.has(e._id));
+                const all  = filtered.every((e) => selected.has(e._id));
+                el.indeterminate = some && !all;
+              }}
+              onChange={(e) => {
+                if (e.target.checked) setSelected((p) => new Set([...p, ...filtered.map((x) => x._id)]));
+                else setSelected((p) => { const n = new Set(p); filtered.forEach((x) => n.delete(x._id)); return n; });
+              }}
+            />
+            <span>Select all ({filtered.length})</span>
+          </label>
+          {selected.size > 0 && (
+            <>
+              <span className="text-sm text-slate-600 ml-2"><b>{selected.size}</b> selected</span>
+              <input className="input !py-1 max-w-[150px]" type="date" value={bulkDate} onChange={(e) => setBulkDate(e.target.value)} />
+              <select className="input !py-1 max-w-[200px]" value={bulkStatus} onChange={(e) => setBulkStatus(e.target.value)}>
+                <option value="present">Present</option>
+                <option value="absent">Absent</option>
+                <option value="half_paid">Half Day (Paid)</option>
+                <option value="half_unpaid">Half Day (Unpaid)</option>
+                <option value="full_paid">Full Day Leave (Paid)</option>
+                <option value="full_unpaid">Full Day Leave (Unpaid)</option>
+                <option value="weekly_off">Weekly Off</option>
+              </select>
+              <input className="input !py-1 max-w-[220px]" placeholder="Optional note" value={bulkNote} onChange={(e) => setBulkNote(e.target.value)} />
+              <button className="btn-primary !py-1" disabled={bulkBusy} onClick={applyBulkAttendance}>
+                {bulkBusy ? 'Applying…' : 'Apply'}
+              </button>
+              <button className="btn-ghost !py-1 text-slate-600" disabled={bulkBusy} onClick={clearSelection}>Clear</button>
+            </>
+          )}
+        </div>
+      )}
+
+      {bulkResult && (
+        <div className={`rounded-lg p-3 text-sm ${bulkResult.failedCount > 0 ? 'bg-amber-50 border border-amber-200 text-amber-900' : 'bg-green-50 border border-green-200 text-green-800'}`}>
+          Applied <b>{STATUS_LABEL[bulkResult.status] || bulkResult.status}</b> to <b>{bulkResult.succeededCount}</b> employee(s) on {bulkResult.date}.
+          {bulkResult.failedCount > 0 && <> {bulkResult.failedCount} skipped.</>}
+          <button className="ml-3 underline text-xs" onClick={() => setBulkResult(null)}>Dismiss</button>
+        </div>
+      )}
+
       <div className="space-y-3">
         {filtered.map((emp) => (
           <EmployeeCard
@@ -264,6 +356,8 @@ export default function EmployeeAttendance() {
             onToggle={() => toggle(emp._id)}
             att={attendance[emp._id]}
             onEditDay={openEdit}
+            isSelected={selected.has(emp._id)}
+            onSelectToggle={() => toggleOne(emp._id)}
           />
         ))}
       </div>
@@ -358,11 +452,22 @@ const STATUS_EFFECT = {
   weekly_off: 'No salary deduction. No leave deducted.',
 };
 
-function EmployeeCard({ employee, open, onToggle, att, onEditDay }) {
+function EmployeeCard({ employee, open, onToggle, att, onEditDay, isSelected, onSelectToggle }) {
   return (
-    <div className="card">
+    <div className={`card ${isSelected ? 'ring-2 ring-brand-200' : ''}`}>
       <button onClick={onToggle} className="w-full flex items-center justify-between px-5 py-4 text-left">
         <div className="flex items-center gap-3">
+          {onSelectToggle && (
+            <span onClick={(e) => { e.stopPropagation(); onSelectToggle(); }} className="inline-flex items-center">
+              <input
+                type="checkbox"
+                aria-label={`Select ${employee.name}`}
+                checked={!!isSelected}
+                onChange={onSelectToggle}
+                onClick={(e) => e.stopPropagation()}
+              />
+            </span>
+          )}
           <svg
             width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
             className={`transition-transform ${open ? 'rotate-90' : ''}`}

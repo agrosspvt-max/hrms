@@ -92,6 +92,28 @@ export default function Assignments({ embedded = false } = {}) {
     catch (err) { toast.error(errMsg(err)); }
   };
 
+  /**
+   * Soft revoke an assignment.  Different from Delete: revoke keeps the
+   * row in the database (for audit), stops daily generation, removes any
+   * un-submitted submissions from the employee dashboard, and preserves
+   * submitted history.
+   */
+  const revoke = async (a) => {
+    const ok = window.confirm(
+      `Are you sure you want to revoke this assignment?\n` +
+      `Template: ${a.template?.title || ''}\n` +
+      `Target: ${a.targetType} — ${resolveTarget(a) || ''}\n\n` +
+      `This stops daily generation immediately and removes any un-submitted submissions from the employee dashboard. Already-submitted reports stay intact.`,
+    );
+    if (!ok) return;
+    const reason = window.prompt('Reason for revoking this assignment (optional):', '') || '';
+    try {
+      const { data } = await api.post(`/assignments/${a._id}/revoke`, { reason: reason.trim() });
+      toast.success(`Assignment revoked. ${data.unsubmittedDeleted || 0} un-submitted submission(s) removed.`);
+      load();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
+
   const resolveTarget = (a) => {
     if (a.targetType === 'employee') return employees.find((x) => x._id === a.targetRef)?.name || a.targetRef;
     if (a.targetType === 'department') return departments.find((x) => x._id === a.targetRef)?.name || a.targetRef;
@@ -174,6 +196,18 @@ export default function Assignments({ embedded = false } = {}) {
                 <td className="text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                   {canModify(a) ? (<>
                     <button className="btn-ghost" onClick={() => setModal({ mode: 'edit', data: { ...a, template: a.template?._id } })}>Edit</button>
+                    {a.active && !a.revokedAt && (
+                      <button
+                        className="btn-ghost text-red-600"
+                        title="Stop generating new submissions and remove un-submitted ones from the employee dashboard"
+                        onClick={() => revoke(a)}
+                      >
+                        Revoke
+                      </button>
+                    )}
+                    {a.revokedAt && (
+                      <span className="badge-gray ml-1" title={`Revoked ${new Date(a.revokedAt).toLocaleString()}`}>Revoked</span>
+                    )}
                     <button className="btn-ghost text-red-600" onClick={() => del(a._id)}>Delete</button>
                   </>) : (
                     <span className="text-[11px] text-slate-400 italic pr-2">Managed by Super Admin</span>
