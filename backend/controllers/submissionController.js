@@ -138,7 +138,15 @@ const getToday = asyncHandler(async (req, res) => {
   const submissions = await Submission.find({
     employee: employee._id,
     date: today,
-  }).populate('template', 'title customFields customKind');
+  }).populate('template', 'title customFields customKind customSections');
+
+  // Defensive log: surface what the employee form will actually receive,
+  // so a missing populate field shows up the moment we serve a request.
+  for (const s of submissions) {
+    if (s.templateType === 'custom') {
+      console.log(`[getToday] custom submission ${s._id} -> template "${s.template?.title}" kind=${s.template?.customKind || '-'} sections=${JSON.stringify(s.template?.customSections || [])} fields=${(s.template?.customFields || []).length}`);
+    }
+  }
 
   // Effective working status: if HR pushed override work onto a weekly-off
   // or holiday, today is a working day for the employee -- otherwise the
@@ -599,7 +607,9 @@ const history = asyncHandler(async (req, res) => {
     if (req.query.from) where.date.$gte = startOfDay(new Date(req.query.from));
     if (req.query.to) where.date.$lte = startOfDay(new Date(req.query.to));
   }
-  const items = await Submission.find(where).populate('template', 'title').sort({ date: -1 });
+  const items = await Submission.find(where)
+    .populate('template', 'title customFields customKind customSections')
+    .sort({ date: -1 });
   res.json(items);
 });
 
@@ -663,7 +673,7 @@ const listForReview = asyncHandler(async (req, res) => {
         { path: 'designation', select: 'title' },
       ],
     })
-    .populate('template', 'title')
+    .populate('template', 'title customFields customKind customSections')
     .sort({ submittedAt: -1 });
 
   // Role-aware visibility:
@@ -886,7 +896,7 @@ const listForHodReview = asyncHandler(async (req, res) => {
         { path: 'designation', select: 'title' },
       ],
     })
-    .populate('template', 'title')
+    .populate('template', 'title customFields customKind customSections')
     .sort({ submittedAt: -1 });
 
   const out = items.map((it) => {
