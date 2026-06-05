@@ -157,9 +157,27 @@ const seedDefaultCallingTemplate = async () => {
 const PRODUCT_FARMER_TEMPLATE_KIND = 'product_farmer';
 
 const seedDefaultProductFarmerTemplate = async () => {
-  const existing = await Template.findOne({ customKind: PRODUCT_FARMER_TEMPLATE_KIND }).select('_id');
-  if (existing) return;
-  await Template.create({
+  const existing = await Template.findOne({ customKind: PRODUCT_FARMER_TEMPLATE_KIND });
+  if (existing) {
+    // SELF-HEAL: if a prior deploy / save corrupted the template (e.g.
+    // an older normaliser stripped customSections), restore the
+    // canonical opt-ins so the report stays functional.  Idempotent.
+    const wanted = ['productSales', 'farmerRecords'];
+    const have = Array.isArray(existing.customSections) ? existing.customSections : [];
+    const missing = wanted.filter((s) => !have.includes(s));
+    if (missing.length > 0) {
+      existing.customSections = Array.from(new Set([...have, ...wanted]));
+      existing.templateType = 'custom';
+      existing.customKind = PRODUCT_FARMER_TEMPLATE_KIND;
+      if (existing.isActive === undefined) existing.isActive = true;
+      await existing.save();
+      console.log(`[seed] Product & Farmer Report template found (id=${existing._id}) — restored missing sections: ${missing.join(', ')}`);
+    } else {
+      console.log(`[seed] Product & Farmer Report template found (id=${existing._id}) — sections OK: ${have.join(', ')}`);
+    }
+    return;
+  }
+  const created = await Template.create({
     title: 'Product & Farmer Report',
     description: 'Daily field report: record product sales (auto Sales Value + NBV) and farmer interactions.',
     templateType: 'custom',
@@ -168,7 +186,7 @@ const seedDefaultProductFarmerTemplate = async () => {
     customFields: [],
     isActive: true,
   });
-  console.log('[seed] created default Product & Farmer Report custom template');
+  console.log(`[seed] Product & Farmer Report template created (id=${created._id})`);
 };
 
 module.exports = {

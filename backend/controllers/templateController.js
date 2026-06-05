@@ -157,6 +157,12 @@ const normalisePayload = (body) => {
         : CUSTOM_VISIBLE_ROLES.slice(),
       order: Number(f.order) || 0,
     })).filter((f) => f.key && f.label);
+    // Preserve opt-in sub-tables (productSales / farmerRecords / future
+    // additions).  Earlier revisions dropped this from the PUT payload --
+    // any edit to the Product & Farmer Report then "erased" the report.
+    out.customSections = Array.isArray(body.customSections)
+      ? body.customSections.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim())
+      : [];
   }
   return out;
 };

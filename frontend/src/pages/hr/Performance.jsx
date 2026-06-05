@@ -438,7 +438,13 @@ function CallingMode({ data }) {
   const pLb = data.productEmployeeLeaderboards || {};
   const productsTable = data.productsTable || [];
   const employeesPF   = data.employeesPF || [];
-  const hasPF = (pk.totalProductsSold || 0) > 0 || (fk.totalFarmersAdded || 0) > 0;
+  // Section is ALWAYS rendered so HR sees the structure on day one --
+  // empty states + zero values are shown when there's no data yet,
+  // not the section itself hidden.
+  const pfTotalSales    = pk.totalSalesValue   || 0;
+  const pfTotalProducts = pk.totalProductsSold || 0;
+  const pfTotalFarmers  = fk.totalFarmersAdded || 0;
+  const hasPF = pfTotalProducts > 0 || pfTotalFarmers > 0;
 
   return (
     <div className="space-y-6">
@@ -502,15 +508,17 @@ function CallingMode({ data }) {
       </div>
 
       {/* =============================================================
-            PRODUCT & FARMER section (additive -- shown only when there
-            are product/farmer submissions in the filter range).  The
-            existing Calling KPIs above this block are untouched.
+            PRODUCT & FARMER section (additive -- ALWAYS rendered so HR
+            sees the structure on day one; empty states fire when there
+            are no product / farmer submissions yet).  The existing
+            Calling KPIs above this block are untouched.
           ============================================================= */}
-      {hasPF && (
+      {true && (
         <div className="space-y-4 pt-4">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-semibold text-slate-800">Product &amp; Farmer Report</h2>
             <span className="badge bg-indigo-50 text-indigo-700">Custom Assignment</span>
+            {!hasPF && <span className="text-[11px] text-slate-500">— no submissions in range yet</span>}
           </div>
           {/* Product / Farmer headline KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -524,15 +532,16 @@ function CallingMode({ data }) {
             <StatCard label="Farmers / Employee"   value={cm.farmersPerEmployee ?? 0} accent="amber" />
           </div>
 
-          {/* Product & Farmer leaderboards */}
+          {/* Product & Farmer leaderboards (always rendered, empty list
+              inside each card when no data so HR sees the layout). */}
           <div>
             <div className="text-sm font-semibold text-slate-800 mb-2">Top Employees — Product &amp; Farmer</div>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-              <Leaderboard title="By Sales Value (₹)"   rows={pLb.topSales}    metric="salesValue"   suffix="" />
-              <Leaderboard title="By NBV Value (₹)"     rows={pLb.topNbv}      metric="nbvValue"     suffix="" />
-              <Leaderboard title="By Quantity Sold"     rows={pLb.topQuantity} metric="quantitySold" suffix="" />
-              <Leaderboard title="By Products Sold"     rows={pLb.topProducts} metric="productsSold" suffix="" />
-              <Leaderboard title="By Farmers Added"     rows={pLb.topFarmers}  metric="farmersAdded" suffix="" />
+              <Leaderboard title="By Sales Value (₹)"   rows={pLb.topSales || []}    metric="salesValue"   suffix="" />
+              <Leaderboard title="By NBV Value (₹)"     rows={pLb.topNbv || []}      metric="nbvValue"     suffix="" />
+              <Leaderboard title="By Quantity Sold"     rows={pLb.topQuantity || []} metric="quantitySold" suffix="" />
+              <Leaderboard title="By Products Sold"     rows={pLb.topProducts || []} metric="productsSold" suffix="" />
+              <Leaderboard title="By Farmers Added"     rows={pLb.topFarmers || []}  metric="farmersAdded" suffix="" />
             </div>
           </div>
 

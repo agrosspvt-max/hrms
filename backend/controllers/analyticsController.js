@@ -778,6 +778,11 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     ],
   }).select('employee date productSales farmerRecords').lean();
 
+  // Defensive log so deploys can verify data flow at a glance.
+  const pfProductRows = pfSubs.reduce((s, sub) => s + ((sub.productSales || []).length), 0);
+  const pfFarmerRows  = pfSubs.reduce((s, sub) => s + ((sub.farmerRecords || []).length), 0);
+  console.log(`[analytics] product submissions found: ${pfSubs.length} (${pfProductRows} product rows, ${pfFarmerRows} farmer rows) [range ${from.toISOString().slice(0,10)} → ${to.toISOString().slice(0,10)}, ${empIds.length} employees scoped]`);
+
   let totalProductsSold     = 0;   // count of product-sale rows
   let totalQuantitySold     = 0;   // sum of quantityValue
   let totalSalesValue       = 0;

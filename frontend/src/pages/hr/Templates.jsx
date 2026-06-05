@@ -127,7 +127,17 @@ export default function Templates({ embedded = false } = {}) {
             : t.templateType === 'sheet'
             ? `${t.sheet?.rowCount || 0}×${t.sheet?.colCount || 0} grid • ${(t.sheet?.scoring || []).length} scoring target(s) • ${totalSheetMarks(t.sheet?.scoring)} total marks`
             : t.templateType === 'custom'
-            ? `${(t.customFields || []).length} field(s)${t.customKind ? ` • kind: ${t.customKind}` : ''}${t.isActive === false ? ' • inactive' : ''}`
+            ? (() => {
+                const fc = (t.customFields || []).length;
+                const sc = (t.customSections || []).length;
+                const parts = [];
+                if (fc > 0) parts.push(`${fc} field(s)`);
+                if (sc > 0) parts.push(`${sc} sub-table(s) (${(t.customSections || []).join(', ')})`);
+                if (parts.length === 0) parts.push('empty');
+                if (t.customKind) parts.push(`kind: ${t.customKind}`);
+                if (t.isActive === false) parts.push('inactive');
+                return parts.join(' • ');
+              })()
             : `${t.tasks.length} task(s) • ${t.tasks.reduce((s, x) => s + (x.points || 0), 0)} total points`;
           const usageSub = st.total > 0
             ? ` • ${st.total} assignment(s) (${st.active} active, ${st.total - st.active} paused) • ${[...st.freq].join(', ')}`
@@ -187,31 +197,77 @@ export default function Templates({ embedded = false } = {}) {
 /*   - Clone an existing custom template (from the Templates list) so  */
 /*     they get the field structure as a starting point.               */
 /* ------------------------------------------------------------------ */
+/* Friendly label + description for each well-known sub-table. */
+const CUSTOM_SECTION_META = {
+  productSales: {
+    label: 'Product Sales',
+    description: 'Repeating rows of (Product, Quantity). Sales Value and NBV are auto-calculated from Product Master at submit time.',
+    employeeCols: ['Product (dropdown)', 'Quantity (dropdown)', 'Sales Value (auto)', 'NBV Value (auto)'],
+  },
+  farmerRecords: {
+    label: 'Farmer Records',
+    description: 'Repeating farmer-detail rows (name, mobile, village, dealer, product, quantity).',
+    employeeCols: ['Farmer Name', 'Mobile', 'Village', 'Dealer Location', 'Product', 'Quantity'],
+  },
+};
+
 function CustomFieldsPreview({ tpl }) {
   const fields = (tpl.customFields || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
-  if (fields.length === 0) {
-    return (
-      <div className="text-sm text-slate-500 italic">
-        No fields defined yet. Use Clone on an existing custom template (e.g. Daily Calling Report) to copy its structure, or wait for the visual field builder.
-      </div>
-    );
-  }
-  // Group fields by their `group` for readability.
+  const sections = (tpl.customSections || []).filter(Boolean);
+
+  // Group scalar fields by their `group` (for the bottom table view).
   const groups = [];
-  const seen = new Map();
+  const seenGroups = new Map();
   for (const f of fields) {
     const g = f.group || 'General';
-    if (!seen.has(g)) { seen.set(g, groups.length); groups.push({ name: g, items: [] }); }
-    groups[seen.get(g)].items.push(f);
+    if (!seenGroups.has(g)) { seenGroups.set(g, groups.length); groups.push({ name: g, items: [] }); }
+    groups[seenGroups.get(g)].items.push(f);
   }
+
   return (
     <div className="space-y-3">
       {tpl.customKind && (
         <div className="text-[12px] text-slate-600">
           Analytics kind: <code className="px-1 py-0.5 bg-slate-100 rounded">{tpl.customKind}</code>
           {tpl.customKind === 'calling' && <span className="ml-2 text-slate-500">(surfaced in Performance → Calling Analytics)</span>}
+          {tpl.customKind === 'product_farmer' && <span className="ml-2 text-slate-500">(surfaced in Performance → Calling Analytics → Product &amp; Farmer Report)</span>}
         </div>
       )}
+
+      {/* Opt-in repeating sub-tables (productSales, farmerRecords, ...). */}
+      {sections.length > 0 && (
+        <div className="space-y-3">
+          {sections.map((s) => {
+            const meta = CUSTOM_SECTION_META[s] || { label: s, description: '', employeeCols: [] };
+            return (
+              <div key={s} className="rounded-lg border border-indigo-100 bg-indigo-50/40">
+                <div className="px-3 py-2 bg-indigo-50 text-[11px] font-semibold uppercase tracking-wide text-indigo-800 flex items-center justify-between">
+                  <span>Section: {meta.label}</span>
+                  <span className="text-[10px] text-indigo-700 font-mono">{s}</span>
+                </div>
+                <div className="p-3 space-y-2 text-sm">
+                  {meta.description && <div className="text-slate-600">{meta.description}</div>}
+                  {meta.employeeCols.length > 0 && (
+                    <div className="text-[12px] text-slate-700">
+                      <span className="font-semibold">Row columns:</span> {meta.employeeCols.join(' · ')}
+                    </div>
+                  )}
+                  <div className="text-[11px] text-slate-500">Employee can add unlimited rows.</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Empty state -- no fields AND no sections. */}
+      {fields.length === 0 && sections.length === 0 && (
+        <div className="text-sm text-slate-500 italic">
+          No fields or sections defined yet. Use Clone on an existing custom template (e.g. Daily Calling Report) to copy its structure, or wait for the visual field builder.
+        </div>
+      )}
+
+      {/* Scalar custom fields, grouped. */}
       {groups.map((g) => (
         <div key={g.name} className="rounded-lg border border-slate-200">
           <div className="px-3 py-2 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-700">{g.name}</div>
