@@ -112,9 +112,13 @@ const start = async () => {
   try { await syncSalaryIndexes(); } catch (e) { console.error('[migrate] salary period migration failed:', e.message); }
   // Seed default Custom Assignment templates (idempotent).
   try {
-    const { seedDefaultCallingTemplate, seedDefaultProductFarmerTemplate } = require('./services/customTemplate');
+    const { seedDefaultCallingTemplate, seedDefaultProductFarmerTemplate, migrateCallingDialedCalls } = require('./services/customTemplate');
     await seedDefaultCallingTemplate();
     await seedDefaultProductFarmerTemplate();
+    // Backfill the new `dialedCalls` field on every historic Calling
+    // Report submission so old analytics + new analytics stay
+    // mathematically consistent.  Idempotent / safe to re-run.
+    await migrateCallingDialedCalls();
   } catch (e) { console.error('[seed] custom template seed failed:', e.message); }
   // Backfill Attendance records for every currently-approved Leave so the
   // calendar reflects historical approvals + HR can revoke from there.

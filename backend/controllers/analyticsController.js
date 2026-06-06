@@ -667,6 +667,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   // ---- Headline KPIs (org-wide for the filtered scope) ----
   const totalAssignedCalls    = sumCustom(subs, 'assignedCalls');
   const totalCallsCompleted   = sumCustom(subs, 'totalCallsCompleted');
+  const totalDialedCalls      = sumCustom(subs, 'dialedCalls');
   const totalAttendedCalls    = sumCustom(subs, 'attendedCalls');
   const totalUnattendedCalls  = sumCustom(subs, 'unattendedCalls');
   const totalConversions      = sumCustom(subs, 'totalConversions');
@@ -674,16 +675,26 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   const newConversions        = sumCustom(subs, 'newCustomerConversions');
   const totalPendingCalls     = sumCustom(subs, 'totalPending');
 
+  // Active-employee count for "per employee" averages -- only count
+  // employees who actually submitted at least one calling report in the
+  // range (matches the existing perEmp map keys).
+  const activeEmpCount = new Set(subs.map((s) => String(s.employee))).size;
+  const averageDialedPerEmployee = activeEmpCount > 0 ? Math.round((totalDialedCalls / activeEmpCount) * 10) / 10 : 0;
+
   const kpis = {
     totalAssignedCalls,
     totalCallsCompleted,
+    totalDialedCalls,
+    averageDialedPerEmployee,
     totalAttendedCalls,
     totalUnattendedCalls,
     totalConversions,
     oldConversions,
     newConversions,
     totalPendingCalls,
-    connectionRate:    safeRate(totalAttendedCalls, totalCallsCompleted),
+    // Connection Rate now uses Dialed Calls (= actual call attempts)
+    // instead of Total Calls Completed (= unique-farmer reach).
+    connectionRate:    safeRate(totalAttendedCalls, totalDialedCalls),
     conversionRate:    safeRate(totalConversions,   totalAttendedCalls),
     pendingRate:       safeRate(totalPendingCalls,  totalAssignedCalls),
     callCompletionRate: safeRate(totalCallsCompleted, totalAssignedCalls),
@@ -694,7 +705,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   for (const sub of subs) {
     const k = String(sub.employee);
     if (!perEmp.has(k)) perEmp.set(k, {
-      assignedCalls: 0, totalCallsCompleted: 0, attendedCalls: 0,
+      assignedCalls: 0, totalCallsCompleted: 0, dialedCalls: 0, attendedCalls: 0,
       unattendedCalls: 0, totalConversions: 0,
       oldConversions: 0, newConversions: 0, totalPending: 0,
       submissions: 0,
@@ -703,6 +714,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     const r = (key) => Number((sub.customResponses || []).find((x) => x.key === key)?.value) || 0;
     m.assignedCalls       += r('assignedCalls');
     m.totalCallsCompleted += r('totalCallsCompleted');
+    m.dialedCalls         += r('dialedCalls');
     m.attendedCalls       += r('attendedCalls');
     m.unattendedCalls     += r('unattendedCalls');
     m.totalConversions    += r('totalConversions');
@@ -722,9 +734,10 @@ const callingAnalytics = asyncHandler(async (req, res) => {
       department: e.department?.name || 'Unassigned',
       designation: e.designation?.title || 'Unassigned',
       ...m,
-      connectionRate:    safeRate(m.attendedCalls, m.totalCallsCompleted),
+      // Connection Rate now off Dialed Calls (per spec change).
+      connectionRate:    safeRate(m.attendedCalls,    m.dialedCalls),
       conversionRate:    safeRate(m.totalConversions, m.attendedCalls),
-      pendingRate:       safeRate(m.totalPending, m.assignedCalls),
+      pendingRate:       safeRate(m.totalPending,     m.assignedCalls),
       callCompletionRate: safeRate(m.totalCallsCompleted, m.assignedCalls),
     });
   }
@@ -735,11 +748,14 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   const top = (arr, key, n = 5, dir = 'desc') => (dir === 'asc' ? sortAsc(arr, key) : sortDesc(arr, key)).slice(0, n);
   const leaderboards = {
     topCallsCompleted:    top(employeeRows, 'totalCallsCompleted'),
+    topDialedCalls:       top(employeeRows, 'dialedCalls'),
     topConversionRate:    top(employeeRows.filter((r) => r.attendedCalls >= 1), 'conversionRate'),
     topNewCustomers:      top(employeeRows, 'newConversions'),
     topTotalConversions:  top(employeeRows, 'totalConversions'),
     lowestPending:        top(employeeRows.filter((r) => r.assignedCalls >= 1), 'totalPending', 5, 'asc'),
-    bestConnectionRate:   top(employeeRows.filter((r) => r.totalCallsCompleted >= 1), 'connectionRate'),
+    // Best Connection Rate now requires dialedCalls>=1 so an
+    // employee with no dial attempts can't appear with a 0/0 = 0 row.
+    bestConnectionRate:   top(employeeRows.filter((r) => r.dialedCalls >= 1), 'connectionRate'),
     bottomHighestPending: top(employeeRows.filter((r) => r.assignedCalls >= 1), 'totalPending'),
     bottomLowestConversion: top(employeeRows.filter((r) => r.attendedCalls >= 1), 'conversionRate', 5, 'asc'),
     bottomLowestCompletion: top(employeeRows.filter((r) => r.assignedCalls >= 1), 'callCompletionRate', 5, 'asc'),
@@ -749,11 +765,12 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   const perDay = new Map();
   for (const sub of subs) {
     const dk = formatYMD(sub.date);
-    if (!perDay.has(dk)) perDay.set(dk, { date: dk, assigned: 0, completed: 0, attended: 0, conversions: 0, pending: 0 });
+    if (!perDay.has(dk)) perDay.set(dk, { date: dk, assigned: 0, completed: 0, dialed: 0, attended: 0, conversions: 0, pending: 0 });
     const m = perDay.get(dk);
     const r = (key) => Number((sub.customResponses || []).find((x) => x.key === key)?.value) || 0;
     m.assigned    += r('assignedCalls');
     m.completed   += r('totalCallsCompleted');
+    m.dialed      += r('dialedCalls');
     m.attended    += r('attendedCalls');
     m.conversions += r('totalConversions');
     m.pending     += r('totalPending');

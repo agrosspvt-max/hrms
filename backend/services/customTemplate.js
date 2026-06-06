@@ -112,9 +112,14 @@ const buildCallingFields = () => [
   { key: 'yesterdayCallsCompleted',   label: 'Yesterday Calls Completed',   fieldType: 'number',   required: true,        group: 'Calls Completed', order: 30 },
   { key: 'todayCallsCompleted',       label: "Today's Calls Completed",     fieldType: 'number',   required: true,        group: 'Calls Completed', order: 40 },
   { key: 'totalCallsCompleted',       label: 'Total Calls Completed',       fieldType: 'auto',     formula: 'yesterdayCallsCompleted + todayCallsCompleted', group: 'Calls Completed', order: 50 },
+  // Dialed Calls = total dial attempts (incl. retries to same farmer).
+  // Distinct from totalCallsCompleted (which is unique-farmer reach) so
+  // management can see actual calling effort.
+  { key: 'dialedCalls',               label: 'Dialed Calls',                fieldType: 'number',   required: true,        group: 'Calls Completed', order: 55 },
 
   { key: 'attendedCalls',             label: 'Attended Calls',              fieldType: 'number',   required: true,        group: 'Connection',     order: 60 },
-  { key: 'unattendedCalls',           label: 'Unattended Calls',            fieldType: 'auto',     formula: 'totalCallsCompleted - attendedCalls', group: 'Connection', order: 70 },
+  // Unattended = dialed - attended (was totalCallsCompleted - attended).
+  { key: 'unattendedCalls',           label: 'Unattended Calls',            fieldType: 'auto',     formula: 'dialedCalls - attendedCalls', group: 'Connection', order: 70 },
 
   { key: 'oldCustomerConversions',    label: 'Old Customer Conversions',    fieldType: 'number',   required: true,        group: 'Conversions',    order: 80 },
   { key: 'newCustomerConversions',    label: 'New Customer Conversions',    fieldType: 'number',   required: true,        group: 'Conversions',    order: 90 },
@@ -126,15 +131,54 @@ const buildCallingFields = () => [
   { key: 'totalPending',              label: 'Total Pending',               fieldType: 'auto',     formula: 'oldPendingRemaining + todaysPending',        group: 'Pending', order: 140 },
 
   // KPIs -- computed at submit, surfaced by analytics.
-  { key: 'connectionRate',            label: 'Connection Rate (%)',         fieldType: 'auto',     formula: '(attendedCalls / totalCallsCompleted) * 100', group: 'KPIs', order: 150 },
+  // Connection Rate now uses Dialed Calls (was totalCallsCompleted).
+  { key: 'connectionRate',            label: 'Connection Rate (%)',         fieldType: 'auto',     formula: '(attendedCalls / dialedCalls) * 100',         group: 'KPIs', order: 150 },
   { key: 'pendingRate',               label: 'Pending Rate (%)',            fieldType: 'auto',     formula: '(totalPending / assignedCalls) * 100',        group: 'KPIs', order: 160 },
   { key: 'callCompletionRate',        label: 'Call Completion Rate (%)',    fieldType: 'auto',     formula: '(totalCallsCompleted / assignedCalls) * 100', group: 'KPIs', order: 170 },
 ];
 
 const seedDefaultCallingTemplate = async () => {
-  const existing = await Template.findOne({ customKind: CALLING_TEMPLATE_KIND }).select('_id');
-  if (existing) return; // idempotent
-  await Template.create({
+  const existing = await Template.findOne({ customKind: CALLING_TEMPLATE_KIND });
+  if (existing) {
+    // SELF-HEAL: keep deployed tenants in lockstep with the latest
+    // schema.  Walk every field declared by buildCallingFields() and
+    // (a) insert it if missing, (b) overwrite its formula / metadata
+    // if the canonical version drifted.  Idempotent: a fully-current
+    // template logs "OK" with no writes.
+    const want = buildCallingFields();
+    const have = Array.isArray(existing.customFields) ? existing.customFields : [];
+    let touched = false;
+    const added = [];
+    const changed = [];
+    const next = want.map((w) => {
+      const cur = have.find((f) => f.key === w.key);
+      if (!cur) { added.push(w.key); touched = true; return w; }
+      // Only treat a difference in formula / fieldType / required as
+      // worth a rewrite -- preserve any custom HR edits to label/group.
+      const out = { ...cur };
+      if (w.formula   && out.formula !== w.formula)   { out.formula   = w.formula;   changed.push(w.key + ':formula'); touched = true; }
+      if (w.fieldType && out.fieldType !== w.fieldType) { out.fieldType = w.fieldType; changed.push(w.key + ':type');    touched = true; }
+      if (!!out.required !== !!w.required)            { out.required  = w.required;  changed.push(w.key + ':required'); touched = true; }
+      // Re-stamp visibleTo to the canonical set if the original lost it.
+      if (!Array.isArray(out.visibleTo) || out.visibleTo.length === 0) { out.visibleTo = ['employee', 'hod', 'hr', 'super_admin']; touched = true; }
+      if (!out.label) { out.label = w.label; touched = true; }
+      if (out.order === undefined || out.order === null) { out.order = w.order; touched = true; }
+      if (!out.group) { out.group = w.group; touched = true; }
+      if (w.systemGenerated !== undefined && !!out.systemGenerated !== !!w.systemGenerated) { out.systemGenerated = !!w.systemGenerated; touched = true; }
+      return out;
+    });
+    // Preserve any HR-authored extra fields (key not in `want`).
+    const extras = have.filter((f) => !want.find((w) => w.key === f.key));
+    if (touched || extras.length === 0) existing.customFields = [...next, ...extras];
+    if (touched) {
+      await existing.save();
+      console.log(`[seed] Daily Calling Report template found (id=${existing._id}) — self-healed: added [${added.join(', ') || '-'}], updated [${changed.join(', ') || '-'}]`);
+    } else {
+      console.log(`[seed] Daily Calling Report template found (id=${existing._id}) — OK, ${have.length} field(s)`);
+    }
+    return;
+  }
+  const created = await Template.create({
     title: CALLING_TEMPLATE_TITLE,
     description: 'Default calling activity report. Auto-calculated KPIs included.',
     templateType: 'custom',
@@ -142,7 +186,7 @@ const seedDefaultCallingTemplate = async () => {
     customFields: buildCallingFields(),
     isActive: true,
   });
-  console.log('[seed] created default Daily Calling Report custom template');
+  console.log(`[seed] Daily Calling Report template created (id=${created._id})`);
 };
 
 /**
@@ -189,11 +233,72 @@ const seedDefaultProductFarmerTemplate = async () => {
   console.log(`[seed] Product & Farmer Report template created (id=${created._id})`);
 };
 
+/**
+ * One-time + boot-time migration for the Calling Report.  Earlier
+ * deployments stored `customResponses` without `dialedCalls` because
+ * the field didn't exist yet.  After this turn's spec change, the new
+ * Connection Rate + Unattended Calls formulas reference dialedCalls,
+ * so a missing field would produce negative unattended values and
+ * zero connection rates on historic data.
+ *
+ * Backfill rule:
+ *     dialedCalls = totalCallsCompleted     (closest pre-update equivalent)
+ *
+ * Math invariant:
+ *   Old unattendedCalls = totalCallsCompleted - attendedCalls
+ *   New unattendedCalls = dialedCalls        - attendedCalls
+ *   With dialedCalls := totalCallsCompleted, the two are identical, so
+ *   we don't need to rewrite unattendedCalls / connectionRate on
+ *   historic rows -- their stored values stay consistent.
+ *
+ * Filter:
+ *   templateType = 'custom'
+ *   customKind   = 'calling'
+ *   customResponses[].key never contains 'dialedCalls'
+ *
+ * Idempotent: re-runs match no rows after the first successful pass
+ * (the $ne 'dialedCalls' filter is satisfied only by un-backfilled
+ * documents).  Uses Mongo bulkWrite so a tenant with thousands of
+ * historic submissions doesn't take minutes to migrate.
+ */
+const migrateCallingDialedCalls = async () => {
+  const Submission = require('../models/Submission');
+  const candidates = await Submission.find({
+    templateType: 'custom',
+    customKind: CALLING_TEMPLATE_KIND,
+    'customResponses.key': { $ne: 'dialedCalls' },
+  }).select('_id customResponses');
+
+  if (candidates.length === 0) {
+    console.log('[migrate] Backfilled dialedCalls on 0 historical calling submissions');
+    return { backfilled: 0 };
+  }
+
+  const ops = candidates.map((sub) => {
+    const totalRow = (sub.customResponses || []).find((r) => r.key === 'totalCallsCompleted');
+    const value = Number(totalRow?.value) || 0;
+    return {
+      updateOne: {
+        // Re-assert the $ne guard on the filter so a concurrent write
+        // (HR editing the same submission) can't double-push.
+        filter: { _id: sub._id, 'customResponses.key': { $ne: 'dialedCalls' } },
+        update: { $push: { customResponses: { key: 'dialedCalls', value } } },
+      },
+    };
+  });
+
+  const result = await Submission.bulkWrite(ops, { ordered: false });
+  const backfilled = (result?.modifiedCount != null ? result.modifiedCount : ops.length);
+  console.log(`[migrate] Backfilled dialedCalls on ${backfilled} historical calling submissions`);
+  return { backfilled };
+};
+
 module.exports = {
   evalFormula,
   computeAutoFields,
   seedDefaultCallingTemplate,
   seedDefaultProductFarmerTemplate,
+  migrateCallingDialedCalls,
   CALLING_TEMPLATE_KIND,
   PRODUCT_FARMER_TEMPLATE_KIND,
 };

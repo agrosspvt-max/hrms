@@ -448,10 +448,13 @@ function CallingMode({ data }) {
 
   return (
     <div className="space-y-6">
-      {/* 8 KPI cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* KPI cards -- 10 metrics including the new Dialed Calls pair */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard label="Total Assigned Calls"     value={k.totalAssignedCalls   ?? 0} accent="brand" />
         <StatCard label="Total Calls Completed"    value={k.totalCallsCompleted  ?? 0} accent="green" />
+        <StatCard label="Total Dialed Calls"       value={k.totalDialedCalls     ?? 0} accent="blue"
+                  sub={k.totalAssignedCalls > 0 ? `vs ${k.totalAssignedCalls} assigned` : ''} />
+        <StatCard label="Avg Dialed / Employee"    value={k.averageDialedPerEmployee ?? 0} accent="blue" />
         <StatCard label="Total Attended Calls"     value={k.totalAttendedCalls   ?? 0} accent="blue" />
         <StatCard label="Total Unattended Calls"   value={k.totalUnattendedCalls ?? 0} accent="amber" />
         <StatCard label="Total Conversions"        value={k.totalConversions     ?? 0} accent="green" />
@@ -468,8 +471,8 @@ function CallingMode({ data }) {
         <StatCard label="Call Completion Rate" value={`${k.callCompletionRate ?? 0}%`} accent={(k.callCompletionRate || 0) >= 80 ? 'green' : 'amber'} />
       </div>
 
-      {/* Daily trend chart */}
-      <ChartCard title="Daily Trend" subtitle="Calls, conversions, pending — per day across the filter range">
+      {/* Daily trend chart -- assigned vs dialed vs completed/attended/conv/pending */}
+      <ChartCard title="Daily Trend" subtitle="Assigned vs Dialed vs Completed plus connection / conversion / pending per day">
         <AreaChart data={trend}>
           <CartesianGrid stroke="#eef2f7" />
           <XAxis dataKey="date" tick={{ fontSize: 11 }} />
@@ -477,6 +480,7 @@ function CallingMode({ data }) {
           <Tooltip />
           <Legend wrapperStyle={{ fontSize: 11 }} />
           <Area type="monotone" dataKey="assigned"    stroke={BLUE}   fill={BLUE}   fillOpacity={0.18} name="Assigned" />
+          <Area type="monotone" dataKey="dialed"      stroke={ORANGE} fill={ORANGE} fillOpacity={0.18} name="Dialed (attempts)" />
           <Area type="monotone" dataKey="completed"   stroke={GREEN}  fill={GREEN}  fillOpacity={0.18} name="Completed" />
           <Area type="monotone" dataKey="attended"    stroke={VIOLET} fill={VIOLET} fillOpacity={0.0}  name="Attended" />
           <Area type="monotone" dataKey="conversions" stroke={AMBER}  fill={AMBER}  fillOpacity={0.0}  name="Conversions" />
@@ -489,6 +493,7 @@ function CallingMode({ data }) {
         <div className="text-sm font-semibold text-slate-800 mb-2">Top Callers</div>
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
           <Leaderboard title="By Calls Completed"    rows={lb.topCallsCompleted}   metric="totalCallsCompleted" suffix="" />
+          <Leaderboard title="By Dialed Calls"       rows={lb.topDialedCalls}      metric="dialedCalls"         suffix="" />
           <Leaderboard title="By Conversion Rate"    rows={lb.topConversionRate}   metric="conversionRate"      suffix="%" />
           <Leaderboard title="By New Customers"      rows={lb.topNewCustomers}     metric="newConversions"      suffix="" />
           <Leaderboard title="By Total Conversions"  rows={lb.topTotalConversions} metric="totalConversions"    suffix="" />
@@ -630,6 +635,7 @@ function CallingMode({ data }) {
                   <th>Employee</th><th>Department</th>
                   <th className="text-right">Assigned</th>
                   <th className="text-right">Completed</th>
+                  <th className="text-right">Dialed</th>
                   <th className="text-right">Attended</th>
                   <th className="text-right">Conversions</th>
                   <th className="text-right">Pending</th>
@@ -645,6 +651,7 @@ function CallingMode({ data }) {
                     <td>{r.department}</td>
                     <td className="text-right">{r.assignedCalls}</td>
                     <td className="text-right">{r.totalCallsCompleted}</td>
+                    <td className="text-right">{r.dialedCalls || 0}</td>
                     <td className="text-right">{r.attendedCalls}</td>
                     <td className="text-right">{r.totalConversions}</td>
                     <td className={`text-right ${(r.totalPending || 0) > 0 ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>{r.totalPending}</td>

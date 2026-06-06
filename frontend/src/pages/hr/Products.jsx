@@ -3,7 +3,7 @@ import api from '../../api/axios';
 import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
-import { errMsg, fmtMoney } from '../../utils/helpers';
+import { errMsg, fmtMoney, authUrl } from '../../utils/helpers';
 
 /**
  * Products module (HR / Super Admin only).
@@ -44,6 +44,7 @@ function ProductsTab() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null);
+  const [importOpen, setImportOpen] = useState(false);
   const toast = useToast();
 
   const load = async () => {
@@ -69,7 +70,10 @@ function ProductsTab() {
 
   return (
     <div className="space-y-3">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2 flex-wrap">
+        <a className="btn-secondary" href={authUrl('/api/products/import-sample')}>Download Sample Excel</a>
+        <button className="btn-secondary" onClick={() => setImportOpen(true)}>Import Products</button>
+        <a className="btn-secondary" href={authUrl('/api/products/export')}>Export Products</a>
         <button className="btn-primary" onClick={() => setModal({ mode: 'create', data: { ...blankProduct } })}>+ Add Product</button>
       </div>
       <div className="card overflow-x-auto">
@@ -102,7 +106,159 @@ function ProductsTab() {
           onSave={save}
         />
       )}
+      {importOpen && (
+        <ImportProductsModal
+          onClose={() => setImportOpen(false)}
+          onImported={() => { setImportOpen(false); load(); }}
+        />
+      )}
     </div>
+  );
+}
+
+/* ----- Bulk import modal ----- */
+function ImportProductsModal({ onClose, onImported }) {
+  const [file, setFile] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState(null);
+  const toast = useToast();
+
+  const upload = async () => {
+    if (!file) return;
+    setBusy(true);
+    setResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const { data } = await api.post('/products/import', fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setResult(data);
+      toast.success(`Created ${data.createdCount} · Updated ${data.updatedCount}${data.failedCount ? ` · Failed ${data.failedCount}` : ''}`);
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const downloadFailedCsv = () => {
+    if (!result?.failed?.length) return;
+    const headers = ['Row Number', 'Product Name', 'Reason'];
+    const esc = (v) => {
+      const s = String(v ?? '');
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [headers.join(',')];
+    result.failed.forEach((r) => lines.push([r.row, r.name, r.reason].map(esc).join(',')));
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `product_import_errors_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      size="lg"
+      title="Import Products from Excel"
+      footer={result ? (
+        <button className="btn-primary" onClick={onImported}>Done</button>
+      ) : (
+        <>
+          <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn-primary" onClick={upload} disabled={!file || busy}>
+            {busy ? 'Importing…' : 'Upload & Import'}
+          </button>
+        </>
+      )}
+    >
+      <div className="space-y-4">
+        {!result && (
+          <>
+            <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm text-slate-700 space-y-2">
+              <div className="font-semibold text-slate-900">Step 1 — Download the template</div>
+              <p className="text-[13px]">
+                Download the sample, fill the <b>Products</b> sheet, and re-upload.  Existing products with the same name
+                are <b>updated</b> (matched case-insensitively); new names are created.
+              </p>
+              <a className="btn-secondary inline-block" href={authUrl('/api/products/import-sample')}>Download Sample Excel</a>
+            </div>
+            <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm text-slate-700 space-y-2">
+              <div className="font-semibold text-slate-900">Step 2 — Upload the filled file</div>
+              <p className="text-[13px]">
+                Accepted: <code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>.  Required columns: Product Name, Unit (L / KG), Price Per Unit (&gt; 0), NBV % (0–100).
+              </p>
+              <input
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+                className="block w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-brand-50 file:text-brand-700 file:font-semibold hover:file:bg-brand-100"
+              />
+              {file && (
+                <div className="text-[12px] text-slate-500">Selected: <b>{file.name}</b> ({Math.round(file.size / 1024)} KB)</div>
+              )}
+            </div>
+          </>
+        )}
+
+        {result && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-lg bg-green-50 border border-green-200 p-3">
+                <div className="text-[11px] text-green-700 uppercase">Created</div>
+                <div className="text-2xl font-bold text-green-700">{result.createdCount}</div>
+              </div>
+              <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
+                <div className="text-[11px] text-blue-700 uppercase">Updated</div>
+                <div className="text-2xl font-bold text-blue-700">{result.updatedCount}</div>
+              </div>
+              <div className={`rounded-lg p-3 ${result.failedCount > 0 ? 'bg-amber-50 border border-amber-200' : 'bg-slate-50 border border-slate-200'}`}>
+                <div className={`text-[11px] uppercase ${result.failedCount > 0 ? 'text-amber-700' : 'text-slate-500'}`}>Failed</div>
+                <div className={`text-2xl font-bold ${result.failedCount > 0 ? 'text-amber-700' : 'text-slate-500'}`}>{result.failedCount}</div>
+              </div>
+            </div>
+            <div className="text-xs text-slate-500">
+              File: <span className="font-mono">{result.file}</span> · {result.totalRows} row(s) read.
+            </div>
+            {result.failed?.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm font-semibold text-slate-800">Failed rows ({result.failed.length})</div>
+                  <button className="btn-secondary !py-1 !text-xs" onClick={downloadFailedCsv}>Download Errors CSV</button>
+                </div>
+                <div className="max-h-72 overflow-y-auto border border-amber-100 rounded-lg">
+                  <table className="w-full text-sm">
+                    <thead className="bg-amber-50 sticky top-0">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-semibold text-amber-800 w-16">Row</th>
+                        <th className="text-left px-3 py-2 font-semibold text-amber-800">Product Name</th>
+                        <th className="text-left px-3 py-2 font-semibold text-amber-800">Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {result.failed.map((r, i) => (
+                        <tr key={i} className="border-t border-amber-100">
+                          <td className="px-3 py-1.5 font-mono text-xs text-slate-500">{r.row}</td>
+                          <td className="px-3 py-1.5 text-slate-700">{r.name}</td>
+                          <td className="px-3 py-1.5 text-amber-800">{r.reason}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
