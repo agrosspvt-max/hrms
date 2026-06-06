@@ -8,6 +8,7 @@ import api from '../../api/axios';
 import StatCard from '../../components/StatCard.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { ClickableCard, DrillDownModal } from '../../components/AnalyticsDrillDown.jsx';
+import { useAuth } from '../../context/AuthContext.jsx';
 
 const RED = '#ef4444'; const ORANGE = '#f97316'; const AMBER = '#f59e0b';
 const GREEN = '#22c55e'; const BLUE = '#3b82f6'; const VIOLET = '#8b5cf6'; const SLATE = '#94a3b8';
@@ -30,7 +31,35 @@ const ChartCard = ({ title, subtitle, onClick, children, height = 260 }) => (
 
 export default function Performance() {
   const navigate = useNavigate();
-  const [mode, setMode] = useState('pendency'); // 'pendency' | 'completion'
+  const { user } = useAuth();
+  // ------------------------------------------------------------------
+  // Role gating.  HR / Super Admin see every tab + every filter.  HOD
+  // sees a dept-scoped subset:
+  //   - Marketing HOD     -> Calling Analytics is the default tab; all
+  //                           three modes (pendency / completion /
+  //                           calling) remain available because the
+  //                           dept Calling team uses them.
+  //   - Other-dept HOD    -> only Pendency Review + Completion Review.
+  //   The Department filter is hidden for HODs since their query is
+  //   already clamped server-side.
+  // Department name match is case-insensitive ("Marketing" / "marketing"
+  // / "MARKETING" all detected).
+  // ------------------------------------------------------------------
+  const isHOD = !!user?.isHOD && !(user?.role === 'hr' || user?.role === 'super_admin');
+  // Department.analyticsType is the source of truth (no longer name-
+  // matched).  Prefer the HOD's headed-department row over their own
+  // member department, falling back to 'standard'.
+  const hodDeptName = (user?.hodDepartment?.name || user?.department?.name || '').trim();
+  const hodAnalyticsType = (user?.hodDepartment?.analyticsType || user?.department?.analyticsType || 'standard');
+  const isCallingHOD = isHOD && hodAnalyticsType === 'calling';
+  const defaultMode = isHOD ? (isCallingHOD ? 'calling' : 'pendency') : 'pendency';
+  const allowedModes = isHOD
+    ? (isCallingHOD
+        ? ['pendency', 'completion', 'calling']
+        : ['pendency', 'completion'])
+    : ['pendency', 'completion', 'calling'];
+
+  const [mode, setMode] = useState(defaultMode);
   const [range, setRange] = useState('30');
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
@@ -82,12 +111,18 @@ export default function Performance() {
     <div className="space-y-5">
       <div>
         <h1 className="text-2xl font-bold">Performance Analytics</h1>
-        <p className="text-sm text-slate-500">Dual-mode enterprise analytics. Click any card or chart for a detailed breakdown.</p>
+        <p className="text-sm text-slate-500">
+          {isHOD
+            ? <>Department-scoped view: <b>{hodDeptName || 'your department'}</b>. You can only see employees from your team.</>
+            : 'Dual-mode enterprise analytics. Click any card or chart for a detailed breakdown.'}
+        </p>
       </div>
 
-      {/* Mode toggle */}
+      {/* Mode toggle -- only tabs allowed for the caller's role appear. */}
       <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
-        {[['pendency', 'Pendency Review'], ['completion', 'Completion Review'], ['calling', 'Calling Analytics']].map(([k, label]) => (
+        {[['pendency', 'Pendency Review'], ['completion', 'Completion Review'], ['calling', 'Calling Analytics']]
+          .filter(([k]) => allowedModes.includes(k))
+          .map(([k, label]) => (
           <button key={k} onClick={() => { setMode(k); setData(null); }}
             className={`px-5 py-2 text-sm font-medium rounded-lg transition ${mode === k ? 'bg-white shadow text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
             {label}
@@ -111,12 +146,14 @@ export default function Performance() {
           <div><label className="label">From</label><input className="input max-w-[150px]" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><label className="label">To</label><input className="input max-w-[150px]" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></div>
         </>)}
-        <div><label className="label">Department</label>
-          <select className="input max-w-[160px]" value={department} onChange={(e) => setDepartment(e.target.value)}>
-            <option value="">All departments</option>
-            {opts.departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
-          </select>
-        </div>
+        {!isHOD && (
+          <div><label className="label">Department</label>
+            <select className="input max-w-[160px]" value={department} onChange={(e) => setDepartment(e.target.value)}>
+              <option value="">All departments</option>
+              {opts.departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
+            </select>
+          </div>
+        )}
         <div><label className="label">Designation</label>
           <select className="input max-w-[160px]" value={designation} onChange={(e) => setDesignation(e.target.value)}>
             <option value="">All designations</option>

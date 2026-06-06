@@ -52,6 +52,19 @@ function HomeRouter() {
     : <EmployeeDashboard />;
 }
 
+/**
+ * /performance gate.  Open to HR / Super Admin (existing) AND any HOD
+ * (an employee with isHOD=true).  Backend enforces the per-HOD
+ * department clamp so a HOD can never see another department's data.
+ */
+function PerformanceGate({ children }) {
+  const { user } = useAuth();
+  if (!user) return <Navigate to="/login" replace />;
+  const ok = user.role === 'hr' || user.role === 'super_admin' || user.isHOD === true;
+  if (!ok) return <Navigate to="/" replace />;
+  return children;
+}
+
 export default function App() {
   return (
     <Routes>
@@ -75,6 +88,11 @@ export default function App() {
         <Route path="/assignments" element={<ProtectedRoute role="hr"><WorkAssignments /></ProtectedRoute>} />
         <Route path="/templates" element={<ProtectedRoute role="hr"><WorkAssignments /></ProtectedRoute>} />
         <Route path="/products" element={<ProtectedRoute role="hr"><Products /></ProtectedRoute>} />
+        {/*
+          Performance dashboard.  HR + Super Admin (existing) AND any
+          HOD (employee with isHOD=true).  Backend enforces dept clamp
+          for HODs so the route can stay permissive on the frontend.
+        */}
         <Route path="/backlog" element={<ProtectedRoute role="hr"><GlobalBacklog /></ProtectedRoute>} />
         <Route path="/reviews" element={<ProtectedRoute role="hr"><SubmissionReviews /></ProtectedRoute>} />
         <Route path="/sent-alerts" element={<ProtectedRoute role="hr"><SentAlerts /></ProtectedRoute>} />
@@ -84,7 +102,7 @@ export default function App() {
         <Route path="/hr-management" element={<ProtectedRoute role="super_admin"><HRManagement /></ProtectedRoute>} />
         <Route path="/manage-access" element={<ProtectedRoute role="super_admin"><ManageAccess /></ProtectedRoute>} />
         <Route path="/audit" element={<ProtectedRoute role="super_admin"><AuditLog /></ProtectedRoute>} />
-        <Route path="/performance" element={<ProtectedRoute role="hr"><Performance /></ProtectedRoute>} />
+        <Route path="/performance" element={<PerformanceGate><Performance /></PerformanceGate>} />
         <Route path="/leaves" element={<ProtectedRoute role="hr"><HRLeaves /></ProtectedRoute>} />
         <Route path="/attendance" element={<ProtectedRoute role="hr"><EmployeeAttendance /></ProtectedRoute>} />
         <Route path="/holidays" element={<ProtectedRoute role="hr"><HRHolidays /></ProtectedRoute>} />

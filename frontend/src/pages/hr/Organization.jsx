@@ -235,13 +235,29 @@ const allDesigs = (org) => {
 };
 
 function DeptModal({ initial, id, onClose, onSave }) {
-  const [f, setF] = useState(initial);
+  const [f, setF] = useState({ analyticsType: 'standard', ...initial });
   return (
     <Modal open onClose={onClose} title={id ? 'Edit Department' : 'Add Department'}
       footer={<><button className="btn-secondary" onClick={onClose}>Cancel</button><button className="btn-primary" disabled={!f.name} onClick={() => onSave(f, id)}>Save</button></>}>
       <div className="space-y-3">
-        <div><label className="label">Name</label><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} /></div>
+        <div><label className="label">Name</label><input className="input" value={f.name || ''} onChange={(e) => setF({ ...f, name: e.target.value })} /></div>
         <div><label className="label">Description</label><input className="input" value={f.description || ''} onChange={(e) => setF({ ...f, description: e.target.value })} /></div>
+        <div>
+          <label className="label">Analytics Type</label>
+          <select
+            className="input"
+            value={f.analyticsType || 'standard'}
+            onChange={(e) => setF({ ...f, analyticsType: e.target.value })}
+          >
+            <option value="standard">Standard — Pendency Review + Completion Review</option>
+            <option value="calling">Calling — adds Calling Analytics + Product &amp; Farmer Analytics</option>
+          </select>
+          <div className="text-[11px] text-slate-500 mt-1">
+            Controls which Performance tabs the department's HOD sees. Switch to "Calling"
+            for teams that file the Daily Calling Report. Renaming the department later does
+            not change this setting.
+          </div>
+        </div>
       </div>
     </Modal>
   );

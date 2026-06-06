@@ -86,7 +86,16 @@ const pendency = asyncHandler(async (req, res) => {
   // to them and their submissions must flow through every analytics view
   // exactly like an employee's.  Super Admin is excluded.
   const empWhere = { role: { $in: ['employee', 'hr'] }, status: 'active' };
-  if (req.query.department) empWhere.department = req.query.department;
+  // Role-aware scoping:
+  //   - HR / Super Admin: may filter by ?department=...
+  //   - HOD: hard-clamped to their own department, query param IGNORED
+  //          (so a HOD modifying the URL cannot peek across departments).
+  const isHRorSA = req.user.role === 'hr' || req.user.role === 'super_admin';
+  if (!isHRorSA && req.user.isHOD && req.user.hodDepartment) {
+    empWhere.department = req.user.hodDepartment;
+  } else if (req.query.department) {
+    empWhere.department = req.query.department;
+  }
   if (req.query.designation) empWhere.designation = req.query.designation;
   if (req.query.employee) empWhere._id = req.query.employee;
 
@@ -299,7 +308,13 @@ const completion = asyncHandler(async (req, res) => {
   // to them and their submissions must flow through every analytics view
   // exactly like an employee's.  Super Admin is excluded.
   const empWhere = { role: { $in: ['employee', 'hr'] }, status: 'active' };
-  if (req.query.department) empWhere.department = req.query.department;
+  // Role-aware scoping (mirrors pendency above).
+  const isHRorSA_c = req.user.role === 'hr' || req.user.role === 'super_admin';
+  if (!isHRorSA_c && req.user.isHOD && req.user.hodDepartment) {
+    empWhere.department = req.user.hodDepartment;
+  } else if (req.query.department) {
+    empWhere.department = req.query.department;
+  }
   if (req.query.designation) empWhere.designation = req.query.designation;
   if (req.query.employee) empWhere._id = req.query.employee;
   const employees = await User.find(empWhere)
@@ -635,17 +650,22 @@ const callingAnalytics = asyncHandler(async (req, res) => {
 
   // ---- Role-scoped employee filter ----
   const empWhere = { status: 'active' };
+  const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
   if (req.user.role === 'super_admin') {
     // full org
   } else if (req.user.role === 'hr') {
     // full org (HR may filter via query)
-  } else if (req.user.isHOD && req.user.hodDepartment) {
+  } else if (isHOD) {
     empWhere.department = req.user.hodDepartment;
   } else {
     res.status(403);
     throw new Error('Calling analytics is restricted to HR / Super Admin / HOD.');
   }
-  if (req.query.department) empWhere.department = req.query.department;
+  // Only HR / Super Admin may override the department via query.  A HOD
+  // hitting ?department=other_dept is IGNORED -- their clamp stands.
+  if ((req.user.role === 'hr' || req.user.role === 'super_admin') && req.query.department) {
+    empWhere.department = req.query.department;
+  }
   if (req.query.designation) empWhere.designation = req.query.designation;
   if (req.query.employee) empWhere._id = req.query.employee;
   const employees = await User.find(empWhere)

@@ -107,4 +107,22 @@ const requireReviewer = (req, res, next) => {
   throw new Error('Forbidden: review access required (need HR or a HOD with review permission)');
 };
 
-module.exports = { protect, authorize, requireHOD, requireReviewer };
+/**
+ * Authorizes access to analytics endpoints (Performance dashboards).
+ * Allowed:
+ *   1. HR
+ *   2. Super Admin
+ *   3. Any HOD (an employee with isHOD=true).  Department scoping is
+ *      enforced inside each controller -- the middleware just opens
+ *      the door so a HOD can hit the URL.
+ */
+const requireAnalyticsAccess = (req, res, next) => {
+  const u = req.user;
+  if (!u) { res.status(401); throw new Error('Not authorized'); }
+  const ok = u.role === 'hr' || u.role === 'super_admin' || u.isHOD === true;
+  if (ok) return next();
+  res.status(403);
+  throw new Error('Forbidden: analytics access requires HR, Super Admin, or HOD.');
+};
+
+module.exports = { protect, authorize, requireHOD, requireReviewer, requireAnalyticsAccess };

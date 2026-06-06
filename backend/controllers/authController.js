@@ -12,7 +12,10 @@ const login = asyncHandler(async (req, res) => {
 
   const user = await User.findOne({ email: email.toLowerCase() })
     .select('+password')
-    .populate('department', 'name')
+    // analyticsType lives on the Department: the Performance page reads it
+    // to decide which tabs a HOD sees, so login must surface it here.
+    .populate('department', 'name analyticsType')
+    .populate('hodDepartment', 'name analyticsType')
     .populate('designation', 'title');
 
   if (!user || !(await user.matchPassword(password))) {
@@ -52,7 +55,8 @@ const login = asyncHandler(async (req, res) => {
 // GET /api/auth/me
 const me = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id)
-    .populate('department', 'name')
+    .populate('department', 'name analyticsType')
+    .populate('hodDepartment', 'name analyticsType')
     .populate('designation', 'title');
   res.json(user);
 });

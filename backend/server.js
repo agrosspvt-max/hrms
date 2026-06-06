@@ -120,6 +120,12 @@ const start = async () => {
     // mathematically consistent.  Idempotent / safe to re-run.
     await migrateCallingDialedCalls();
   } catch (e) { console.error('[seed] custom template seed failed:', e.message); }
+  // Stamp analyticsType=calling on existing "Marketing"-named
+  // department(s) so HOD analytics tabs survive future renames.
+  try {
+    const { migrateDepartmentAnalyticsType } = require('./services/departmentMigration');
+    await migrateDepartmentAnalyticsType();
+  } catch (e) { console.error('[migrate] department analyticsType failed:', e.message); }
   // Backfill Attendance records for every currently-approved Leave so the
   // calendar reflects historical approvals + HR can revoke from there.
   // Idempotent / safe to re-run; never modifies HR's manual overrides.

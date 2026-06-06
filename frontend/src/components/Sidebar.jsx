@@ -42,6 +42,11 @@ function buildNav(user) {
       type: 'group', id: 'team', label: 'Team', icon: I.people, items: [
         { to: '/team', label: 'Manage Team', icon: I.people },
         { to: '/team-reviews', label: 'Team Reviews', icon: I.review, badgeKey: 'hodReviews' },
+        // HOD Performance dashboard: department-scoped automatically on
+        // the backend.  Visible only to HODs (regular employees never
+        // see this).  HR / Super Admin keep the existing HR-section
+        // Performance entry below.
+        { to: '/performance', label: 'Performance', icon: I.chart },
       ],
     }] : [];
     return [

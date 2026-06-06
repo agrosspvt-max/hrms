@@ -7,13 +7,27 @@ const list = asyncHandler(async (_req, res) => {
   res.json(await Department.find({}).populate('hodEmployeeId', 'name employeeId').sort({ name: 1 }));
 });
 
+// Whitelist + sanitise the writable fields so an unexpected key in the
+// payload (e.g. analyticsType='whatever') is silently dropped instead
+// of corrupting the schema's enum guards.
+const normaliseDeptPayload = (body = {}) => {
+  const out = {};
+  if (body.name !== undefined)        out.name = String(body.name).trim();
+  if (body.description !== undefined) out.description = String(body.description || '').trim();
+  if (body.hodEmployeeId !== undefined) out.hodEmployeeId = body.hodEmployeeId || null;
+  if (body.analyticsType !== undefined) {
+    out.analyticsType = ['standard', 'calling'].includes(body.analyticsType) ? body.analyticsType : 'standard';
+  }
+  return out;
+};
+
 const create = asyncHandler(async (req, res) => {
-  const dep = await Department.create(req.body);
+  const dep = await Department.create(normaliseDeptPayload(req.body));
   res.status(201).json(dep);
 });
 
 const update = asyncHandler(async (req, res) => {
-  const dep = await Department.findByIdAndUpdate(req.params.id, req.body, { new: true });
+  const dep = await Department.findByIdAndUpdate(req.params.id, normaliseDeptPayload(req.body), { new: true });
   if (!dep) { res.status(404); throw new Error('Department not found'); }
   res.json(dep);
 });
@@ -77,6 +91,7 @@ const orgStructure = asyncHandler(async (_req, res) => {
     const unassigned = deptEmployees.filter((e) => !e.designation);
     return {
       _id: dep._id, name: dep.name, description: dep.description || '',
+      analyticsType: dep.analyticsType || 'standard',
       hod: dep.hodEmployeeId ? { _id: dep.hodEmployeeId._id, name: dep.hodEmployeeId.name, employeeId: dep.hodEmployeeId.employeeId } : null,
       employeeCount: deptEmployees.length,
       designations: designationNodes,
