@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const User = require('../models/User');
 const Submission = require('../models/Submission');
 const SalarySlip = require('../models/SalarySlip');
+const { liveSubmissionFilter } = require('../utils/submissionFilter');
 const { deriveAttendance } = require('../services/dailyEngine');
 const { monthRange, formatMonth, formatYMD, parseDay, startOfDay, addDays } = require('../utils/dateHelpers');
 const { streamSalarySlipPdf } = require('../utils/pdfGenerator');
@@ -42,18 +43,20 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
   const to = addDays(periodEnd, 1);
   const att = await deriveAttendance(employee, from, to);
 
-  // Performance metrics for the month
+  // Performance metrics for the month -- excludes soft-deleted /
+  // test-marked submissions so payroll never pays out on test data.
   const submissions = await Submission.find({
     employee: employee._id,
     date: { $gte: from, $lt: to },
     submitted: true,
+    ...liveSubmissionFilter({}),
   });
   const earned = submissions.reduce((s, x) => s + x.earnedPoints, 0);
   const total = submissions.reduce((s, x) => s + x.totalPoints, 0);
   const completionPercentage = total > 0 ? (earned / total) * 100 : 0;
 
   const backlogTasks = await Submission.aggregate([
-    { $match: { employee: employee._id, date: { $gte: from, $lt: to } } },
+    { $match: { employee: employee._id, date: { $gte: from, $lt: to }, ...liveSubmissionFilter({}) } },
     { $unwind: '$tasks' },
     { $match: { 'tasks.status': 'pending' } },
     { $count: 'count' },

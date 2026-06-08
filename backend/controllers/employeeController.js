@@ -10,6 +10,7 @@ const { sendCSV } = require('../utils/csvExporter');
 const { logAudit } = require('../utils/audit');
 const { sendWelcomeEmail } = require('../utils/emailService');
 const { startOfDay, addDays, parseDay } = require('../utils/dateHelpers');
+const { liveSubmissionFilter } = require('../utils/submissionFilter');
 const { getBacklog, deriveAttendance } = require('../services/dailyEngine');
 
 const HALFDAY_CUTOFF_HOUR = Number(process.env.ATTENDANCE_HALFDAY_CUTOFF_HOUR) || 16;
@@ -472,7 +473,7 @@ const workHistory = asyncHandler(async (req, res) => {
   if (!emp) { res.status(404); throw new Error('Employee not found'); }
   const { from, to } = detailRange(req.query);
 
-  const where = { employee: emp._id, submitted: true, date: { $gte: from, $lt: to } };
+  const where = { employee: emp._id, submitted: true, date: { $gte: from, $lt: to }, ...liveSubmissionFilter({}) };
   if (['task', 'excel', 'sheet'].includes(req.query.templateType)) where.templateType = req.query.templateType;
   if (['daily', 'weekly', 'monthly', 'one-time'].includes(req.query.recurrence)) where.frequency = req.query.recurrence;
 

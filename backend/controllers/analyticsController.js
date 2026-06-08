@@ -6,6 +6,9 @@ const Assignment = require('../models/Assignment');
 const Department = require('../models/Department');
 const Designation = require('../models/Designation');
 const { startOfDay, addDays, parseDay, formatYMD } = require('../utils/dateHelpers');
+// Phase 4: every analytics query AND-s in this filter so soft-deleted
+// and test-marked submissions never reach a leaderboard / KPI / trend.
+const { liveSubmissionFilter, readReqFlags } = require('../utils/submissionFilter');
 
 /**
  * analyticsController
@@ -112,6 +115,7 @@ const pendency = asyncHandler(async (req, res) => {
     submitted: true,
     employee: { $in: empIds },
     date: { $gte: from, $lt: to },
+    ...liveSubmissionFilter(readReqFlags(req)),
   };
   if (['task', 'excel', 'sheet'].includes(req.query.templateType)) subWhere.templateType = req.query.templateType;
   if (['daily', 'weekly', 'monthly', 'one-time'].includes(req.query.recurrence)) subWhere.frequency = req.query.recurrence;
@@ -322,7 +326,10 @@ const completion = asyncHandler(async (req, res) => {
   const empMap = new Map(employees.map((e) => [String(e._id), e]));
   const empIds = employees.map((e) => e._id);
 
-  const subWhere = { submitted: true, employee: { $in: empIds }, date: { $gte: from, $lt: to } };
+  const subWhere = {
+    submitted: true, employee: { $in: empIds }, date: { $gte: from, $lt: to },
+    ...liveSubmissionFilter(readReqFlags(req)),
+  };
   if (['task', 'excel', 'sheet'].includes(req.query.templateType)) subWhere.templateType = req.query.templateType;
   if (['daily', 'weekly', 'monthly', 'one-time'].includes(req.query.recurrence)) subWhere.frequency = req.query.recurrence;
   if (req.query.reviewer) subWhere.reviewedBy = req.query.reviewer;
@@ -491,7 +498,7 @@ const assignmentAnalytics = asyncHandler(async (_req, res) => {
 
   const [assignments, subs, depAll, depts, designations, employees] = await Promise.all([
     Assignment.find({}).populate('template', 'title templateType').lean(),
-    Submission.find({ submitted: true, date: { $gte: from30, $lt: todayPlus1 } })
+    Submission.find({ submitted: true, date: { $gte: from30, $lt: todayPlus1 }, ...liveSubmissionFilter({}) })
       .select('template templateType tasks excelResponses sheet.scores assignment').lean(),
     DependencyTask.find({}).select('template templateTitle').lean(),
     Department.find({}).lean(),
@@ -594,6 +601,7 @@ const assignmentAnalytics = asyncHandler(async (_req, res) => {
 
   // ---- Overdue assignments (any pending task older than 7 days) ----
   const overdueAgg = await Submission.aggregate([
+    { $match: liveSubmissionFilter({}) }, // exclude soft-deleted / test submissions
     { $unwind: '$tasks' },
     { $match: { 'tasks.status': 'pending', 'tasks.pendingSince': { $lte: sevenDaysAgo } } },
     { $group: { _id: '$assignment' } },
@@ -682,6 +690,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     templateType: 'custom',
     customKind: 'calling',
     date: { $gte: from, $lt: to },
+    ...liveSubmissionFilter(readReqFlags(req)),
   }).select('employee date customResponses').lean();
 
   // ---- Headline KPIs (org-wide for the filtered scope) ----
@@ -813,6 +822,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
       { 'productSales.0': { $exists: true } },
       { 'farmerRecords.0': { $exists: true } },
     ],
+    ...liveSubmissionFilter(readReqFlags(req)),
   }).select('employee date productSales farmerRecords').lean();
 
   // Dealer Master snapshot for the "active dealers" KPI.  Independent of
@@ -1059,6 +1069,7 @@ const myCallingAnalytics = asyncHandler(async (req, res) => {
     templateType: 'custom',
     customKind: 'calling',
     date: { $gte: from, $lt: to },
+    ...liveSubmissionFilter({}),
   }).select('date customResponses').lean();
 
   const totalAssignedCalls    = sumCustom(subs, 'assignedCalls');

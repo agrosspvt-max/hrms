@@ -5,6 +5,7 @@ const Department = require('../models/Department');
 const Leave = require('../models/Leave');
 const { startOfDay, addDays } = require('../utils/dateHelpers');
 const { getBacklog } = require('../services/dailyEngine');
+const { liveSubmissionFilter } = require('../utils/submissionFilter');
 
 /**
  * GET /api/dashboard/hr/today
@@ -23,7 +24,7 @@ const hrToday = asyncHandler(async (_req, res) => {
     .populate('designation', 'title')
     .lean();
 
-  const submissions = await Submission.find({ date: today })
+  const submissions = await Submission.find({ date: today, ...liveSubmissionFilter({}) })
     .populate('template', 'title')
     .lean();
 
@@ -109,6 +110,7 @@ const hrPerformance = asyncHandler(async (req, res) => {
   const subs = await Submission.find({
     submitted: true,
     date: { $gte: from, $lt: to },
+    ...liveSubmissionFilter({}),
   }).lean();
 
   const byEmp = {};
@@ -157,7 +159,7 @@ const hrPerformance = asyncHandler(async (req, res) => {
 
   // backlog growth - count of pending tasks created per day in range
   const pendingCounts = await Submission.aggregate([
-    { $match: { date: { $gte: from, $lt: to } } },
+    { $match: { date: { $gte: from, $lt: to }, ...liveSubmissionFilter({}) } },
     { $unwind: '$tasks' },
     { $match: { 'tasks.status': 'pending' } },
     { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$date' } }, count: { $sum: 1 } } },
@@ -180,6 +182,7 @@ const hrPerformance = asyncHandler(async (req, res) => {
   // Overdue recurring tasks: still-pending tasks grouped by the submission's
   // recurrence type (regardless of date, mirroring backlog semantics).
   const overdueByFreq = await Submission.aggregate([
+    { $match: liveSubmissionFilter({}) },
     { $unwind: '$tasks' },
     {
       $match: {
@@ -243,6 +246,7 @@ const hrSummary = asyncHandler(async (req, res) => {
   //   - only tasks whose status is still 'pending' AND haven't been
   //     completed-late (completedAt unset)
   const backlogAgg = await Submission.aggregate([
+    { $match: liveSubmissionFilter({}) },
     { $lookup: { from: 'users', localField: 'employee', foreignField: '_id', as: 'emp' } },
     { $unwind: '$emp' },
     { $match: { 'emp.role': { $in: ['employee', 'hr'] } } },
@@ -279,6 +283,7 @@ const employeeSummary = asyncHandler(async (req, res) => {
     employee: req.user._id,
     date: { $gte: last30From, $lte: today },
     submitted: true,
+    ...liveSubmissionFilter({}),
   });
   const earned = subs.reduce((s, x) => s + x.earnedPoints, 0);
   const total = subs.reduce((s, x) => s + x.totalPoints, 0);

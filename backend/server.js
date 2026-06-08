@@ -33,6 +33,7 @@ app.use('/api/holidays', require('./routes/holidayRoutes'));
 app.use('/api/password-reset', require('./routes/passwordResetRoutes'));
 app.use('/api/audit', require('./routes/auditRoutes'));
 app.use('/api', require('./routes/productRoutes'));
+app.use('/api/submission-control', require('./routes/submissionControlRoutes'));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date() }));
 

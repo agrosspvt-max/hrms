@@ -68,6 +68,9 @@ export default function Performance() {
   const [employee, setEmployee] = useState('');
   const [templateType, setTemplateType] = useState('');
   const [recurrence, setRecurrence] = useState('');
+  // Phase 4: HR/SA quick toggle to see analytics WITH test-marked rows
+  // included.  Default off so analytics show the production picture.
+  const [includeTest, setIncludeTest] = useState(false);
 
   const [opts, setOpts] = useState({ departments: [], designations: [], employees: [] });
   const [data, setData] = useState(null);
@@ -93,6 +96,7 @@ export default function Performance() {
     if (employee) params.employee = employee;
     if (templateType) params.templateType = templateType;
     if (recurrence) params.recurrence = recurrence;
+    if (includeTest) params.includeTest = 'true';
     setLoading(true);
     // Calling mode hits its own analytics endpoint (role-scoped at the
     // controller).  Other modes keep their original pendency/completion
@@ -103,7 +107,7 @@ export default function Performance() {
     api.get(url, { params })
       .then(({ data }) => { setData(data); setLoading(false); })
       .catch(() => setLoading(false));
-  }, [mode, range, from, to, department, designation, employee, templateType, recurrence]);
+  }, [mode, range, from, to, department, designation, employee, templateType, recurrence, includeTest]);
 
   const openDrill = (metricId, title) => setDrill({ metricId, title });
 
@@ -178,6 +182,13 @@ export default function Performance() {
         </div>
         {(department || designation || employee || templateType || recurrence) && (
           <button className="btn-ghost" onClick={() => { setDepartment(''); setDesignation(''); setEmployee(''); setTemplateType(''); setRecurrence(''); }}>Clear</button>
+        )}
+        {/* HR / SA only -- include rows flagged as test data.  Default off. */}
+        {(user?.role === 'hr' || user?.role === 'super_admin') && (
+          <label className="flex items-center gap-1 text-xs text-slate-600 cursor-pointer ml-1 select-none">
+            <input type="checkbox" checked={includeTest} onChange={(e) => setIncludeTest(e.target.checked)} />
+            Include test data
+          </label>
         )}
       </div>
 

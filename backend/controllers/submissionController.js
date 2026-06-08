@@ -11,6 +11,7 @@ const DependencyTask = require('../models/DependencyTask');
 const { ensureDailySubmissions, getBacklog, isWeeklyOff } = require('../services/dailyEngine');
 const { createDependencyTask } = require('../services/dependencyEngine');
 const { startOfDay } = require('../utils/dateHelpers');
+const { liveSubmissionFilter } = require('../utils/submissionFilter');
 
 /**
  * Validate + stamp dependency fields onto a scorable unit (task / excel
@@ -703,7 +704,9 @@ const completeBacklogTask = asyncHandler(async (req, res) => {
  * Past submissions for the current employee.
  */
 const history = asyncHandler(async (req, res) => {
-  const where = { employee: req.user._id };
+  // Soft-deleted / test-marked submissions are hidden from the employee's
+  // own history view -- HR sees them through the Submission Control page.
+  const where = { employee: req.user._id, ...liveSubmissionFilter({}) };
   if (req.query.from || req.query.to) {
     where.date = {};
     if (req.query.from) where.date.$gte = startOfDay(new Date(req.query.from));
@@ -761,7 +764,9 @@ const attachDependencies = async (out) => {
  * can show backlog totals without extra round-trips.
  */
 const listForReview = asyncHandler(async (req, res) => {
-  const where = { submitted: true };
+  // Review queue intentionally hides soft-deleted + test-marked rows so
+  // HR doesn't waste cycles scoring data that won't affect anything.
+  const where = { submitted: true, ...liveSubmissionFilter({}) };
   const day = req.query.date ? startOfDay(new Date(req.query.date)) : startOfDay(new Date());
   where.date = day;
   if (req.query.status) where.reviewStatus = req.query.status;
@@ -792,7 +797,7 @@ const listForReview = asyncHandler(async (req, res) => {
   // Compute backlog count per unique employee in one aggregation
   const empIds = [...new Set(items.map((i) => String(i.employee?._id)).filter(Boolean))];
   const backlogAgg = await Submission.aggregate([
-    { $match: { employee: { $in: empIds.map((id) => new (require('mongoose').Types.ObjectId)(id)) } } },
+    { $match: { employee: { $in: empIds.map((id) => new (require('mongoose').Types.ObjectId)(id)) }, ...liveSubmissionFilter({}) } },
     { $unwind: '$tasks' },
     { $match: { 'tasks.status': 'pending' } },
     { $group: { _id: '$employee', count: { $sum: 1 } } },
@@ -995,7 +1000,7 @@ const listForHodReview = asyncHandler(async (req, res) => {
   }).select('_id');
   const memberIds = members.map((m) => m._id);
 
-  const where = { submitted: true, employee: { $in: memberIds } };
+  const where = { submitted: true, employee: { $in: memberIds }, ...liveSubmissionFilter({}) };
   const day = req.query.date ? startOfDay(new Date(req.query.date)) : startOfDay(new Date());
   where.date = day;
   if (req.query.status) where.currentReviewStage = req.query.status;

@@ -406,11 +406,57 @@ const submissionSchema = new mongoose.Schema(
 
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     reviewedAt: { type: Date },
+
+    /* ---- Phase 4: Submission Control flags ----
+       Both default to `false` so every existing submission in the
+       database is treated as "live, real data" without a migration.
+       Every analytics query AND-s in the `liveSubmissionFilter()`
+       helper so analytics never accidentally include deleted /
+       test-marked rows.
+
+       Soft-delete: rows stay in the collection so HR can audit /
+       restore.  Hard-delete is intentionally not supported. */
+    deleted:        { type: Boolean, default: false, index: true },
+    deletedBy:      { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    deletedAt:      { type: Date },
+    deleteReason:   { type: String, default: '' },
+
+    /* Test-data marker: HR flags an obvious test row (manual
+       acceptance test, demo recording, training example) so it
+       stops contributing to analytics without a delete trail.
+       The `?includeTest=true` query param re-includes them when
+       HR explicitly asks. */
+    isTestData:          { type: Boolean, default: false, index: true },
+    testDataMarkedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    testDataMarkedAt:    { type: Date },
+
+    /* HR/SA inline edit audit -- captures who touched what + when.
+       Replaces nothing existing; runs in parallel to reviewHistory. */
+    editHistory: {
+      type: [
+        new mongoose.Schema(
+          {
+            editedBy:   { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+            editorName: { type: String, default: '' },
+            role:       { type: String, default: '' },
+            fields:     { type: [String], default: [] }, // top-level keys touched
+            note:       { type: String, default: '' },
+            timestamp:  { type: Date, default: Date.now },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );
 
 submissionSchema.index({ employee: 1, template: 1, date: 1 }, { unique: true });
 submissionSchema.index({ employee: 1, date: 1 });
+// Submission Control quick-filter: (deleted, isTestData) gives the
+// analytics path a covered index when both flags are checked together,
+// which is the default case on every analytics + leaderboard query.
+submissionSchema.index({ deleted: 1, isTestData: 1 });
 
 module.exports = mongoose.model('Submission', submissionSchema);

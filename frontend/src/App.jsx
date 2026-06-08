@@ -32,6 +32,7 @@ import ResetRequests from './pages/hr/ResetRequests.jsx';
 import HRManagement from './pages/superadmin/HRManagement.jsx';
 import AuditLog from './pages/superadmin/AuditLog.jsx';
 import HRSalary from './pages/hr/HRSalary.jsx';
+import SubmissionControl from './pages/hr/SubmissionControl.jsx';
 
 import EmployeeDashboard from './pages/employee/EmployeeDashboard.jsx';
 import MyAttendance from './pages/employee/MyAttendance.jsx';
@@ -95,6 +96,7 @@ export default function App() {
         */}
         <Route path="/backlog" element={<ProtectedRoute role="hr"><GlobalBacklog /></ProtectedRoute>} />
         <Route path="/reviews" element={<ProtectedRoute role="hr"><SubmissionReviews /></ProtectedRoute>} />
+        <Route path="/submission-control" element={<ProtectedRoute role="hr"><SubmissionControl /></ProtectedRoute>} />
         <Route path="/sent-alerts" element={<ProtectedRoute role="hr"><SentAlerts /></ProtectedRoute>} />
         <Route path="/reset-requests" element={<ProtectedRoute role="hr"><ResetRequests /></ProtectedRoute>} />
 

@@ -83,6 +83,7 @@ function buildNav(user) {
         { to: '/organization', label: 'Departments', icon: I.grid },
         { to: '/products', label: 'Products & Dealers', icon: I.tools },
         { to: '/assignments', label: 'Assignments', icon: I.tasks },
+        { to: '/submission-control', label: 'Submission Control', icon: I.review },
         { to: '/leaves', label: 'Leave Approvals', icon: I.leave },
       ],
     },
