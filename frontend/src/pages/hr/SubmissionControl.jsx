@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import api from '../../api/axios';
 import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
+import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, authUrl } from '../../utils/helpers';
 
@@ -195,17 +196,26 @@ export default function SubmissionControl() {
         </div>
         <div>
           <label className="label">Department</label>
-          <select className="input" value={department} onChange={(e) => setDepartment(e.target.value)}>
-            <option value="">All</option>
-            {opts.departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
-          </select>
+          <SearchableSelect
+            value={department}
+            onChange={setDepartment}
+            options={opts.departments}
+            getValue={(d) => d._id}
+            getLabel={(d) => d.name}
+            placeholder="All"
+          />
         </div>
         <div>
           <label className="label">Employee</label>
-          <select className="input" value={employee} onChange={(e) => setEmployee(e.target.value)}>
-            <option value="">All</option>
-            {opts.employees.map((e) => <option key={e._id} value={e._id}>{e.name} ({e.employeeId})</option>)}
-          </select>
+          <SearchableSelect
+            value={employee}
+            onChange={setEmployee}
+            options={opts.employees}
+            getValue={(e) => e._id}
+            getLabel={(e) => `${e.name} (${e.employeeId})`}
+            getSearchText={(e) => `${e.name} ${e.employeeId || ''} ${e.email || ''}`}
+            placeholder="All"
+          />
         </div>
         <div>
           <label className="label">Template Type</label>
@@ -235,10 +245,15 @@ export default function SubmissionControl() {
         </div>
         <div>
           <label className="label">Reviewer</label>
-          <select className="input" value={reviewer} onChange={(e) => setReviewer(e.target.value)}>
-            <option value="">All</option>
-            {opts.employees.filter((e) => e.role === 'hr').map((e) => <option key={e._id} value={e._id}>{e.name}</option>)}
-          </select>
+          <SearchableSelect
+            value={reviewer}
+            onChange={setReviewer}
+            options={opts.employees.filter((e) => e.role === 'hr')}
+            getValue={(e) => e._id}
+            getLabel={(e) => e.name}
+            getSearchText={(e) => `${e.name} ${e.employeeId || ''}`}
+            placeholder="All"
+          />
         </div>
         <div className="md:col-span-2">
           <label className="label">Search</label>

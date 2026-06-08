@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
+import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { fmtMoney, errMsg, authUrl } from '../../utils/helpers';
@@ -180,10 +181,14 @@ export default function Employees() {
 
       <div className="card card-body grid md:grid-cols-4 gap-3">
         <input className="input" placeholder="Search name, email, ID..." value={q} onChange={(e) => setQ(e.target.value)} />
-        <select className="input" value={filterDept} onChange={(e) => setFilterDept(e.target.value)}>
-          <option value="">All departments</option>
-          {departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
-        </select>
+        <SearchableSelect
+          value={filterDept}
+          onChange={setFilterDept}
+          options={departments}
+          getValue={(d) => d._id}
+          getLabel={(d) => d.name}
+          placeholder="All departments"
+        />
         <select className="input" value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)}>
           <option value="">All statuses</option>
           <option value="active">Active</option>
@@ -660,16 +665,24 @@ export function EmployeeForm({ mode, initial, departments, designations, onCance
           {isHR && <div className="text-[11px] text-slate-500 mt-1">HR can only create Employee accounts.</div>}
         </div>
         <div><label className="label">Department</label>
-          <select className="input" value={form.department || ''} onChange={(e) => set('department', e.target.value)}>
-            <option value="">-</option>
-            {departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
-          </select>
+          <SearchableSelect
+            value={form.department || ''}
+            onChange={(v) => set('department', v)}
+            options={departments}
+            getValue={(d) => d._id}
+            getLabel={(d) => d.name}
+            placeholder="—"
+          />
         </div>
         <div><label className="label">Designation</label>
-          <select className="input" value={form.designation || ''} onChange={(e) => set('designation', e.target.value)}>
-            <option value="">-</option>
-            {designations.map((d) => <option key={d._id} value={d._id}>{d.title}</option>)}
-          </select>
+          <SearchableSelect
+            value={form.designation || ''}
+            onChange={(v) => set('designation', v)}
+            options={designations}
+            getValue={(d) => d._id}
+            getLabel={(d) => d.title}
+            placeholder="—"
+          />
         </div>
         <div className="md:col-span-2">
           <SalaryStructureEditor form={form} set={set} />
@@ -721,10 +734,14 @@ export function EmployeeForm({ mode, initial, departments, designations, onCance
             <div className="grid md:grid-cols-2 gap-3 bg-white rounded-lg p-3 border border-indigo-100">
               <div>
                 <label className="label">Heads which department?</label>
-                <select className="input" value={form.hodDepartment || ''} onChange={(e) => set('hodDepartment', e.target.value)}>
-                  <option value="">- select department -</option>
-                  {departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
-                </select>
+                <SearchableSelect
+                  value={form.hodDepartment || ''}
+                  onChange={(v) => set('hodDepartment', v)}
+                  options={departments}
+                  getValue={(d) => d._id}
+                  getLabel={(d) => d.name}
+                  placeholder="— select department —"
+                />
               </div>
               <div>
                 <label className="label">HOD Permissions</label>

@@ -4,6 +4,7 @@ import api from '../../api/axios';
 import Modal from '../../components/Modal.jsx';
 import StatCard from '../../components/StatCard.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
+import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg } from '../../utils/helpers';
 
@@ -273,10 +274,14 @@ function DesigModal({ initial, id, departments, onClose, onSave }) {
         <div><label className="label">Description</label><input className="input" value={f.description || ''} onChange={(e) => setF({ ...f, description: e.target.value })} /></div>
         <div>
           <label className="label">Department (leave blank for standalone/global)</label>
-          <select className="input" value={f.department || ''} onChange={(e) => setF({ ...f, department: e.target.value })}>
-            <option value="">— Standalone (global) —</option>
-            {departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
-          </select>
+          <SearchableSelect
+            value={f.department || ''}
+            onChange={(v) => setF({ ...f, department: v })}
+            options={departments}
+            getValue={(d) => d._id}
+            getLabel={(d) => d.name}
+            placeholder="— Standalone (global) —"
+          />
         </div>
       </div>
     </Modal>

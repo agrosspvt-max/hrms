@@ -8,6 +8,7 @@ import api from '../../api/axios';
 import StatCard from '../../components/StatCard.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { ClickableCard, DrillDownModal } from '../../components/AnalyticsDrillDown.jsx';
+import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 
 const RED = '#ef4444'; const ORANGE = '#f97316'; const AMBER = '#f59e0b';
@@ -151,24 +152,37 @@ export default function Performance() {
           <div><label className="label">To</label><input className="input max-w-[150px]" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></div>
         </>)}
         {!isHOD && (
-          <div><label className="label">Department</label>
-            <select className="input max-w-[160px]" value={department} onChange={(e) => setDepartment(e.target.value)}>
-              <option value="">All departments</option>
-              {opts.departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
-            </select>
+          <div className="min-w-[180px]"><label className="label">Department</label>
+            <SearchableSelect
+              value={department}
+              onChange={setDepartment}
+              options={opts.departments}
+              getValue={(d) => d._id}
+              getLabel={(d) => d.name}
+              placeholder="All departments"
+            />
           </div>
         )}
-        <div><label className="label">Designation</label>
-          <select className="input max-w-[160px]" value={designation} onChange={(e) => setDesignation(e.target.value)}>
-            <option value="">All designations</option>
-            {opts.designations.map((d) => <option key={d._id} value={d._id}>{d.title}</option>)}
-          </select>
+        <div className="min-w-[180px]"><label className="label">Designation</label>
+          <SearchableSelect
+            value={designation}
+            onChange={setDesignation}
+            options={opts.designations}
+            getValue={(d) => d._id}
+            getLabel={(d) => d.title}
+            placeholder="All designations"
+          />
         </div>
-        <div><label className="label">Employee</label>
-          <select className="input max-w-[170px]" value={employee} onChange={(e) => setEmployee(e.target.value)}>
-            <option value="">All employees</option>
-            {opts.employees.map((e) => <option key={e._id} value={e._id}>{e.name}</option>)}
-          </select>
+        <div className="min-w-[200px]"><label className="label">Employee</label>
+          <SearchableSelect
+            value={employee}
+            onChange={setEmployee}
+            options={opts.employees}
+            getValue={(e) => e._id}
+            getLabel={(e) => e.name + (e.employeeId ? ` (${e.employeeId})` : '')}
+            getSearchText={(e) => `${e.name} ${e.employeeId || ''} ${e.email || ''}`}
+            placeholder="All employees"
+          />
         </div>
         <div><label className="label">Template type</label>
           <select className="input max-w-[150px]" value={templateType} onChange={(e) => setTemplateType(e.target.value)}>

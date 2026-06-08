@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
+import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, monthKey } from '../../utils/helpers';
 
@@ -269,10 +270,16 @@ export default function EmployeeAttendance() {
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
-          <select className="input max-w-[180px]" value={filterDept} onChange={(e) => setFilterDept(e.target.value)}>
-            <option value="">All departments</option>
-            {departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
-          </select>
+          <div className="min-w-[200px]">
+            <SearchableSelect
+              value={filterDept}
+              onChange={setFilterDept}
+              options={departments}
+              getValue={(d) => d._id}
+              getLabel={(d) => d.name}
+              placeholder="All departments"
+            />
+          </div>
           <input
             className="input max-w-[180px]"
             type="month"

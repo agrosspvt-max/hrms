@@ -7,6 +7,7 @@ import SheetGrid from '../../components/SheetGrid.jsx';
 import SheetWorkflowGrid from '../../components/SheetWorkflowGrid.jsx';
 import UpcomingEventsWidget from '../../components/UpcomingEventsWidget.jsx';
 import ScheduleTag from '../../components/ScheduleTag.jsx';
+import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { delayBadgeClass, delayLabel, errMsg, fmtDate } from '../../utils/helpers';
 
@@ -1069,10 +1070,15 @@ function ProductSalesSection({ rows, setRows, products /*, quantities */ }) {
               <div key={i} className="grid grid-cols-12 gap-2 items-start bg-white rounded-lg p-2 border border-indigo-100">
                 <div className="col-span-4">
                   <label className="label text-[10px] uppercase">Product</label>
-                  <select className="input" value={r.productId} onChange={(e) => editRow(i, { productId: e.target.value })}>
-                    <option value="">Select product...</option>
-                    {(products || []).map((p) => <option key={p._id} value={p._id}>{p.name} ({p.unit})</option>)}
-                  </select>
+                  <SearchableSelect
+                    value={r.productId}
+                    onChange={(v) => editRow(i, { productId: v })}
+                    options={products || []}
+                    getValue={(p) => p._id}
+                    getLabel={(p) => `${p.name} (${p.unit})`}
+                    getSearchText={(p) => `${p.name} ${p.unit}`}
+                    placeholder="Select product…"
+                  />
                 </div>
                 <div className="col-span-3">
                   <label className="label text-[10px] uppercase">
@@ -1191,19 +1197,21 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
                   </div>
                   <div className="col-span-2">
                     <label className="label text-[10px] uppercase">Firm Name</label>
-                    <select
-                      className="input"
+                    <SearchableSelect
                       value={r.dealerId || ''}
-                      onChange={(e) => {
-                        const d = dealerById.get(e.target.value);
-                        editRow(i, { dealerId: e.target.value, dealerPlace: d?.place || '' });
+                      onChange={(v) => {
+                        const d = dealerById.get(v);
+                        editRow(i, { dealerId: v, dealerPlace: d?.place || '' });
                       }}
-                    >
-                      <option value="">Select firm…</option>
-                      {sortedDealers.map((d) => (
-                        <option key={d._id} value={d._id}>{dealerLabel(d)}</option>
-                      ))}
-                    </select>
+                      options={sortedDealers}
+                      getValue={(d) => d._id}
+                      getLabel={(d) => dealerLabel(d)}
+                      // Per spec: dealer search matches firmName, place,
+                      // and dealerName (so "modi", "bhopal", or "rahul"
+                      // all surface the same Modi Traders row).
+                      getSearchText={(d) => `${d.firmName || d.name || ''} ${d.place || ''} ${d.dealerName || ''}`}
+                      placeholder="Select firm…"
+                    />
                   </div>
                   <div className="col-span-2">
                     <label className="label text-[10px] uppercase">Place</label>
@@ -1230,10 +1238,15 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
                           <div key={j} className="grid grid-cols-12 gap-2 items-end">
                             <div className="col-span-6">
                               <label className="label text-[10px] uppercase">Product</label>
-                              <select className="input" value={pr.productId || ''} onChange={(e) => editProduct(i, j, { productId: e.target.value })}>
-                                <option value="">Select product…</option>
-                                {(products || []).map((p) => <option key={p._id} value={p._id}>{p.name} ({p.unit})</option>)}
-                              </select>
+                              <SearchableSelect
+                                value={pr.productId || ''}
+                                onChange={(v) => editProduct(i, j, { productId: v })}
+                                options={products || []}
+                                getValue={(p) => p._id}
+                                getLabel={(p) => `${p.name} (${p.unit})`}
+                                getSearchText={(p) => `${p.name} ${p.unit}`}
+                                placeholder="Select product…"
+                              />
                             </div>
                             <div className="col-span-5">
                               <label className="label text-[10px] uppercase">

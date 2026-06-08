@@ -25,6 +25,11 @@ const Attendance = require('../models/Attendance');
 const { startOfDay, addDays, eachDay } = require('../utils/dateHelpers');
 const { isScheduledOn, buildScheduleLabel } = require('../utils/scheduleHelpers');
 const { getEventHolidayMap, isEventHolidayOn } = require('../utils/eventHolidays');
+// Same filter analytics use -- excludes soft-deleted + test-marked
+// submissions so historical rows HR has marked as Test Data don't
+// poison tomorrow's carry-forward defaults (Calling yesterdayPending,
+// task-template backlog, getBacklog widget).
+const { liveSubmissionFilter } = require('../utils/submissionFilter');
 
 /**
  * Returns true if `day` (UTC date) is a weekly off for this employee.
@@ -170,11 +175,20 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
       // system-generated field.
       const sysField = (a.template.customFields || []).find((f) => f.key === 'yesterdayPending' && f.systemGenerated);
       if (sysField) {
+        // BUG-FIX: carry-forward must skip soft-deleted and test-marked
+        // submissions so the Calling Report's `yesterdayPending` (and
+        // every formula that derives from it -- oldPendingRemaining,
+        // totalPending, pendingRate) matches what Calling Analytics
+        // sees.  Without this guard, HR can mark a 30-pending row as
+        // Test Data and analytics will read 0, while the next day's
+        // form still shows yesterdayPending=30 -- exactly the desync
+        // the user reported.
         const prior = await Submission.findOne({
           employee: employee._id,
           template: a.template._id,
           date: { $lt: today },
           submitted: true,
+          ...liveSubmissionFilter({}),
         }).sort({ date: -1 }).select('customResponses');
         const priorTotal = (prior?.customResponses || []).find((r) => r.key === 'totalPending');
         const carry = Number(priorTotal?.value) || 0;
@@ -219,12 +233,16 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
     }
 
     // Carry forward backlog: prior submissions (same template) where
-    // any task is still 'pending' and not completed.
+    // any task is still 'pending' and not completed.  BUG-FIX: same
+    // class of issue as the Calling yesterdayPending carry-forward --
+    // submissions HR has soft-deleted or marked as Test Data must not
+    // generate phantom backlog tasks for the employee tomorrow.
     const priorWithPending = await Submission.find({
       employee: employee._id,
       template: a.template._id,
       date: { $lt: today },
       'tasks.status': 'pending',
+      ...liveSubmissionFilter({}),
     }).sort({ date: 1 });
 
     // Find pending tasks that haven't been completed yet
@@ -274,9 +292,14 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
  */
 const getBacklog = async (employeeId, asOf = new Date()) => {
   const today = startOfDay(asOf);
+  // BUG-FIX: backlog widget must match the analytics view -- exclude
+  // soft-deleted / test-marked submissions so the employee's "you
+  // have N pending tasks" pill doesn't include rows HR has already
+  // cleaned out of the live dataset.
   const subs = await Submission.find({
     employee: employeeId,
     'tasks.status': 'pending',
+    ...liveSubmissionFilter({}),
   }).populate('template', 'title');
 
   const out = [];
