@@ -4,6 +4,7 @@ const PasswordResetRequest = require('../models/PasswordResetRequest');
 const User = require('../models/User');
 const { sendPasswordResetEmail } = require('../utils/emailService');
 const { logAudit } = require('../utils/audit');
+const notify = require('../services/notifyEvents');
 
 const TOKEN_TTL_MIN = Number(process.env.PASSWORD_RESET_TOKEN_TTL_MIN) || 30;
 
@@ -65,6 +66,9 @@ const requestReset = asyncHandler(async (req, res) => {
     requestIp: req.ip,
     userAgent: req.get('user-agent') || '',
   });
+
+  // Global notification: HR + Super Admin see new reset requests inbox-style.
+  notify.notifyPasswordResetRequest({ employee: user });
 
   res.status(201).json({
     message: 'Password reset request sent to HR for approval.',
@@ -192,6 +196,10 @@ const approve = asyncHandler(async (req, res) => {
     res.status(500);
     throw new Error(`Approved but email failed to send: ${err.message}`);
   }
+
+  // Notify the user that their reset was approved (out-of-band channel
+  // alongside the email so they get the heads-up next time they log in).
+  notify.notifyPasswordResetApproved({ employeeId: employee._id, approvedBy: req.user });
 
   res.json({
     message: 'Approved and reset email sent.',

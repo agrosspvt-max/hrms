@@ -236,9 +236,17 @@ const submissionSchema = new mongoose.Schema(
           productUnit:         { type: String, enum: ['L', 'KG'], default: 'L' },
           productPrice:        { type: Number, default: 0 },
           productNbvPercentage:{ type: Number, default: 0 },
+          // Legacy Quantity Master reference -- kept so historical
+          // submissions keep resolving + HR can still wire the old
+          // dropdown if they want a curated list.  New submissions
+          // ignore these unless `quantity` (below) is missing.
           quantityId:          { type: mongoose.Schema.Types.ObjectId, ref: 'Quantity' },
           quantityLabel:       { type: String, default: '' },
           quantityValue:       { type: Number, default: 0 },
+          // New: raw canonical quantity entered by the employee.
+          // 0.5 = 500 ml on an L-unit product, 25 = 25 kg on a KG-unit
+          // product, etc.  When present, drives salesValue/nbvValue.
+          quantity:            { type: Number, default: 0 },
           salesValue:          { type: Number, default: 0 },
           nbvValue:            { type: Number, default: 0 },
         },
@@ -249,18 +257,52 @@ const submissionSchema = new mongoose.Schema(
 
     /* ---- Farmer records sub-table ----
        Repeating farmer-detail rows for templates that declare
-       customSections: ['farmerRecords']. */
+       customSections: ['farmerRecords'].
+
+       Schema v2:
+         - dealerId + dealerNameSnapshot + dealerPlaceSnapshot let
+           Dealer Analytics aggregate across submissions even after the
+           Dealer Master is renamed or deactivated.
+         - products[] supports multiple products per farmer.  Legacy
+           single product/quantity fields are kept (and back-filled by
+           the submit handler) so historical reports still render
+           without a migration script.
+    */
     farmerRecords: {
       type: [new mongoose.Schema(
         {
           name:            { type: String, default: '' },
           mobile:          { type: String, default: '' },
           village:         { type: String, default: '' },
+
+          // Legacy free-text dealer field (kept for historical
+          // submissions; new flow uses dealerId).
           dealerLocation:  { type: String, default: '' },
+
+          // New: Dealer Master reference + snapshot.
+          dealerId:            { type: mongoose.Schema.Types.ObjectId, ref: 'Dealer' },
+          dealerNameSnapshot:  { type: String, default: '' },
+          dealerPlaceSnapshot: { type: String, default: '' },
+
+          // Legacy single product fields -- mirror the first products[] row.
           productId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
           productName:     { type: String, default: '' },
           quantityId:      { type: mongoose.Schema.Types.ObjectId, ref: 'Quantity' },
           quantityLabel:   { type: String, default: '' },
+
+          // New: repeating products this farmer purchased.
+          products: {
+            type: [new mongoose.Schema(
+              {
+                productId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+                productName:  { type: String, default: '' },
+                productUnit:  { type: String, enum: ['L', 'KG'], default: 'L' },
+                quantity:     { type: Number, default: 0 }, // canonical (L or KG)
+              },
+              { _id: false },
+            )],
+            default: [],
+          },
         },
         { _id: true },
       )],

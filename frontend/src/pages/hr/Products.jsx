@@ -6,12 +6,16 @@ import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, fmtMoney, authUrl } from '../../utils/helpers';
 
 /**
- * Products module (HR / Super Admin only).
+ * Products & Dealers module (HR / Super Admin only).
  *
  *   - Products tab    -> name, price/unit, NBV %, unit (L/KG), active.
- *   - Quantities tab  -> label, canonical value, unit, active.
+ *   - Dealers tab     -> dealer name, place, active.  Drives the dealer
+ *                        dropdown in the Farmer Records sub-table.
+ *   - Quantities tab  -> legacy label/value/unit master kept for older
+ *                        templates; new Product Sales rows accept a raw
+ *                        canonical quantity directly.
  *
- * Both masters drive the dropdowns in the Product & Farmer Report
+ * All three masters drive dropdowns in the Product & Farmer Report
  * custom assignment.  Soft-deactivate (active=false) instead of
  * hard-delete so historical submissions still resolve their snapshots.
  */
@@ -20,18 +24,111 @@ export default function Products() {
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-bold text-slate-900">Products</h1>
+        <h1 className="text-2xl font-bold text-slate-900">Products &amp; Dealers</h1>
         <p className="text-sm text-slate-500">Master data for the Product &amp; Farmer Report and any future field-sales template.</p>
       </div>
       <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
-        {[['products', 'Products'], ['quantities', 'Quantity Master']].map(([k, label]) => (
+        {[['products', 'Products'], ['dealers', 'Dealers'], ['quantities', 'Quantity Master (legacy)']].map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-5 py-2 text-sm font-medium rounded-lg transition ${tab === k ? 'bg-white shadow text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
             {label}
           </button>
         ))}
       </div>
-      {tab === 'products' ? <ProductsTab /> : <QuantitiesTab />}
+      {tab === 'products'   ? <ProductsTab />   :
+       tab === 'dealers'    ? <DealersTab />    :
+       <QuantitiesTab />}
+    </div>
+  );
+}
+
+/* ---------------------------- Dealers tab ---------------------------- */
+
+const blankDealer = { name: '', place: '', active: true };
+
+function DealersTab() {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modal, setModal] = useState(null);
+  const [search, setSearch] = useState('');
+  const toast = useToast();
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const params = search ? { search } : {};
+      setItems((await api.get('/dealers', { params })).data);
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [search]);
+
+  const save = async (form) => {
+    try {
+      if (modal.mode === 'create') await api.post('/dealers', form);
+      else await api.put(`/dealers/${modal.data._id}`, form);
+      toast.success('Saved'); setModal(null); load();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
+  const deactivate = async (d) => {
+    if (!confirm(`Deactivate "${d.name}"? Past farmer records keep their snapshot; the dealer just stops appearing in employee dropdowns.`)) return;
+    try { await api.delete(`/dealers/${d._id}`); toast.success('Deactivated'); load(); }
+    catch (err) { toast.error(errMsg(err)); }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex justify-between items-center gap-2 flex-wrap">
+        <input
+          className="input max-w-xs"
+          placeholder="Search by name or place…"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+        <button className="btn-primary" onClick={() => setModal({ mode: 'create', data: { ...blankDealer } })}>+ Add Dealer</button>
+      </div>
+      <div className="card overflow-x-auto">
+        {loading ? <Loader /> :
+          items.length === 0 ? <EmptyState title="No dealers yet" subtitle="Add a dealer to make it pickable on Farmer Records." /> :
+          <table className="table">
+            <thead><tr><th>Dealer Name</th><th>Place</th><th>Status</th><th></th></tr></thead>
+            <tbody>
+              {items.map((d) => (
+                <tr key={d._id} className={d.active ? '' : 'opacity-60'}>
+                  <td className="font-medium text-slate-800">{d.name}</td>
+                  <td>{d.place || <span className="text-slate-400">—</span>}</td>
+                  <td>{d.active ? <span className="badge-green">Active</span> : <span className="badge-gray">Inactive</span>}</td>
+                  <td className="text-right whitespace-nowrap">
+                    <button className="btn-ghost" onClick={() => setModal({ mode: 'edit', data: d })}>Edit</button>
+                    {d.active && <button className="btn-ghost text-red-600" onClick={() => deactivate(d)}>Deactivate</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>}
+      </div>
+      {modal && (
+        <Modal open onClose={() => setModal(null)} title={modal.mode === 'create' ? 'Add Dealer' : 'Edit Dealer'}
+          footer={<>
+            <button className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
+            <button className="btn-primary" disabled={!modal.data.name?.trim()} onClick={() => save({ ...modal.data, name: String(modal.data.name).trim(), place: String(modal.data.place || '').trim() })}>Save</button>
+          </>}>
+          <div className="space-y-3">
+            <div>
+              <label className="label">Dealer Name</label>
+              <input className="input" value={modal.data.name} onChange={(e) => setModal({ ...modal, data: { ...modal.data, name: e.target.value } })} placeholder="e.g. Raj Traders" />
+            </div>
+            <div>
+              <label className="label">Place</label>
+              <input className="input" value={modal.data.place || ''} onChange={(e) => setModal({ ...modal, data: { ...modal.data, place: e.target.value } })} placeholder="e.g. Bhopal" />
+            </div>
+            <div className="flex items-center gap-2">
+              <input id="d-active" type="checkbox" checked={!!modal.data.active} onChange={(e) => setModal({ ...modal, data: { ...modal.data, active: e.target.checked } })} />
+              <label htmlFor="d-active" className="text-sm">Active</label>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

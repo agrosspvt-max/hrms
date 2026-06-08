@@ -475,6 +475,12 @@ function CallingMode({ data }) {
   const pLb = data.productEmployeeLeaderboards || {};
   const productsTable = data.productsTable || [];
   const employeesPF   = data.employeesPF || [];
+  // Dealer Analytics payload (Phase 2.6) -- always rendered, empty
+  // state fires when there's no dealer-linked data in range.
+  const dk        = data.dealerKpis || {};
+  const dLb       = data.dealerLeaderboards || {};
+  const dealers   = data.dealersTable || [];
+  const dTrend    = data.dealerTrend || [];
   // Section is ALWAYS rendered so HR sees the structure on day one --
   // empty states + zero values are shown when there's no data yet,
   // not the section itself hidden.
@@ -617,6 +623,86 @@ function CallingMode({ data }) {
                   ))}
                 </tbody>
               </table>
+            )}
+          </div>
+
+          {/* =============================================================
+                DEALER ANALYTICS (Phase 2.6 -- additive).  Always rendered;
+                empty state fires when no farmer records reference Dealer
+                Master yet.
+              ============================================================= */}
+          <div className="space-y-4 pt-2">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-slate-800">Dealer Analytics</h2>
+              <span className="badge bg-indigo-50 text-indigo-700">Dealer Master</span>
+              {dealers.length === 0 && <span className="text-[11px] text-slate-500">— no dealer-linked farmer records in range</span>}
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <StatCard label="Total Active Dealers"  value={dk.totalActiveDealers ?? 0} accent="brand" />
+              <StatCard label="Dealers Covered"       value={dk.dealersCovered ?? 0}     accent="blue" sub="have at least 1 farmer in range" />
+              <StatCard label="Dealers With Sales"    value={dk.dealersWithSales ?? 0}   accent="green" />
+              <StatCard label="Avg Sales / Dealer"    value={`₹${dk.avgSalesPerDealer ?? 0}`} accent="amber" />
+            </div>
+
+            <div>
+              <div className="text-sm font-semibold text-slate-800 mb-2">Top Dealers</div>
+              <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
+                <Leaderboard title="By Sales (₹)"   rows={(dLb.topSales    || []).map((d) => ({ name: d.name, employeeId: d.place, sales: d.sales }))} metric="sales" suffix="" />
+                <Leaderboard title="By Quantity"    rows={(dLb.topQuantity || []).map((d) => ({ name: d.name, employeeId: d.place, qty: d.qty }))}    metric="qty"   suffix="" />
+                <Leaderboard title="By NBV (₹)"     rows={(dLb.topNbv      || []).map((d) => ({ name: d.name, employeeId: d.place, nbv: d.nbv }))}    metric="nbv"   suffix="" />
+                <Leaderboard title="By Farmers"     rows={(dLb.topFarmers  || []).map((d) => ({ name: d.name, employeeId: d.place, farmers: d.farmers }))} metric="farmers" suffix="" />
+              </div>
+            </div>
+
+            <div className="card overflow-x-auto">
+              <div className="px-5 py-3 border-b border-slate-100 text-sm font-semibold text-slate-800">
+                Per-Dealer Breakdown ({dealers.length})
+              </div>
+              {dealers.length === 0 ? (
+                <div className="p-5"><EmptyState title="No dealer records in range" subtitle="Use the Dealer dropdown on Farmer Records to feed this view." /></div>
+              ) : (
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Dealer</th>
+                      <th>Place</th>
+                      <th className="text-right">Farmers</th>
+                      <th className="text-right">Products</th>
+                      <th className="text-right">Quantity</th>
+                      <th className="text-right">Sales (₹)</th>
+                      <th className="text-right">NBV (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dealers.map((d) => (
+                      <tr key={d._id}>
+                        <td className="font-medium text-slate-800">{d.name || '—'}</td>
+                        <td>{d.place || <span className="text-slate-400">—</span>}</td>
+                        <td className="text-right">{d.farmers}</td>
+                        <td className="text-right">{d.products}</td>
+                        <td className="text-right">{d.qty}</td>
+                        <td className="text-right font-semibold text-green-700">{d.sales}</td>
+                        <td className="text-right">{d.nbv}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {dTrend.length > 0 && (
+              <ChartCard title="Dealer Trend" subtitle="Org-wide totals across all dealers per day">
+                <AreaChart data={dTrend}>
+                  <CartesianGrid stroke="#eef2f7" />
+                  <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: 11 }} />
+                  <Area type="monotone" dataKey="sales"   stroke={GREEN}  fill={GREEN}  fillOpacity={0.18} name="Sales (₹)" />
+                  <Area type="monotone" dataKey="nbv"     stroke={BLUE}   fill={BLUE}   fillOpacity={0.12} name="NBV (₹)" />
+                  <Area type="monotone" dataKey="farmers" stroke={AMBER}  fill={AMBER}  fillOpacity={0.0}  name="Farmers" />
+                </AreaChart>
+              </ChartCard>
             )}
           </div>
 

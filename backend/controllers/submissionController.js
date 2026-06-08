@@ -364,7 +364,15 @@ const submitOne = asyncHandler(async (req, res) => {
        preserved from what the daily engine seeded, never overwritten by
        the client. */
     const { computeAutoFields } = require('../services/customTemplate');
-    const tpl = await Template.findById(sub.template).select('customFields customKind');
+    // customSections MUST be in this projection -- the productSales /
+    // farmerRecords persistence blocks below are guarded on
+    // tpl.customSections.includes(...).  Without this field projected,
+    // the guard silently evaluates false on every submit and the
+    // employee's product/farmer rows are dropped, leaving submissions
+    // with empty productSales[] / farmerRecords[] and Product & Farmer
+    // Analytics permanently at zero.  (This was the cause of the
+    // "submissions exist but analytics shows 0/₹0" bug.)
+    const tpl = await Template.findById(sub.template).select('customFields customKind customSections');
     if (!tpl || !Array.isArray(tpl.customFields)) {
       res.status(400);
       throw new Error('Custom template is missing field definitions.');
@@ -401,13 +409,26 @@ const submitOne = asyncHandler(async (req, res) => {
       const Quantity = require('../models/Quantity');
       const cleanedSales = [];
       for (const row of (productSales || [])) {
-        if (!row || (!row.productId && !row.quantityId)) continue;
-        const prod = row.productId ? await Product.findById(row.productId).lean()  : null;
-        const qty  = row.quantityId ? await Quantity.findById(row.quantityId).lean() : null;
-        if (!prod || !qty) continue; // silently drop invalid rows
+        // Accept a row that carries EITHER:
+        //   - a raw canonical `quantity` (new flow: employee types 0.5 / 25 / etc.)
+        //   - a legacy `quantityId` pointing into Quantity Master
+        // Must also reference a Product.
+        if (!row || !row.productId) continue;
+        const prod = await Product.findById(row.productId).lean();
+        if (!prod) continue; // silently drop invalid rows
+
+        // Resolve quantity: raw input wins; fall back to Quantity Master
+        // snapshot so older clients keep working.
+        let qty = null;
+        let qval = Number(row.quantity);
+        if (!Number.isFinite(qval) || qval <= 0) {
+          if (row.quantityId) qty = await Quantity.findById(row.quantityId).lean();
+          qval = Number(qty?.value) || 0;
+        }
+        if (qval <= 0) continue; // no quantity = nothing to score
+
         const price  = Number(prod.pricePerUnit) || 0;
         const nbvPct = Math.max(0, Math.min(Number(prod.nbvPercentage) || 0, 100));
-        const qval   = Number(qty.value) || 0;
         const sales  = Math.round(price * qval * 100) / 100;
         const nbv    = Math.round(sales * nbvPct) / 100;
         cleanedSales.push({
@@ -416,9 +437,10 @@ const submitOne = asyncHandler(async (req, res) => {
           productUnit: prod.unit,
           productPrice: price,
           productNbvPercentage: nbvPct,
-          quantityId: qty._id,
-          quantityLabel: qty.label,
-          quantityValue: qval,
+          quantityId: qty?._id,
+          quantityLabel: qty?.label || '',
+          quantityValue: qty ? (Number(qty.value) || 0) : qval, // mirror raw qty when no master row
+          quantity:     qval,
           salesValue: sales,
           nbvValue: nbv,
         });
@@ -427,26 +449,68 @@ const submitOne = asyncHandler(async (req, res) => {
       sub.markModified('productSales');
     }
 
-    /* ---- Farmer Records sub-table (templates that opt in) ---- */
+    /* ---- Farmer Records sub-table (templates that opt in) ----
+       v2 schema: each farmer carries an optional Dealer Master
+       reference + a products[] array.  Legacy single-product fields
+       are kept and mirrored from products[0] so historical analytics
+       paths keep working.  Dealer name + place are SNAPSHOTTED so
+       Dealer Analytics survives later renames / deactivations. */
     if (Array.isArray(tpl.customSections) && tpl.customSections.includes('farmerRecords')) {
       const Product  = require('../models/Product');
-      const Quantity = require('../models/Quantity');
+      const Dealer   = require('../models/Dealer');
       const cleanedFarmers = [];
       for (const row of (farmerRecords || [])) {
         if (!row) continue;
         const name = String(row.name || '').trim();
         if (!name) continue; // require at least a name
-        const prod = row.productId ? await Product.findById(row.productId).lean() : null;
-        const qty  = row.quantityId ? await Quantity.findById(row.quantityId).lean() : null;
+
+        // Resolve dealer (optional).
+        let dealer = null;
+        if (row.dealerId) dealer = await Dealer.findById(row.dealerId).lean();
+
+        // Resolve products[] -- snapshot product master at submit time.
+        const rawProducts = Array.isArray(row.products) ? row.products
+                          : (row.productId ? [{ productId: row.productId, quantity: Number(row.quantity) || 0 }] : []);
+        const cleanedProducts = [];
+        for (const pr of rawProducts) {
+          if (!pr || !pr.productId) continue;
+          const prod = await Product.findById(pr.productId).lean();
+          if (!prod) continue;
+          const q = Number(pr.quantity);
+          cleanedProducts.push({
+            productId:   prod._id,
+            productName: prod.name,
+            productUnit: prod.unit,
+            quantity:    Number.isFinite(q) && q > 0 ? q : 0,
+          });
+        }
+
+        // Legacy mirrors -- first product wins so the existing analytics
+        // path (productName count) keeps producing meaningful numbers.
+        const first = cleanedProducts[0];
+
         cleanedFarmers.push({
           name,
           mobile:         String(row.mobile || '').trim(),
           village:        String(row.village || '').trim(),
+
+          // Preserve original free-text dealer (if employee typed one
+          // before Dealer Master existed, or for legacy clients).
           dealerLocation: String(row.dealerLocation || '').trim(),
-          productId:      prod?._id,
-          productName:    prod?.name || '',
-          quantityId:     qty?._id,
-          quantityLabel:  qty?.label || '',
+
+          // New dealer snapshot.
+          dealerId:            dealer?._id,
+          dealerNameSnapshot:  dealer?.name  || '',
+          dealerPlaceSnapshot: dealer?.place || '',
+
+          // Legacy single-product mirror.
+          productId:     first?.productId,
+          productName:   first?.productName || '',
+          quantityLabel: '',     // legacy; not used by new flow
+          quantityId:    undefined,
+
+          // New repeating products list.
+          products: cleanedProducts,
         });
       }
       sub.farmerRecords = cleanedFarmers;
@@ -892,6 +956,17 @@ const reviewSubmission = asyncHandler(async (req, res) => {
   });
 
   await sub.save();
+
+  // Notify the submission owner that their work was reviewed.
+  try {
+    const notify = require('../services/notifyEvents');
+    notify.notifySubmissionReviewed({
+      employeeId: sub.employee,
+      submission: { date: sub.date },
+      reviewedBy: req.user,
+    });
+  } catch (_) { /* notify never blocks the response */ }
+
   res.json(sub);
 });
 

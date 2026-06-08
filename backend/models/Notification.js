@@ -26,6 +26,13 @@ const notificationSchema = new mongoose.Schema(
         'backlog_alert', 'general', 'review_pending', 'leave_info',
         'dependency_assigned', 'dependency_resolved',
         'birthday_today', 'event_today', 'event_reminder',
+        // Global event-driven notifications (Phase 2.4).
+        'leave_applied', 'leave_decision',
+        'attendance_changed',
+        'work_assigned', 'work_revoked',
+        'submission_reviewed',
+        'password_reset_request', 'password_reset_approved',
+        'employee_created',
       ],
       default: 'general',
       index: true,

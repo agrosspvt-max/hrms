@@ -6,6 +6,7 @@ const Notification = require('../models/Notification');
 const { startOfDay, daysBetween, addDays, effectiveLeaveDays } = require('../utils/dateHelpers');
 const Holiday = require('../models/Holiday');
 const { logAudit } = require('../utils/audit');
+const notify = require('../services/notifyEvents');
 
 /**
  * Employee applies for a leave.
@@ -55,6 +56,27 @@ const apply = asyncHandler(async (req, res) => {
     throw new Error('Requested period contains no working days (weekly off / holidays only). No leave to apply.');
   }
 
+  // Paid-leave balance gate (Phase 2.5).
+  //   - leaveType in { paid, casual, sick, other } counts as PAID.
+  //   - leaveType === 'unpaid' bypasses the balance entirely.
+  // Employees are blocked here when their balance is insufficient; HR /
+  // Super Admin acting on behalf of an employee may over-allocate, the
+  // payroll engine will handle any overflow.
+  const isPaidRequest = leaveType !== 'unpaid';
+  if (isPaidRequest) {
+    const u = await User.findById(req.user._id).select('leaveBalance role');
+    const allowance = Number(u?.leaveBalance?.yearlyAllowance) || 0;
+    const used      = Number(u?.leaveBalance?.used) || 0;
+    const remaining = Math.max(0, allowance - used);
+    if (remaining < days && req.user.role === 'employee') {
+      res.status(400);
+      throw new Error(
+        `You do not have sufficient leave balance (${remaining} day(s) remaining, ${days} requested). ` +
+        `Please apply as Unpaid Leave or contact HR.`,
+      );
+    }
+  }
+
   const lv = await Leave.create({
     employee: req.user._id,
     fromDate: from,
@@ -63,6 +85,10 @@ const apply = asyncHandler(async (req, res) => {
     reason,
     days,
     dayType,
+    // Lock paid flag at apply-time based on the requested type so the
+    // decide() flow respects the employee's explicit choice instead of
+    // silently flipping paid → unpaid on no-balance approvals.
+    paid: isPaidRequest,
   });
 
   // Informational copy to the department HOD (approval still rests with HR).
@@ -78,6 +104,9 @@ const apply = asyncHandler(async (req, res) => {
       }).catch(() => {});
     }
   }
+
+  // Global notification: HR + Super Admin see every new leave request.
+  notify.notifyLeaveApplied({ leave: lv, employee: req.user });
 
   res.status(201).json(lv);
 });
@@ -146,16 +175,19 @@ const decide = asyncHandler(async (req, res) => {
   }
 
   if (decision === 'approved') {
+    // Phase 2.5 rule: respect the employee's chosen leaveType.
+    //   - 'unpaid' -> never deducts balance, marked unpaid attendance.
+    //   - everything else -> deducts balance.  If the balance is short
+    //     (HR over-allocated on behalf of the employee), the excess
+    //     spills into negative `used` so the payroll engine can see and
+    //     deduct salary for the uncovered days.
     const user = await User.findById(lv.employee);
-    const remaining = (user.leaveBalance?.yearlyAllowance || 0) - (user.leaveBalance?.used || 0);
-    if (remaining >= lv.days) {
+    if (lv.leaveType === 'unpaid') {
+      lv.paid = false;
+    } else {
       lv.paid = true;
       user.leaveBalance.used = (user.leaveBalance.used || 0) + lv.days;
       await user.save();
-    } else {
-      // No balance left -> unpaid leave
-      lv.paid = false;
-      lv.leaveType = 'unpaid';
     }
   }
 
@@ -185,6 +217,9 @@ const decide = asyncHandler(async (req, res) => {
     targetLabel: `${requester?.role || 'user'} ${lv.fromDate.toISOString().slice(0, 10)} → ${lv.toDate.toISOString().slice(0, 10)}`,
     meta: { decision, paid: lv.paid, hrNote: hrNote || '' },
   });
+
+  // Notify the leave owner of the HR decision.
+  notify.notifyLeaveDecision({ leave: lv, decidedBy: req.user, decision });
 
   res.json(lv);
 });

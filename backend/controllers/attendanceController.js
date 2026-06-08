@@ -135,6 +135,17 @@ const setStatus = asyncHandler(async (req, res) => {
     },
   });
 
+  // Notify the employee that HR changed their attendance.
+  try {
+    const notify = require('../services/notifyEvents');
+    notify.notifyAttendanceChanged({
+      employeeId: employee._id,
+      date: day,
+      status,
+      changedBy: req.user,
+    });
+  } catch (_) { /* notify never blocks */ }
+
   res.json({
     record,
     previousStatus,

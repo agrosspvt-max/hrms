@@ -2,6 +2,7 @@ const router = require('express').Router();
 const multer = require('multer');
 const { protect, authorize } = require('../middleware/auth');
 const c = require('../controllers/productController');
+const d = require('../controllers/dealerController');
 
 // In-memory upload for bulk Excel imports.  5 MB cap is plenty for
 // thousands of product rows and avoids any disk persistence.
@@ -31,5 +32,12 @@ router.delete('/products/:id',     authorize('hr'), c.deactivateProduct);
 router.post('/quantities',         authorize('hr'), c.createQuantity);
 router.put('/quantities/:id',      authorize('hr'), c.updateQuantity);
 router.delete('/quantities/:id',   authorize('hr'), c.deactivateQuantity);
+
+// Dealer Master.  Reads open to any authenticated user (employees need
+// the dropdown when filing a Farmer Record); writes HR / Super Admin only.
+router.get('/dealers',         d.listDealers);
+router.post('/dealers',        authorize('hr'), d.createDealer);
+router.put('/dealers/:id',     authorize('hr'), d.updateDealer);
+router.delete('/dealers/:id',  authorize('hr'), d.deactivateDealer);
 
 module.exports = router;

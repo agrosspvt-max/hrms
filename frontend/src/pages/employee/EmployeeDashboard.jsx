@@ -61,9 +61,10 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const [productSales, setProductSales] = useState({});
   // Farmer rows per submission: { subId: [{ name, mobile, ... }] }
   const [farmerRecords, setFarmerRecords] = useState({});
-  // Master data (Products / Quantities) for the custom-template dropdowns.
+  // Master data (Products / Quantities / Dealers) for the custom-template dropdowns.
   const [products, setProducts] = useState([]);
   const [quantities, setQuantities] = useState([]);
+  const [dealers, setDealers] = useState([]);
   const [sheetState, setSheetState] = useState({}); // { subId: workingSheet }
   // Per-row task status for sheet "task rows" (scored rows with statusTracking)
   // { subId: { [scoreKey]: { rowStatus, pendingReason, dependencyType, dependencyAssignedTo, dependencyRemark } } }
@@ -89,6 +90,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   useEffect(() => {
     api.get('/products', { params: { activeOnly: 'true' } }).then((r) => setProducts(r.data || [])).catch(() => setProducts([]));
     api.get('/quantities', { params: { activeOnly: 'true' } }).then((r) => setQuantities(r.data || [])).catch(() => setQuantities([]));
+    api.get('/dealers',  { params: { activeOnly: 'true' } }).then((r) => setDealers(r.data || [])).catch(() => setDealers([]));
   }, []);
 
   const resolveDep = async (id) => {
@@ -242,8 +244,14 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         const sections = sub.template?.customSections || [];
         const cleanProductSales = sections.includes('productSales')
           ? (productSales[sub._id] || [])
-              .filter((r) => r.productId && r.quantityId)
-              .map((r) => ({ productId: r.productId, quantityId: r.quantityId }))
+              // New flow: productId + raw numeric quantity.  Legacy
+              // submissions with quantityId still validate at backend.
+              .filter((r) => r.productId && (Number(r.quantity) > 0 || r.quantityId))
+              .map((r) => ({
+                productId: r.productId,
+                quantity: Number(r.quantity) > 0 ? Number(r.quantity) : undefined,
+                quantityId: r.quantityId || undefined,
+              }))
           : [];
         const cleanFarmers = sections.includes('farmerRecords')
           ? (farmerRecords[sub._id] || [])
@@ -252,9 +260,14 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                 name: r.name.trim(),
                 mobile: (r.mobile || '').trim(),
                 village: (r.village || '').trim(),
+                // Legacy free-text dealer (unused by new flow but kept).
                 dealerLocation: (r.dealerLocation || '').trim(),
-                productId: r.productId || undefined,
-                quantityId: r.quantityId || undefined,
+                // New dealer dropdown.
+                dealerId: r.dealerId || undefined,
+                // Repeating products list.  Filter out half-filled rows.
+                products: (r.products || [])
+                  .filter((p) => p.productId && Number(p.quantity) > 0)
+                  .map((p) => ({ productId: p.productId, quantity: Number(p.quantity) })),
               }))
           : [];
         await api.post(`/submissions/${sub._id}/submit`, {
@@ -533,6 +546,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                   }
                   products={products}
                   quantities={quantities}
+                  dealers={dealers}
                   selfRating={selfRating[sub._id]}
                   setSelfRating={(v) => setSelfRating((s) => ({ ...s, [sub._id]: v }))}
                   selfNote={selfNote[sub._id]}
@@ -895,7 +909,7 @@ function CustomTemplateForm({
   sub, values, onChange,
   productSales = [], setProductSales,
   farmerRecords = [], setFarmerRecords,
-  products = [], quantities = [],
+  products = [], quantities = [], dealers = [],
   selfRating, setSelfRating, selfNote, setSelfNote, idea, setIdea,
   busy, onSubmit,
 }) {
@@ -999,7 +1013,7 @@ function CustomTemplateForm({
           rows={farmerRecords}
           setRows={setFarmerRecords}
           products={products}
-          quantities={quantities}
+          dealers={dealers}
         />
       )}
 
@@ -1038,22 +1052,22 @@ function CustomTemplateForm({
 /* ------------------------------------------------------------------ */
 /* Product Sales sub-table                                             */
 /* ------------------------------------------------------------------ */
-function ProductSalesSection({ rows, setRows, products, quantities }) {
-  const addRow = () => setRows((cur) => [...cur, { productId: '', quantityId: '' }]);
+function ProductSalesSection({ rows, setRows, products /*, quantities */ }) {
+  // Quantity is now a raw numeric (canonical) value the employee types.
+  // 0.5 = 500 ml on an L-unit product, 25 = 25 kg on a KG-unit product.
+  // Quantity Master is no longer required for new submissions.
+  const addRow = () => setRows((cur) => [...cur, { productId: '', quantity: '' }]);
   const removeRow = (i) => setRows((cur) => cur.filter((_, idx) => idx !== i));
   const editRow = (i, patch) => setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
 
-  // Live per-row + totals.  The backend re-derives these from the master
-  // snapshot, but showing them inline gives the employee instant feedback.
   const productById = new Map((products || []).map((p) => [p._id, p]));
-  const qtyById     = new Map((quantities || []).map((q) => [q._id, q]));
   const calcRow = (r) => {
     const p = productById.get(r.productId);
-    const q = qtyById.get(r.quantityId);
-    if (!p || !q) return { sales: 0, nbv: 0, unit: '', label: '' };
-    const sales = (Number(p.pricePerUnit) || 0) * (Number(q.value) || 0);
+    const q = Number(r.quantity);
+    if (!p || !Number.isFinite(q) || q <= 0) return { sales: 0, nbv: 0, unit: p?.unit || '' };
+    const sales = (Number(p.pricePerUnit) || 0) * q;
     const nbv   = sales * (Number(p.nbvPercentage) || 0) / 100;
-    return { sales: Math.round(sales * 100) / 100, nbv: Math.round(nbv * 100) / 100, unit: p.unit, label: q.label };
+    return { sales: Math.round(sales * 100) / 100, nbv: Math.round(nbv * 100) / 100, unit: p.unit };
   };
   const totalSales = rows.reduce((s, r) => s + calcRow(r).sales, 0);
   const totalNbv   = rows.reduce((s, r) => s + calcRow(r).nbv,   0);
@@ -1063,7 +1077,10 @@ function ProductSalesSection({ rows, setRows, products, quantities }) {
       <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
         <div>
           <div className="text-sm font-semibold text-indigo-900">Product Sales</div>
-          <div className="text-[11px] text-indigo-700">Pick a product + quantity. Sales Value and NBV are auto-calculated.</div>
+          <div className="text-[11px] text-indigo-700">
+            Enter canonical quantity directly. Examples: 0.1 = 100 ml · 0.5 = 500 ml ·
+            1 = 1 L · 25 = 25 KG. Sales Value and NBV are auto-calculated from the product master.
+          </div>
         </div>
         <button type="button" className="btn-secondary !py-1 !text-xs" onClick={addRow}>+ Add Product</button>
       </div>
@@ -1073,24 +1090,30 @@ function ProductSalesSection({ rows, setRows, products, quantities }) {
         <div className="space-y-2">
           {rows.map((r, i) => {
             const c = calcRow(r);
-            // Filter quantities by selected product's unit if known.
             const p = productById.get(r.productId);
-            const qtyOptions = p ? (quantities || []).filter((q) => q.unit === p.unit) : (quantities || []);
             return (
               <div key={i} className="grid grid-cols-12 gap-2 items-start bg-white rounded-lg p-2 border border-indigo-100">
                 <div className="col-span-4">
                   <label className="label text-[10px] uppercase">Product</label>
-                  <select className="input" value={r.productId} onChange={(e) => editRow(i, { productId: e.target.value, quantityId: '' })}>
+                  <select className="input" value={r.productId} onChange={(e) => editRow(i, { productId: e.target.value })}>
                     <option value="">Select product...</option>
-                    {(products || []).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+                    {(products || []).map((p) => <option key={p._id} value={p._id}>{p.name} ({p.unit})</option>)}
                   </select>
                 </div>
                 <div className="col-span-3">
-                  <label className="label text-[10px] uppercase">Quantity</label>
-                  <select className="input" value={r.quantityId} onChange={(e) => editRow(i, { quantityId: e.target.value })} disabled={!r.productId}>
-                    <option value="">{r.productId ? 'Select quantity...' : 'Pick product first'}</option>
-                    {qtyOptions.map((q) => <option key={q._id} value={q._id}>{q.label}</option>)}
-                  </select>
+                  <label className="label text-[10px] uppercase">
+                    Quantity {p ? `(${p.unit})` : ''}
+                  </label>
+                  <input
+                    className="input"
+                    type="number"
+                    step="any"
+                    min="0"
+                    placeholder={p ? `e.g. ${p.unit === 'KG' ? '25' : '0.5'}` : 'e.g. 0.5'}
+                    value={r.quantity}
+                    onChange={(e) => editRow(i, { quantity: e.target.value })}
+                    disabled={!r.productId}
+                  />
                 </div>
                 <div className="col-span-2">
                   <label className="label text-[10px] uppercase">Sales Value</label>
@@ -1118,64 +1141,137 @@ function ProductSalesSection({ rows, setRows, products, quantities }) {
 
 /* ------------------------------------------------------------------ */
 /* Farmer Records sub-table                                            */
+/*                                                                     */
+/* v2: each farmer carries a Dealer Master dropdown (Place auto-fills) */
+/* + a repeating Products list (+ Add Product) where quantity is the   */
+/* raw canonical number (0.5 = 500 ml, 25 = 25 KG, ...).               */
 /* ------------------------------------------------------------------ */
-function FarmerRecordsSection({ rows, setRows, products, quantities }) {
-  const blank = { name: '', mobile: '', village: '', dealerLocation: '', productId: '', quantityId: '' };
-  const addRow = () => setRows((cur) => [...cur, { ...blank }]);
+function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
+  const blank = {
+    name: '', mobile: '', village: '',
+    dealerId: '',          // dropdown value
+    dealerPlace: '',       // mirrored from dealer choice (read-only)
+    products: [],          // repeating [{ productId, quantity }]
+  };
+  const addRow = () => setRows((cur) => [...cur, { ...blank, products: [] }]);
   const removeRow = (i) => setRows((cur) => cur.filter((_, idx) => idx !== i));
   const editRow = (i, patch) => setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
   const productById = new Map((products || []).map((p) => [p._id, p]));
+  const dealerById  = new Map((dealers  || []).map((d) => [d._id, d]));
+
+  const editProduct = (rowIdx, prodIdx, patch) => setRows((cur) => cur.map((r, i) => {
+    if (i !== rowIdx) return r;
+    const ps = [...(r.products || [])];
+    ps[prodIdx] = { ...ps[prodIdx], ...patch };
+    return { ...r, products: ps };
+  }));
+  const addProduct = (rowIdx) => setRows((cur) => cur.map((r, i) =>
+    i === rowIdx ? { ...r, products: [...(r.products || []), { productId: '', quantity: '' }] } : r));
+  const removeProduct = (rowIdx, prodIdx) => setRows((cur) => cur.map((r, i) =>
+    i === rowIdx ? { ...r, products: (r.products || []).filter((_, j) => j !== prodIdx) } : r));
 
   return (
     <div className="bg-emerald-50/60 border border-emerald-100 rounded-lg p-3">
       <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
         <div>
           <div className="text-sm font-semibold text-emerald-900">Farmer Details</div>
-          <div className="text-[11px] text-emerald-700">Add as many farmer interactions as you want today.</div>
+          <div className="text-[11px] text-emerald-700">
+            Pick a dealer from the master list (Place auto-fills). Each farmer can have one or more products.
+          </div>
         </div>
         <button type="button" className="btn-secondary !py-1 !text-xs" onClick={addRow}>+ Add Farmer</button>
       </div>
       {rows.length === 0 ? (
         <div className="text-xs text-emerald-700/80 italic">No farmers yet. Click "+ Add Farmer" to add one.</div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {rows.map((r, i) => {
-            const p = productById.get(r.productId);
-            const qtyOptions = p ? (quantities || []).filter((q) => q.unit === p.unit) : (quantities || []);
+            const dealer = dealerById.get(r.dealerId);
+            const place  = dealer?.place || r.dealerPlace || '';
             return (
-              <div key={i} className="grid grid-cols-12 gap-2 items-start bg-white rounded-lg p-2 border border-emerald-100">
-                <div className="col-span-3">
-                  <label className="label text-[10px] uppercase">Farmer Name *</label>
-                  <input className="input" value={r.name} onChange={(e) => editRow(i, { name: e.target.value })} placeholder="Full name" />
+              <div key={i} className="bg-white rounded-lg p-3 border border-emerald-100 space-y-2">
+                {/* Identity row */}
+                <div className="grid grid-cols-12 gap-2 items-end">
+                  <div className="col-span-3">
+                    <label className="label text-[10px] uppercase">Farmer Name *</label>
+                    <input className="input" value={r.name} onChange={(e) => editRow(i, { name: e.target.value })} placeholder="Full name" />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label text-[10px] uppercase">Mobile</label>
+                    <input className="input" value={r.mobile} onChange={(e) => editRow(i, { mobile: e.target.value })} placeholder="9000000000" />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label text-[10px] uppercase">Village</label>
+                    <input className="input" value={r.village} onChange={(e) => editRow(i, { village: e.target.value })} />
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label text-[10px] uppercase">Dealer</label>
+                    <select
+                      className="input"
+                      value={r.dealerId || ''}
+                      onChange={(e) => {
+                        const d = dealerById.get(e.target.value);
+                        editRow(i, { dealerId: e.target.value, dealerPlace: d?.place || '' });
+                      }}
+                    >
+                      <option value="">Select dealer…</option>
+                      {(dealers || []).map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
+                    </select>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label text-[10px] uppercase">Place</label>
+                    <input className="input bg-slate-50" value={place} readOnly placeholder="—" />
+                  </div>
+                  <div className="col-span-1 flex items-end justify-end">
+                    <button type="button" className="btn-ghost text-red-600 !px-2" onClick={() => removeRow(i)} title="Remove farmer">✕</button>
+                  </div>
                 </div>
-                <div className="col-span-2">
-                  <label className="label text-[10px] uppercase">Mobile</label>
-                  <input className="input" value={r.mobile} onChange={(e) => editRow(i, { mobile: e.target.value })} placeholder="9000000000" />
-                </div>
-                <div className="col-span-2">
-                  <label className="label text-[10px] uppercase">Village</label>
-                  <input className="input" value={r.village} onChange={(e) => editRow(i, { village: e.target.value })} />
-                </div>
-                <div className="col-span-2">
-                  <label className="label text-[10px] uppercase">Dealer</label>
-                  <input className="input" value={r.dealerLocation} onChange={(e) => editRow(i, { dealerLocation: e.target.value })} />
-                </div>
-                <div className="col-span-1">
-                  <label className="label text-[10px] uppercase">Product</label>
-                  <select className="input" value={r.productId} onChange={(e) => editRow(i, { productId: e.target.value, quantityId: '' })}>
-                    <option value="">—</option>
-                    {(products || []).map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-                  </select>
-                </div>
-                <div className="col-span-1">
-                  <label className="label text-[10px] uppercase">Qty</label>
-                  <select className="input" value={r.quantityId} onChange={(e) => editRow(i, { quantityId: e.target.value })} disabled={!r.productId}>
-                    <option value="">—</option>
-                    {qtyOptions.map((q) => <option key={q._id} value={q._id}>{q.label}</option>)}
-                  </select>
-                </div>
-                <div className="col-span-1 flex items-end justify-end">
-                  <button type="button" className="btn-ghost text-red-600 !px-2" onClick={() => removeRow(i)} title="Remove">✕</button>
+
+                {/* Repeating products list */}
+                <div className="bg-emerald-50/50 rounded p-2 border border-emerald-100">
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="text-[11px] font-semibold text-emerald-900">Products purchased</div>
+                    <button type="button" className="btn-ghost !text-xs !py-0.5 text-emerald-800" onClick={() => addProduct(i)}>+ Add Product</button>
+                  </div>
+                  {(r.products || []).length === 0 ? (
+                    <div className="text-[11px] text-emerald-700/70 italic px-1 py-1">No products yet. Click "+ Add Product".</div>
+                  ) : (
+                    <div className="space-y-1.5">
+                      {(r.products || []).map((pr, j) => {
+                        const p = productById.get(pr.productId);
+                        return (
+                          <div key={j} className="grid grid-cols-12 gap-2 items-end">
+                            <div className="col-span-6">
+                              <label className="label text-[10px] uppercase">Product</label>
+                              <select className="input" value={pr.productId || ''} onChange={(e) => editProduct(i, j, { productId: e.target.value })}>
+                                <option value="">Select product…</option>
+                                {(products || []).map((p) => <option key={p._id} value={p._id}>{p.name} ({p.unit})</option>)}
+                              </select>
+                            </div>
+                            <div className="col-span-5">
+                              <label className="label text-[10px] uppercase">
+                                Quantity {p ? `(${p.unit})` : ''}
+                              </label>
+                              <input
+                                className="input"
+                                type="number"
+                                step="any"
+                                min="0"
+                                placeholder={p ? (p.unit === 'KG' ? 'e.g. 25' : 'e.g. 0.5') : 'e.g. 0.5'}
+                                value={pr.quantity ?? ''}
+                                onChange={(e) => editProduct(i, j, { quantity: e.target.value })}
+                                disabled={!pr.productId}
+                              />
+                            </div>
+                            <div className="col-span-1 flex items-end justify-end">
+                              <button type="button" className="btn-ghost text-red-600 !px-2" onClick={() => removeProduct(i, j)} title="Remove product">✕</button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               </div>
             );

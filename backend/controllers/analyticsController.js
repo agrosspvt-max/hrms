@@ -815,6 +815,12 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     ],
   }).select('employee date productSales farmerRecords').lean();
 
+  // Dealer Master snapshot for the "active dealers" KPI.  Independent of
+  // pfSubs so an empty range still reports the catalogue size.
+  const Dealer = require('../models/Dealer');
+  const allDealers = await Dealer.find({ active: true }).select('_id name place').lean();
+  const totalActiveDealers = allDealers.length;
+
   // Defensive log so deploys can verify data flow at a glance.
   const pfProductRows = pfSubs.reduce((s, sub) => s + ((sub.productSales || []).length), 0);
   const pfFarmerRows  = pfSubs.reduce((s, sub) => s + ((sub.farmerRecords || []).length), 0);
@@ -828,6 +834,11 @@ const callingAnalytics = asyncHandler(async (req, res) => {
 
   const productAgg = new Map();    // productName -> { rows, qty, sales, nbv }
   const employeePFAgg = new Map(); // empId -> { sales, nbv, qty, products, farmers }
+  // Dealer aggregation (Phase 2.6).  Keyed by dealerId so renames /
+  // deactivations don't fragment the bucket.  Values use snapshot labels
+  // for display.
+  const dealerAgg = new Map();     // dealerId -> { name, place, farmers, products, sales, nbv, qty }
+  const dealerDay = new Map();     // 'dealerId|date' -> { date, sales, nbv, farmers }
 
   for (const sub of pfSubs) {
     const empKey = String(sub.employee);
@@ -857,6 +868,52 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     const farmerCount = (sub.farmerRecords || []).length;
     totalFarmersAdded += farmerCount;
     peStats.farmers   += farmerCount;
+
+    // Dealer aggregation -- only rows that reference Dealer Master.
+    // Free-text dealerLocation rows are intentionally NOT counted here;
+    // they're legacy data and don't carry a stable bucket key.
+    const dk = formatYMD(sub.date);
+    for (const f of (sub.farmerRecords || [])) {
+      if (!f.dealerId) continue;
+      const key = String(f.dealerId);
+      if (!dealerAgg.has(key)) dealerAgg.set(key, {
+        _id: key,
+        name:  f.dealerNameSnapshot  || '',
+        place: f.dealerPlaceSnapshot || '',
+        farmers: 0, products: 0, sales: 0, nbv: 0, qty: 0,
+      });
+      const da = dealerAgg.get(key);
+      da.farmers += 1;
+      // Sum every product attached to this farmer + match against
+      // productSales rows on the same submission to fold in sales / NBV
+      // when the product+quantity tuple is present on both sides.
+      for (const fp of (f.products || [])) {
+        da.products += 1;
+        da.qty      += Number(fp.quantity) || 0;
+        // Best-effort sales/NBV credit: find a productSales row on the
+        // same submission with the same product to inherit pricing.
+        const sale = (sub.productSales || []).find((ps) =>
+          String(ps.productId) === String(fp.productId) && Number(ps.quantityValue || ps.quantity) === Number(fp.quantity));
+        if (sale) {
+          da.sales += Number(sale.salesValue) || 0;
+          da.nbv   += Number(sale.nbvValue)   || 0;
+        }
+      }
+      // Daily trend.
+      const dayKey = `${key}|${dk}`;
+      if (!dealerDay.has(dayKey)) dealerDay.set(dayKey, { dealerId: key, date: dk, sales: 0, nbv: 0, farmers: 0 });
+      const dd = dealerDay.get(dayKey);
+      dd.farmers += 1;
+      // Same best-effort sales attribution per product.
+      for (const fp of (f.products || [])) {
+        const sale = (sub.productSales || []).find((ps) =>
+          String(ps.productId) === String(fp.productId) && Number(ps.quantityValue || ps.quantity) === Number(fp.quantity));
+        if (sale) {
+          dd.sales += Number(sale.salesValue) || 0;
+          dd.nbv   += Number(sale.nbvValue)   || 0;
+        }
+      }
+    }
   }
 
   // Round once at the end so display doesn't drift on long sums.
@@ -909,6 +966,47 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     topFarmers:  topBy('farmersAdded'),
   };
 
+  // ---- Dealer Analytics rollup (Phase 2.6) ----
+  const dealersTouched = dealerAgg.size;
+  const dealersWithSales = [...dealerAgg.values()].filter((d) => d.sales > 0).length;
+  const totalDealerSales = [...dealerAgg.values()].reduce((s, d) => s + d.sales, 0);
+  const avgSalesPerDealer = dealersTouched > 0 ? round2(totalDealerSales / dealersTouched) : 0;
+
+  const dealersTable = [...dealerAgg.values()].map((d) => ({
+    ...d,
+    sales: round2(d.sales),
+    nbv:   round2(d.nbv),
+    qty:   round2(d.qty),
+  })).sort((a, b) => b.sales - a.sales);
+
+  const dealerKpis = {
+    totalActiveDealers,
+    dealersCovered:     dealersTouched,
+    dealersWithSales,
+    avgSalesPerDealer,
+  };
+  const topByKey = (arr, key) => [...arr].sort((a, b) => (b[key] || 0) - (a[key] || 0)).slice(0, 5);
+  const dealerLeaderboards = {
+    topSales:    topByKey(dealersTable, 'sales'),
+    topQuantity: topByKey(dealersTable, 'qty'),
+    topNbv:      topByKey(dealersTable, 'nbv'),
+    topFarmers:  topByKey(dealersTable, 'farmers'),
+  };
+  // Daily trend: aggregate per date across all dealers so the chart on
+  // the page is a single line / bar (dealer-specific trend lives in the
+  // per-dealer drill-down).
+  const dealerTrendByDate = new Map();
+  for (const d of dealerDay.values()) {
+    if (!dealerTrendByDate.has(d.date)) dealerTrendByDate.set(d.date, { date: d.date, sales: 0, nbv: 0, farmers: 0 });
+    const t = dealerTrendByDate.get(d.date);
+    t.sales   += d.sales;
+    t.nbv     += d.nbv;
+    t.farmers += d.farmers;
+  }
+  const dealerTrend = [...dealerTrendByDate.values()]
+    .map((r) => ({ ...r, sales: round2(r.sales), nbv: round2(r.nbv) }))
+    .sort((a, b) => a.date.localeCompare(b.date));
+
   // Combined calling + product metrics (per organisation total).
   const combinedMetrics = {
     revenuePerCall:        safeRate(totalSalesValue,    totalCallsCompleted) / 10, // un-x10 the safeRate's %
@@ -936,6 +1034,11 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     productEmployeeLeaderboards,
     combinedMetrics,
     employeesPF: employeePF.sort((a, b) => (b.salesValue || 0) - (a.salesValue || 0)),
+    // ---- Dealer Analytics (Phase 2.6) ----
+    dealerKpis,
+    dealerLeaderboards,
+    dealersTable,
+    dealerTrend,
   });
 });
 

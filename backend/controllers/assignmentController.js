@@ -4,6 +4,23 @@ const User = require('../models/User');
 const Submission = require('../models/Submission');
 const DependencyTask = require('../models/DependencyTask');
 const { buildScheduleLabel } = require('../utils/scheduleHelpers');
+const notify = require('../services/notifyEvents');
+
+/**
+ * Expand an assignment target (employee | department | designation)
+ * to the list of active employee user-ids it covers.  Used by the
+ * Phase 2.4 notification emitter so HR/SA creating a department-wide
+ * assignment fires one notification per employee.
+ */
+const _expandTargetToEmployees = async ({ targetType, targetRef }) => {
+  if (!targetType || !targetRef) return [];
+  if (targetType === 'employee') return [targetRef];
+  const where = { status: 'active' };
+  if (targetType === 'department')   where.department = targetRef;
+  if (targetType === 'designation')  where.designation = targetRef;
+  const rows = await User.find(where).select('_id').lean();
+  return rows.map((r) => r._id);
+};
 
 /**
  * Normalise recurrence config based on the chosen frequency and return the
@@ -88,7 +105,18 @@ const create = asyncHandler(async (req, res) => {
     overrideReason: (req.body.overrideReason || '').trim(),
     createdBy: req.user._id,
   });
-  res.status(201).json(await a.populate('template', 'title templateType tasks'));
+  const populated = await a.populate('template', 'title templateType tasks');
+
+  // Fire-and-forget: notify every covered employee about the new assignment.
+  _expandTargetToEmployees({ targetType, targetRef }).then((ids) =>
+    notify.notifyWorkAssigned({
+      employeeIds: ids,
+      assignment: { title: populated.template?.title || 'New work', frequency: populated.frequency },
+      assignedBy: req.user,
+    }),
+  );
+
+  res.status(201).json(populated);
 });
 
 const update = asyncHandler(async (req, res) => {
@@ -173,6 +201,11 @@ const revoke = asyncHandler(async (req, res) => {
   a.revokedAt = new Date();
   a.revokedBy = req.user._id;
   a.revokeReason = reason;
+  // Resolve recipients BEFORE we save -- targetType/targetRef are
+  // already set on `a`, but we want the lookup to reflect the pre-revoke
+  // audience.  Notification fires after save so a DB failure doesn't
+  // leak phantom alerts.
+  const recipientIds = await _expandTargetToEmployees({ targetType: a.targetType, targetRef: a.targetRef });
   await a.save();
 
   // Audit log -- captures who / when / what / impact.
@@ -187,6 +220,13 @@ const revoke = asyncHandler(async (req, res) => {
       unsubmittedDeleted: unsubmittedDeleted?.deletedCount || 0,
       frequency: a.frequency,
     },
+  });
+
+  // Fire-and-forget: notify every covered employee about the revoke.
+  notify.notifyWorkRevoked({
+    employeeIds: recipientIds,
+    assignment: { title: a.template?.title || '' },
+    revokedBy: req.user,
   });
 
   res.json({

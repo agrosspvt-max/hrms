@@ -203,6 +203,13 @@ const createEmployee = asyncHandler(async (req, res) => {
     }
   })();
 
+  // Global notification: HR/SA team learns about every new employee
+  // (skip the creator themselves to avoid a self-ping).
+  try {
+    const notify = require('../services/notifyEvents');
+    notify.notifyEmployeeCreated({ employee: user, createdBy: req.user });
+  } catch (_) { /* notify never blocks */ }
+
   res.status(201).json(user);
 });
 
