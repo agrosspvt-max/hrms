@@ -334,8 +334,29 @@ const completion = asyncHandler(async (req, res) => {
   if (['daily', 'weekly', 'monthly', 'one-time'].includes(req.query.recurrence)) subWhere.frequency = req.query.recurrence;
   if (req.query.reviewer) subWhere.reviewedBy = req.query.reviewer;
   const subs = await Submission.find(subWhere)
-    .select('employee date submittedAt frequency templateType earnedPoints totalPoints workEarnedPoints workTotalPoints disciplineMarks maxDisciplineMarks ideaMarks maxIdeaMarks reviewStatus reviewedBy')
+    .select('employee date submittedAt frequency templateType earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus reviewedBy')
     .lean();
+
+  // Phase 6: discipline + innovation marks live exclusively on
+  // DailyReview.  Pull every (employee, date) in scope so we can fold
+  // them into the per-employee + per-day completion totals below.
+  // Only reviewed days count toward the marks; pending ones contribute
+  // nothing (matches the per-sub reviewStatus gate).
+  const DailyReview = require('../models/DailyReview');
+  const dailyReviews = await DailyReview.find({
+    employee: { $in: empIds },
+    date: { $gte: from, $lt: to },
+    reviewStatus: 'reviewed',
+  }).select('employee date disciplineMarks maxDisciplineMarks ideaMarks maxIdeaMarks').lean();
+  // Indexed by "empId|YMD" for O(1) lookup as we walk submissions.
+  const drByKey = new Map();
+  for (const r of dailyReviews) {
+    drByKey.set(`${String(r.employee)}|${formatYMD(r.date)}`, r);
+  }
+  // Each (employee, date) bucket contributes its disc/idea ONCE,
+  // regardless of how many submissions exist for that day.  Track
+  // which buckets we've already counted as we walk submissions.
+  const countedDR = new Set();
 
   const perEmp = new Map(); // empId -> { earned, total, subs, pctList, onTime, late, reviewed, disc, discMax }
   const perDay = new Map();
@@ -346,6 +367,8 @@ const completion = asyncHandler(async (req, res) => {
 
   const dayMs = 86400000;
   for (const s of subs) {
+    // Work-only marks (per-sub).  Discipline + idea are added below
+    // via the DailyReview join, ONCE per (employee, date) bucket.
     const e = s.earnedPoints || 0;
     const t = s.totalPoints || 0;
     totalEarned += e; totalTotal += t;
@@ -358,13 +381,31 @@ const completion = asyncHandler(async (req, res) => {
 
     if (s.reviewStatus === 'reviewed') {
       reviewedCount += 1; pe.reviewed += 1;
-      pe.disc += s.disciplineMarks || 0; pe.discMax += s.maxDisciplineMarks || 0;
-      discSum += s.disciplineMarks || 0; discMaxSum += s.maxDisciplineMarks || 0;
       if (s.reviewedBy) {
         const rk = String(s.reviewedBy);
         if (!reviewerAgg.has(rk)) reviewerAgg.set(rk, { e: 0, t: 0, count: 0 });
         const ra = reviewerAgg.get(rk); ra.e += e; ra.t += t; ra.count += 1;
       }
+    }
+
+    // Fold DailyReview disc + idea into the per-employee totals
+    // exactly once per (employee, date) bucket -- the first time we
+    // see a submission for that day in the walk.  Avoids double-
+    // counting when an employee has N submissions on the same day.
+    const drKey = `${k}|${formatYMD(s.date)}`;
+    const dr = drByKey.get(drKey);
+    if (dr && !countedDR.has(drKey)) {
+      countedDR.add(drKey);
+      const drDisc    = Number(dr.disciplineMarks)    || 0;
+      const drMaxDisc = Number(dr.maxDisciplineMarks) || 0;
+      const drIdea    = Number(dr.ideaMarks)          || 0;
+      const drMaxIdea = Number(dr.maxIdeaMarks)       || 0;
+      const dayBonus  = drDisc + drIdea;
+      const dayBonusMax = drMaxDisc + drMaxIdea;
+      pe.earned += dayBonus;        pe.total += dayBonusMax;
+      totalEarned += dayBonus;      totalTotal += dayBonusMax;
+      pe.disc += drDisc;            pe.discMax += drMaxDisc;
+      discSum += drDisc;            discMaxSum += drMaxDisc;
     }
 
     // On-time = submitted on/before the assigned day (not a late backlog clear).
@@ -382,6 +423,18 @@ const completion = asyncHandler(async (req, res) => {
 
     if (pctOne <= 20) dist['0-20'] += 1; else if (pctOne <= 40) dist['21-40'] += 1;
     else if (pctOne <= 60) dist['41-60'] += 1; else if (pctOne <= 80) dist['61-80'] += 1; else dist['81-100'] += 1;
+  }
+
+  // perDay trend gets the same per-bucket daily bonus, ONCE per date.
+  // (perDay above only summed work points; here we add the day's
+  // DailyReview marks summed across every employee that had a
+  // reviewed day on that date.)
+  for (const r of dailyReviews) {
+    const dk = formatYMD(r.date);
+    if (!perDay.has(dk)) perDay.set(dk, { e: 0, t: 0 });
+    const pd = perDay.get(dk);
+    pd.e += (Number(r.disciplineMarks) || 0) + (Number(r.ideaMarks) || 0);
+    pd.t += (Number(r.maxDisciplineMarks) || 0) + (Number(r.maxIdeaMarks) || 0);
   }
 
   const round1 = (n) => Math.round(n * 10) / 10;

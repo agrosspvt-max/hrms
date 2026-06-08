@@ -852,23 +852,17 @@ const reviewSubmission = asyncHandler(async (req, res) => {
     }
   }
 
-  const maxD = req.body.maxDisciplineMarks !== undefined
-    ? Math.max(0, Number(req.body.maxDisciplineMarks))
-    : sub.maxDisciplineMarks;
-  const maxI = req.body.maxIdeaMarks !== undefined
-    ? Math.max(0, Number(req.body.maxIdeaMarks))
-    : sub.maxIdeaMarks;
-
-  const dM = Math.max(0, Math.min(Number(req.body.disciplineMarks) || 0, maxD));
-  const iM = Math.max(0, Math.min(Number(req.body.ideaMarks) || 0, maxI));
-
-  sub.maxDisciplineMarks = maxD;
-  sub.disciplineMarks = dM;
-  sub.disciplineNote = req.body.disciplineNote || '';
-
-  sub.maxIdeaMarks = maxI;
-  sub.ideaMarks = iM;
-  sub.ideaFeedback = req.body.ideaFeedback || '';
+  // Phase 6: discipline + innovation marks live on DailyReview only.
+  // Any body fields named disciplineMarks / ideaMarks / disciplineNote
+  // / ideaFeedback are ignored here; HR sets them via POST
+  // /api/daily-review/finalize.  Per-sub review only handles work
+  // scoring (excel per-field, task per-row, sheet per-cell).
+  sub.disciplineMarks = 0;
+  sub.maxDisciplineMarks = 0;
+  sub.disciplineNote = '';
+  sub.ideaMarks = 0;
+  sub.maxIdeaMarks = 0;
+  sub.ideaFeedback = '';
 
   // Excel templates: HR awards per-field marks during review.  Update
   // each response's marksAwarded then recompute workEarnedPoints from
@@ -949,9 +943,11 @@ const reviewSubmission = asyncHandler(async (req, res) => {
   sub.reviewStatus = 'reviewed';
   sub.currentReviewStage = 'finalized';
 
-  // Recalculate final scores
-  sub.earnedPoints = sub.workEarnedPoints + dM + iM;
-  sub.totalPoints = sub.workTotalPoints + maxD + maxI;
+  // Phase 6: cached scores are WORK-ONLY now.  Discipline + idea live
+  // on DailyReview; analytics + salary + dashboards join that
+  // collection to surface the true day-level total.
+  sub.earnedPoints = Number(sub.workEarnedPoints) || 0;
+  sub.totalPoints  = Number(sub.workTotalPoints)  || 0;
   sub.completionPercentage = sub.totalPoints > 0 ? (sub.earnedPoints / sub.totalPoints) * 100 : 0;
 
   sub.reviewHistory.push({
@@ -961,7 +957,7 @@ const reviewSubmission = asyncHandler(async (req, res) => {
     stage: 'finalized',
     action: 'hr_finalize',
     marks: sub.earnedPoints,
-    remarks: req.body.disciplineNote || '',
+    remarks: '',
     timestamp: new Date(),
   });
 

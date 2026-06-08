@@ -467,11 +467,14 @@ const exportFiltered = asyncHandler(async (req, res) => {
  * without HR re-reviewing manually.  Excludes deleted + test rows.
  */
 const rebuildScores = asyncHandler(async (_req, res) => {
+  // Phase 6: cached scores are WORK-ONLY now.  Discipline + idea live
+  // on DailyReview; the per-employee day total is reconstructed by
+  // analytics / salary / dashboards via a join to that collection.
   const cursor = Submission.find({ deleted: { $ne: true } }).cursor();
   let touched = 0;
   for (let s = await cursor.next(); s != null; s = await cursor.next()) {
-    const earned = (s.workEarnedPoints || 0) + (s.disciplineMarks || 0) + (s.ideaMarks || 0);
-    const total  = (s.workTotalPoints  || 0) + (s.maxDisciplineMarks || 0) + (s.maxIdeaMarks || 0);
+    const earned = Number(s.workEarnedPoints) || 0;
+    const total  = Number(s.workTotalPoints)  || 0;
     const pct    = total > 0 ? (earned / total) * 100 : 0;
     if (s.earnedPoints !== earned || s.totalPoints !== total || s.completionPercentage !== pct) {
       s.earnedPoints = earned;
@@ -482,7 +485,7 @@ const rebuildScores = asyncHandler(async (_req, res) => {
     }
   }
   logAudit(_req, { action: 'submission-control.rebuild-scores', meta: { touched } });
-  res.json({ ok: true, touched, message: `Recomputed cached scores on ${touched} submission(s).` });
+  res.json({ ok: true, touched, message: `Recomputed cached work-only scores on ${touched} submission(s). Day-level discipline + innovation totals live on DailyReview.` });
 });
 
 /**

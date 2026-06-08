@@ -1,718 +1,479 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../../api/axios';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
-import SheetReviewGrid from '../../components/SheetReviewGrid.jsx';
-import ScheduleTag from '../../components/ScheduleTag.jsx';
-import { RowStatusBadge, DependencyBadge, DependencyLine, depMap, matchRowFilter, RowStatusFilter, TaskStatusTable, SheetDependencyDetails } from '../../components/RowStatus.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, fmtDate } from '../../utils/helpers';
 
 /**
- * HR Submission Reviews
+ * HR Submission Reviews -- Phase 5 grouped layout.
  *
- * Lists every submitted record for a given day, lets HR expand each row to
- * see the full task breakdown (done / pending / N-A), self-observation, the
- * employee-submitted idea, then attach Discipline + Innovation marks and
- * save the review. Saving recomputes the final percentage on the server.
+ *   - Feed: GET /api/daily-review/grouped?date=YYYY-MM-DD&status=
+ *   - Each card = one (employee, date).  Inside the card we render
+ *     every submission for that day with custom-template-aware
+ *     widgets (calling KPI strip, product sales table, farmer
+ *     records list with dealer details).
+ *   - Daily Reflection panel shows what the employee wrote ONCE for
+ *     the whole day (selfRating + selfNote + idea).
+ *   - Daily Review panel (footer of each card) collects Discipline
+ *     + Innovation marks ONCE per (employee, date).
+ *     Finalising the day:
+ *       - writes the marks to DailyReview
+ *       - distributes them onto the primary (first chronological)
+ *         submission so legacy analytics that sum earnedPoints keep
+ *         working without any controller changes
+ *       - flips every same-day submission to reviewStatus='reviewed'
+ *
+ *   Excel / spreadsheet templates that need per-row work scoring
+ *   still surface a "Edit work scoring" link that opens the
+ *   Submission Control page for that submission, where HR has the
+ *   full freeze-mode editor.
  */
-const STAGE_LABEL = {
-  submitted: { text: 'Submitted', cls: 'badge-gray' },
-  under_hod: { text: 'Under HOD', cls: 'badge-amber' },
-  hod_reviewed: { text: 'HOD Reviewed', cls: 'badge-blue' },
-  under_hr: { text: 'Under HR', cls: 'badge-amber' },
-  under_super_admin: { text: 'Waiting for Super Admin Review', cls: 'badge bg-purple-50 text-purple-700' },
-  finalized: { text: 'Finalized', cls: 'badge-green' },
-};
-const StageBadge = ({ stage }) => {
-  const s = STAGE_LABEL[stage] || STAGE_LABEL.submitted;
-  return <span className={s.cls}>{s.text}</span>;
-};
-
 export default function SubmissionReviews() {
-  const today = new Date().toISOString().substring(0, 10);
-  const [date, setDate] = useState(today);
-  const [status, setStatus] = useState('');
-  const [items, setItems] = useState([]);
+  const today = new Date().toISOString().slice(0, 10);
+  const [date, setDate]     = useState(today);
+  const [status, setStatus] = useState('');         // '' | pending | reviewed
+  const [cards, setCards]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
-  const [drafts, setDrafts] = useState({}); // { [submissionId]: draft } - survives collapse/filter
-  // Bulk-marks selection state.  Selected rows show a sticky action bar
-  // that applies discipline + innovation marks to every picked row.
-  const [selected, setSelected] = useState(() => new Set());
-  const [bulkD, setBulkD]   = useState('');
-  const [bulkMD, setBulkMD] = useState('3');
-  const [bulkI, setBulkI]   = useState('');
-  const [bulkMI, setBulkMI] = useState('2');
-  const [bulkBusy, setBulkBusy] = useState(false);
-  const [bulkResult, setBulkResult] = useState(null);
   const toast = useToast();
-
-  const toggle = (s) => {
-    setOpenId((id) => (id === s._id ? null : s._id));
-    setDrafts((d) => (d[s._id] ? d : { ...d, [s._id]: buildHrDraft(s) }));
-  };
-  const setDraft = (id, patch) => setDrafts((d) => ({ ...d, [id]: { ...d[id], ...patch } }));
-  const clearDraft = (id) => setDrafts((d) => { const n = { ...d }; delete n[id]; return n; });
 
   const load = async () => {
     setLoading(true);
     try {
-      const { data } = await api.get('/submissions/reviews', { params: { date, status } });
-      setItems(data);
+      const { data } = await api.get('/daily-review/grouped', { params: { date, status } });
+      setCards(data);
     } catch (err) {
       toast.error(errMsg(err));
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [date, status]);
 
-  const pendingCount = items.filter((i) => i.reviewStatus === 'pending').length;
-  const reviewedCount = items.filter((i) => i.reviewStatus === 'reviewed').length;
-
-  /* ----------------- Bulk-marks helpers ----------------- */
-  const toggleOne = (id) => setSelected((prev) => {
-    const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
-    return next;
-  });
-  const visibleIds = items.map((s) => s._id);
-  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
-  const someSelected = visibleIds.some((id) => selected.has(id)) && !allSelected;
-  const toggleAll = () => setSelected((prev) => {
-    if (allSelected) {
-      const next = new Set(prev);
-      visibleIds.forEach((id) => next.delete(id));
-      return next;
-    }
-    return new Set([...prev, ...visibleIds]);
-  });
-  const clearSelection = () => setSelected(new Set());
-
-  const applyBulk = async () => {
-    const ids = Array.from(selected);
-    if (ids.length === 0) return;
-    const hasAny = [bulkD, bulkI].some((v) => v !== '' && v !== null && v !== undefined);
-    if (!hasAny) { toast.error('Enter at least one of discipline / innovation marks.'); return; }
-    setBulkBusy(true);
-    try {
-      const body = { ids };
-      if (bulkD  !== '') { body.disciplineMarks = Number(bulkD); body.maxDisciplineMarks = Number(bulkMD); }
-      if (bulkI  !== '') { body.ideaMarks       = Number(bulkI); body.maxIdeaMarks       = Number(bulkMI); }
-      const { data } = await api.post('/submissions/review/bulk', body);
-      setBulkResult(data);
-      toast.success(`Applied marks to ${data.succeededCount} submission(s)`);
-      clearSelection();
-      load();
-    } catch (err) {
-      toast.error(errMsg(err));
-    } finally {
-      setBulkBusy(false);
-    }
-  };
+  const pending  = cards.filter((c) => !c.review || c.review.reviewStatus !== 'reviewed').length;
+  const reviewed = cards.filter((c) =>  c.review && c.review.reviewStatus === 'reviewed').length;
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <div className="flex items-end justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Submission Reviews</h1>
           <p className="text-sm text-slate-500">
-            Evaluate each daily submission and award discipline + innovation marks.
+            One card per employee per day. Daily reflection + discipline + innovation are reviewed once,
+            even when the employee filed multiple reports.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="badge-amber">{pendingCount} pending</span>
-          <span className="badge-green">{reviewedCount} reviewed</span>
+        <div className="flex items-center gap-2">
+          <span className="badge bg-amber-50 text-amber-700">{pending} pending</span>
+          <span className="badge-green">{reviewed} reviewed</span>
+        </div>
+      </div>
+
+      <div className="card card-body flex flex-wrap items-end gap-3">
+        <div>
+          <label className="label">Date</label>
           <input className="input max-w-[170px]" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
-          <select className="input max-w-[170px]" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All statuses</option>
-            <option value="pending">Pending Review</option>
+        </div>
+        <div>
+          <label className="label">Status</label>
+          <select className="input max-w-[160px]" value={status} onChange={(e) => setStatus(e.target.value)}>
+            <option value="">All</option>
+            <option value="pending">Pending</option>
             <option value="reviewed">Reviewed</option>
           </select>
         </div>
       </div>
 
-      {/* Bulk-marks action bar -- visible only when 1+ rows are selected. */}
-      {selected.size > 0 && (
-        <div className="sticky top-2 z-10 rounded-lg bg-brand-50 border border-brand-200 px-4 py-3 flex items-center gap-3 flex-wrap shadow-sm">
-          <div className="text-sm text-brand-900"><b>{selected.size}</b> selected</div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-600">Discipline</span>
-            <input className="input !py-1 w-16" type="number" min="0" placeholder="—" value={bulkD}  onChange={(e) => setBulkD(e.target.value)} />
-            <span className="text-slate-400">/</span>
-            <input className="input !py-1 w-16" type="number" min="0" value={bulkMD} onChange={(e) => setBulkMD(e.target.value)} />
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-slate-600">Innovation</span>
-            <input className="input !py-1 w-16" type="number" min="0" placeholder="—" value={bulkI}  onChange={(e) => setBulkI(e.target.value)} />
-            <span className="text-slate-400">/</span>
-            <input className="input !py-1 w-16" type="number" min="0" value={bulkMI} onChange={(e) => setBulkMI(e.target.value)} />
-          </div>
-          <button className="btn-primary !py-1" disabled={bulkBusy} onClick={applyBulk}>
-            {bulkBusy ? 'Applying…' : 'Apply Marks'}
-          </button>
-          <button className="btn-ghost !py-1 text-slate-600" disabled={bulkBusy} onClick={clearSelection}>Clear</button>
+      {loading ? <Loader /> : cards.length === 0 ? (
+        <EmptyState title="No submissions to review on this day" />
+      ) : (
+        <div className="space-y-3">
+          {cards.map((c) => (
+            <EmployeeDayCard
+              key={String(c.employee._id) + String(c.date)}
+              card={c}
+              open={openId === String(c.employee._id)}
+              onToggle={() => setOpenId((cur) => cur === String(c.employee._id) ? null : String(c.employee._id))}
+              onReload={load}
+            />
+          ))}
         </div>
       )}
+    </div>
+  );
+}
 
-      {bulkResult && (
-        <div className={`rounded-lg p-3 text-sm ${bulkResult.failedCount > 0 ? 'bg-amber-50 border border-amber-200 text-amber-900' : 'bg-green-50 border border-green-200 text-green-800'}`}>
-          Applied marks to <b>{bulkResult.succeededCount}</b> submission(s).
-          {bulkResult.failedCount > 0 && <> {bulkResult.failedCount} skipped (see audit log).</>}
-          <button className="ml-3 underline text-xs" onClick={() => setBulkResult(null)}>Dismiss</button>
+/* ===================================================================== */
+/* Per-employee-per-day card                                              */
+/* ===================================================================== */
+function EmployeeDayCard({ card, open, onToggle, onReload }) {
+  const { employee, date, submissions, reflection, review } = card;
+  const reviewed = review && review.reviewStatus === 'reviewed';
+  const types = submissions.map((s) => (s.template?.customKind || s.templateType));
+
+  return (
+    <div className={`card overflow-hidden ${reviewed ? '' : 'ring-1 ring-amber-200'}`}>
+      <button className="w-full flex items-center justify-between px-5 py-3 bg-slate-50 hover:bg-slate-100" onClick={onToggle}>
+        <div className="text-left">
+          <div className="font-semibold text-slate-800">
+            {employee.name} <span className="text-slate-400 font-normal">({employee.employeeId})</span>
+          </div>
+          <div className="text-[12px] text-slate-500">
+            {employee.department || '—'} · {fmtDate(date)} · {submissions.length} submission(s)
+            {types.length > 0 && <> · <span className="text-slate-600">{types.join(' · ')}</span></>}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {reviewed
+            ? <span className="badge-green">Reviewed</span>
+            : <span className="badge-amber">Pending</span>}
+          <span className="text-slate-400">{open ? '▾' : '▸'}</span>
+        </div>
+      </button>
+
+      {open && (
+        <div className="p-5 space-y-4">
+          {/* Daily Reflection */}
+          <DailyReflectionPanel reflection={reflection} />
+
+          {/* Per-submission render -- one per assignment, with custom widgets */}
+          <div className="space-y-3">
+            {submissions.map((s) => (
+              <SubmissionPanel key={s._id} sub={s} />
+            ))}
+          </div>
+
+          {/* Daily Discipline + Innovation entry */}
+          <DailyReviewPanel
+            employeeId={employee._id}
+            date={date}
+            review={review}
+            onSaved={onReload}
+          />
         </div>
       )}
+    </div>
+  );
+}
 
-      <div className="card overflow-x-auto">
-        {loading ? <Loader /> :
-          items.length === 0 ? <EmptyState title="No submissions for this date" /> : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th className="w-8">
-                    <input
-                      type="checkbox"
-                      aria-label="Select all submissions"
-                      checked={allSelected}
-                      ref={(el) => { if (el) el.indeterminate = someSelected; }}
-                      onChange={toggleAll}
-                    />
-                  </th>
-                  <th className="w-10"></th>
-                  <th>Employee</th>
-                  <th>Department</th>
-                  <th>Template</th>
-                  <th>Submitted</th>
-                  <th>Work %</th>
-                  <th>Pending</th>
-                  <th>Pendency</th>
-                  <th>Stage</th>
-                  <th>Final %</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((s) => (
-                  <ReviewRow
-                    key={s._id}
-                    submission={s}
-                    expanded={openId === s._id}
-                    onToggle={() => toggle(s)}
-                    draft={drafts[s._id]}
-                    setDraft={(patch) => setDraft(s._id, patch)}
-                    onSaved={() => { clearDraft(s._id); load(); }}
-                    isSelected={selected.has(s._id)}
-                    onSelectToggle={() => toggleOne(s._id)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          )}
+/* ===================================================================== */
+/* Daily Reflection (employee-written, read-only here)                    */
+/* ===================================================================== */
+function DailyReflectionPanel({ reflection }) {
+  if (!reflection) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-200 p-3 text-sm text-slate-500">
+        Employee has not filed a daily reflection for this day.
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 space-y-2">
+      <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Daily Reflection</div>
+      <div className="grid md:grid-cols-3 gap-3 text-sm">
+        <KV k="Self Rating" v={reflection.selfRating != null ? `${reflection.selfRating} / 10` : '—'} />
+        <KV k="Note" v={reflection.selfNote || '—'} multiline />
+        <KV k="Idea" v={reflection.idea || '—'} multiline />
       </div>
     </div>
   );
 }
 
-/**
- * Build the HR editing draft for a submission.  Mark fields start EMPTY
- * (so inputs show a placeholder, never a preset 0) unless the submission
- * was already reviewed, or a HOD prefilled report marks.
- */
-function buildHrDraft(s) {
-  const reviewed = s.reviewStatus === 'reviewed';
-  const prefillReport = reviewed || !!s.hodReview?.marksGiven;
-  const fieldMarks = {};
-  (s.excelResponses || []).forEach((r) => {
-    if (r.markEligible) fieldMarks[r.fieldName] = prefillReport && r.marksAwarded != null ? r.marksAwarded : '';
-  });
-  const sheetMarks = {};
-  ((s.sheet && s.sheet.scores) || []).forEach((sc) => {
-    sheetMarks[sc.key] = {
-      marksAwarded: prefillReport && sc.marksAwarded != null ? sc.marksAwarded : '',
-      remark: sc.remark || '',
-    };
-  });
-  // Employee-added tasks (task templates only): seed each row's
-  // awardedMarks from the stored value when the submission has already
-  // been reviewed, otherwise leave blank so HR enters fresh marks.
-  const taskMarks = {};
-  (s.tasks || []).forEach((t) => {
-    if (t.addedByEmployee) {
-      taskMarks[String(t._id)] = reviewed && t.awardedMarks != null ? t.awardedMarks : '';
-    }
-  });
-  return {
-    disciplineMarks: reviewed ? (s.disciplineMarks ?? '') : '',
-    maxDisciplineMarks: s.maxDisciplineMarks ?? 3,
-    disciplineNote: s.disciplineNote || '',
-    ideaMarks: reviewed ? (s.ideaMarks ?? '') : '',
-    maxIdeaMarks: s.maxIdeaMarks ?? 2,
-    ideaFeedback: s.ideaFeedback || '',
-    fieldMarks,
-    sheetMarks,
-    taskMarks,
-  };
-}
+/* ===================================================================== */
+/* Per-submission panel -- branches on templateType + customKind         */
+/* ===================================================================== */
+function SubmissionPanel({ sub }) {
+  const kind = sub.template?.customKind || '';
+  const isCalling = kind === 'calling';
+  const isProductFarmer = kind === 'product_farmer'
+    || (Array.isArray(sub.productSales) && sub.productSales.length > 0)
+    || (Array.isArray(sub.farmerRecords) && sub.farmerRecords.length > 0);
 
-function ReviewRow({ submission: s, expanded, onToggle, draft, setDraft, onSaved, isSelected, onSelectToggle }) {
-  const workPct = s.workTotalPoints > 0 ? (s.workEarnedPoints / s.workTotalPoints) * 100 : 0;
   return (
-    <>
-      <tr className={expanded ? 'bg-slate-50' : (isSelected ? 'bg-brand-50/30' : '')}>
-        <td onClick={(e) => e.stopPropagation()}>
-          {onSelectToggle && (
-            <input
-              type="checkbox"
-              aria-label={`Select submission for ${s.employee?.name || ''}`}
-              checked={!!isSelected}
-              onChange={onSelectToggle}
-            />
-          )}
-        </td>
-        <td>
-          <button onClick={onToggle} className="p-1 hover:bg-slate-100 rounded">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-              className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>
-              <path d="M9 18l6-6-6-6" />
-            </svg>
-          </button>
-        </td>
-        <td className="font-medium">{s.employee?.name}<div className="text-[11px] text-slate-500">{s.employee?.employeeId}</div></td>
-        <td>{s.employee?.department?.name || '-'}</td>
-        <td>{s.template?.title}<div className="mt-0.5"><ScheduleTag frequency={s.frequency} label={s.scheduleLabel} /></div></td>
-        <td className="text-xs">{s.submittedAt ? new Date(s.submittedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '-'}</td>
-        <td>{workPct.toFixed(0)}%<div className="text-[11px] text-slate-500">{s.workEarnedPoints}/{s.workTotalPoints}</div></td>
-        <td>{s.pendingTasks?.length || 0}</td>
-        <td>{s.backlogCount}</td>
-        <td><StageBadge stage={s.currentReviewStage} /></td>
-        <td className="font-semibold">{s.reviewStatus === 'reviewed' ? `${s.completionPercentage.toFixed(0)}%` : '-'}</td>
-        <td>
-          {s.reviewStatus === 'reviewed'
-            ? <span className="badge-green">Reviewed</span>
-            : <span className="badge-amber">Pending Review</span>}
-        </td>
-      </tr>
-      {expanded && (
-        <tr>
-          <td colSpan="12" className="bg-slate-50">
-            <ReviewDetail submission={s} draft={draft || buildHrDraft(s)} setDraft={setDraft} onSaved={onSaved} />
-          </td>
-        </tr>
-      )}
-    </>
+    <div className="rounded-lg border border-slate-200">
+      <div className="px-4 py-2 border-b border-slate-100 flex items-center justify-between bg-white">
+        <div>
+          <div className="font-medium text-slate-800">
+            {sub.template?.title || '(template gone)'}
+          </div>
+          <div className="text-[11px] text-slate-500">
+            {sub.templateType}{kind ? ` / ${kind}` : ''} · submitted {sub.submittedAt ? new Date(sub.submittedAt).toLocaleString() : ''}
+          </div>
+        </div>
+        <Link className="text-xs text-brand-600 hover:underline" to={`/submission-control?focus=${sub._id}`}>
+          Open in Submission Control →
+        </Link>
+      </div>
+      <div className="p-4 space-y-3">
+        {isCalling && <CallingReportPanel sub={sub} />}
+        {isProductFarmer && <ProductFarmerPanel sub={sub} />}
+        {!isCalling && !isProductFarmer && sub.templateType === 'custom' && (
+          <CustomResponsesPanel responses={sub.customResponses || []} fields={sub.template?.customFields || []} />
+        )}
+        {sub.templateType === 'task' && (
+          <TaskRollupPanel tasks={sub.tasks || []} />
+        )}
+        {(sub.templateType === 'excel' || sub.templateType === 'sheet') && (
+          <div className="text-xs text-slate-500 italic">
+            {sub.templateType === 'excel' ? 'Excel report' : 'Spreadsheet report'} — open in Submission Control to score per-row work.
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
-function ReviewDetail({ submission: s, draft, setDraft, onSaved }) {
-  const [busy, setBusy] = useState(false);
-  const [rowFilter, setRowFilter] = useState('all');
-  const toast = useToast();
+/* ----------------- Calling KPI strip ----------------- */
+function CallingReportPanel({ sub }) {
+  // Pull every customResponses field by key into one map.
+  const m = Object.fromEntries((sub.customResponses || []).map((r) => [r.key, r.value]));
+  const n = (k) => Number(m[k]) || 0;
+  const pct = (a, b) => (b > 0 ? Math.round((a / b) * 1000) / 10 : 0);
+  const dialed = n('dialedCalls') || n('totalCallsCompleted');
+  return (
+    <div className="space-y-3">
+      <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Calling Report</div>
+      {/* Headline grid */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+        <KPI label="Assigned"        value={n('assignedCalls')} />
+        <KPI label="Dialed"          value={n('dialedCalls')} />
+        <KPI label="Calls Completed" value={n('totalCallsCompleted')} accent="green" />
+        <KPI label="Attended"        value={n('attendedCalls')} accent="blue" />
+        <KPI label="Unattended"      value={n('unattendedCalls') || (dialed - n('attendedCalls'))} accent="amber" />
+        <KPI label="Old Conversions"   value={n('oldCustomerConversions')} />
+        <KPI label="New Conversions"   value={n('newCustomerConversions')} accent="green" />
+        <KPI label="Total Conversions" value={n('totalConversions')} accent="green" />
+        <KPI label="Total Pending"     value={n('totalPending')}     accent="red" />
+        <KPI label="Yesterday Pending" value={n('yesterdayPending')} />
+      </div>
+      {/* Rate strip */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <KPI label="Connection Rate"        value={`${n('connectionRate')        || pct(n('attendedCalls'), dialed)}%`} accent="blue" />
+        <KPI label="Conversion Rate"        value={`${n('conversionRate')        || pct(n('totalConversions'), n('attendedCalls'))}%`} accent="green" />
+        <KPI label="Pending Rate"           value={`${n('pendingRate')           || pct(n('totalPending'), n('assignedCalls'))}%`}   accent="red" />
+        <KPI label="Call Completion Rate"   value={`${n('callCompletionRate')    || pct(n('totalCallsCompleted'), n('assignedCalls'))}%`} accent="green" />
+      </div>
+    </div>
+  );
+}
 
-  const isExcel = s.templateType === 'excel';
-  const isSheet = s.templateType === 'sheet';
-  // Dependency data keyed by source row id (task _id / field name / score key).
-  const deps = depMap(s.dependencies);
-
-  // All editing state lives in the parent-held `draft` so it survives
-  // collapse / reopen / filter changes until save.
-  const {
-    disciplineMarks, maxDisciplineMarks, disciplineNote,
-    ideaMarks, maxIdeaMarks, ideaFeedback, fieldMarks, sheetMarks, taskMarks,
-  } = draft;
-  const setFieldMarks = (name, val) => setDraft({ fieldMarks: { ...fieldMarks, [name]: val } });
-  const setSheetMark = (key, patch) => setDraft({ sheetMarks: { ...sheetMarks, [key]: { ...sheetMarks[key], ...patch } } });
-  const setTaskMark = (taskId, val) => setDraft({ taskMarks: { ...(taskMarks || {}), [taskId]: val } });
-
-  // For excel, the "work" component comes from the sum of field marks
-  // entered here.  For task templates it's the HR-defined points
-  // (cached) PLUS the per-row awardedMarks HR is entering live for any
-  // employee-added rows.
-  const excelEarned = (s.excelResponses || [])
-    .filter((r) => r.markEligible)
-    .reduce((sum, r) => sum + (Number(fieldMarks[r.fieldName]) || 0), 0);
-
-  const sheetEarned = ((s.sheet && s.sheet.scores) || [])
-    .reduce((sum, sc) => sum + (Number(sheetMarks[sc.key]?.marksAwarded) || 0), 0);
-
-  // Employee-added rows live only on task templates.  We split the task
-  // points: HR-defined "done" rows keep their cached points, added rows
-  // contribute the live awardedMarks the reviewer is typing.
-  const isTask = !isExcel && !isSheet;
-  const taskHrEarned = isTask
-    ? (s.tasks || []).filter((t) => !t.addedByEmployee && t.status === 'done')
-        .reduce((sum, t) => sum + (Number(t.points) || 0), 0)
-    : 0;
-  const taskHrTotal = isTask
-    ? (s.tasks || []).filter((t) => !t.addedByEmployee && (t.status === 'done' || t.status === 'pending'))
-        .reduce((sum, t) => sum + (Number(t.points) || 0), 0)
-    : 0;
-  const taskAddedEarned = isTask
-    ? (s.tasks || []).filter((t) => t.addedByEmployee)
-        .reduce((sum, t) => sum + (Number((taskMarks || {})[String(t._id)]) || 0), 0)
-    : 0;
-  const taskEarned = taskHrEarned + taskAddedEarned;
-  const taskTotal  = taskHrTotal  + taskAddedEarned;
-
-  const workEarned = isSheet ? sheetEarned : isExcel ? excelEarned : taskEarned;
-  const workTotalLive = isTask ? taskTotal : (s.workTotalPoints || 0);
-  const finalEarned = workEarned + Number(disciplineMarks || 0) + Number(ideaMarks || 0);
-  const finalTotal = workTotalLive + Number(maxDisciplineMarks || 0) + Number(maxIdeaMarks || 0);
-  const finalPct = finalTotal > 0 ? (finalEarned / finalTotal) * 100 : 0;
-
-  const save = async () => {
-    if (Number(disciplineMarks) > Number(maxDisciplineMarks)) {
-      toast.error('Discipline marks cannot exceed the configured max');
-      return;
-    }
-    if (Number(ideaMarks) > Number(maxIdeaMarks)) {
-      toast.error('Innovation marks cannot exceed the configured max');
-      return;
-    }
-    // Validate excel field marks don't exceed each field's max
-    if (isExcel) {
-      const bad = (s.excelResponses || []).find(
-        (r) => r.markEligible && Number(fieldMarks[r.fieldName] || 0) > (r.maxMarks || 0)
-      );
-      if (bad) {
-        toast.error(`Marks for "${bad.fieldName}" cannot exceed ${bad.maxMarks}`);
-        return;
-      }
-    }
-    // Validate sheet target marks don't exceed each target's max
-    if (isSheet) {
-      const bad = ((s.sheet && s.sheet.scores) || []).find(
-        (sc) => Number(sheetMarks[sc.key]?.marksAwarded || 0) > (sc.maxMarks || 0)
-      );
-      if (bad) {
-        toast.error(`Marks for "${bad.label || bad.key}" cannot exceed ${bad.maxMarks}`);
-        return;
-      }
-    }
-    setBusy(true);
-    try {
-      await api.post(`/submissions/${s._id}/review`, {
-        disciplineMarks: Number(disciplineMarks),
-        maxDisciplineMarks: Number(maxDisciplineMarks),
-        disciplineNote,
-        ideaMarks: Number(ideaMarks),
-        maxIdeaMarks: Number(maxIdeaMarks),
-        ideaFeedback,
-        excelResponses: isExcel
-          ? (s.excelResponses || [])
-              .filter((r) => r.markEligible)
-              .map((r) => ({ fieldName: r.fieldName, marksAwarded: Number(fieldMarks[r.fieldName]) || 0 }))
-          : undefined,
-        scores: isSheet
-          ? ((s.sheet && s.sheet.scores) || []).map((sc) => ({
-              key: sc.key,
-              marksAwarded: Number(sheetMarks[sc.key]?.marksAwarded) || 0,
-              remark: sheetMarks[sc.key]?.remark || '',
-            }))
-          : undefined,
-        // Task templates: employee-added row marks.  Backend recomputes
-        // workEarned / workTotal to include these.
-        taskMarks: isTask
-          ? (s.tasks || [])
-              .filter((t) => t.addedByEmployee)
-              .map((t) => ({
-                taskId: String(t._id),
-                awardedMarks: Number((taskMarks || {})[String(t._id)]) || 0,
-              }))
-          : undefined,
-      });
-      toast.success('Review saved');
-      onSaved();
-    } catch (err) {
-      toast.error(errMsg(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const hodR = s.hodReview;
-  const hasHod = hodR && hodR.reviewedAt;
+/* ----------------- Product Sales + Farmer Records panel ----------------- */
+function ProductFarmerPanel({ sub }) {
+  const sales   = sub.productSales   || [];
+  const farmers = sub.farmerRecords  || [];
+  const totQty   = sales.reduce((s, r) => s + (Number(r.quantity ?? r.quantityValue) || 0), 0);
+  const totSales = sales.reduce((s, r) => s + (Number(r.salesValue) || 0), 0);
+  const totNbv   = sales.reduce((s, r) => s + (Number(r.nbvValue)   || 0), 0);
 
   return (
-    <div className="p-5 space-y-4 border-t border-slate-200">
-      {/* HOD review context - HR sees the recommendation and can override */}
-      {hasHod && (
-        <div className="rounded-xl border border-blue-200 bg-blue-50/70 p-4">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="text-sm font-semibold text-blue-900">HOD Review</div>
-            <div className="flex items-center gap-2">
-              {hodR.marksGiven && <span className="badge-blue">Marks prefilled below</span>}
-              {hodR.recommend === 'approve' && <span className="badge-green">Recommends approval</span>}
-              {hodR.recommend === 'needs_changes' && <span className="badge-amber">Flagged: needs changes</span>}
-            </div>
+    <div className="space-y-3">
+      {sales.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-1">
+            Product Sales ({sales.length})
           </div>
-          {hodR.remarks
-            ? <p className="text-sm text-slate-700 mt-2 whitespace-pre-wrap">"{hodR.remarks}"</p>
-            : <p className="text-xs text-slate-500 mt-2 italic">No remarks from HOD.</p>}
-          <div className="text-[11px] text-slate-500 mt-2">
-            Reviewed by HOD on {new Date(hodR.reviewedAt).toLocaleString()}. You have final authority — adjust marks below before finalizing.
-          </div>
-        </div>
-      )}
-
-      {/* Sheet report: review INSIDE the spreadsheet - marks are injected
-          into the sheet (row -> Marks column, column -> Marks row,
-          cell -> inline). */}
-      {isSheet && s.sheet && (
-        <Section title="Spreadsheet Report" badgeClass="badge-green" count={(s.sheet.scores || []).length}>
-          <div className="space-y-3">
-            <div className="text-[11px] text-slate-500">
-              Review the report exactly as the employee filled it. Enter marks directly in the highlighted
-              <span className="mx-1 px-1 rounded bg-amber-100 text-amber-800">Marks</span>
-              areas. Hidden / HR-only rows &amp; columns are shown to you (hatched) but were never visible to the employee.
-            </div>
-            {(s.sheet.scores || []).length === 0 && (
-              <Empty>No scoring areas were configured on this template - nothing to mark.</Empty>
-            )}
-            <SheetReviewGrid
-              sheet={s.sheet}
-              marks={sheetMarks}
-              onMark={(key, patch) => setSheetMark(key, patch)}
-              deps={Object.fromEntries((s.dependencies || []).map((d) => [d.sourceTaskId, d]))}
-            />
-            <SheetDependencyDetails sheet={s.sheet} deps={deps} />
-            <div className="text-xs text-slate-600 text-right">
-              Report marks: <b>{sheetEarned}</b> / {s.workTotalPoints || 0}
-            </div>
-          </div>
-        </Section>
-      )}
-
-      {/* Excel report: submitted values + status/dependency + field-wise marking */}
-      {isExcel && (
-        <Section title="Excel Report" badgeClass="badge-blue" count={(s.excelResponses || []).length}>
-          <div className="flex justify-end mb-2"><RowStatusFilter value={rowFilter} onChange={setRowFilter} /></div>
-          <div className="overflow-x-auto">
-            <table className="table">
-              <thead>
+          <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50">
                 <tr>
-                  <th>Field</th>
-                  <th>Submitted value</th>
-                  <th>Status</th>
-                  <th>Dependency</th>
-                  <th className="w-40">Marks awarded</th>
+                  <th className="text-left px-3 py-2">Product</th>
+                  <th className="text-right px-3 py-2">Qty</th>
+                  <th className="text-right px-3 py-2">Sales (₹)</th>
+                  <th className="text-right px-3 py-2">NBV (₹)</th>
                 </tr>
               </thead>
               <tbody>
-                {(s.excelResponses || []).filter((r) => matchRowFilter(r.rowStatus, deps.get(r.fieldName), rowFilter)).map((r) => {
-                  const dep = deps.get(r.fieldName);
-                  return (
-                    <tr key={r._id || r.fieldName}>
-                      <td className="font-medium">{r.fieldName}</td>
-                      <td className="text-slate-700 whitespace-pre-wrap">
-                        {String(r.value ?? '') || <span className="text-slate-400">—</span>}
-                      </td>
-                      <td>
-                        {r.rowStatus ? <RowStatusBadge status={r.rowStatus} /> : <span className="text-slate-300">—</span>}
-                        <div className="mt-1"><DependencyBadge dep={dep} /></div>
-                      </td>
-                      <td className="align-top">
-                        {dep ? <DependencyLine dep={dep} /> : (r.rowStatus === 'pending' && r.pendingReason ? <span className="text-[11px] text-slate-500">Reason: {r.pendingReason}</span> : <span className="text-slate-300">—</span>)}
-                      </td>
-                      <td>
-                        {r.markEligible ? (
-                          <div className="flex items-center gap-1">
-                            <input
-                              className="input w-20"
-                              type="number" min="0" max={r.maxMarks}
-                              placeholder="Marks"
-                              value={fieldMarks[r.fieldName] ?? ''}
-                              onChange={(e) => setFieldMarks(r.fieldName, e.target.value === '' ? '' : Number(e.target.value))}
-                            />
-                            <span className="text-xs text-slate-500">/ {r.maxMarks}</span>
-                          </div>
-                        ) : <span className="text-slate-400 text-xs">n/a</span>}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-2 text-xs text-slate-600 text-right">
-            Report marks: <b>{excelEarned}</b> / {s.workTotalPoints || 0}
-          </div>
-        </Section>
-      )}
-
-      {/* Task templates: unified row-status table with inline dependency info */}
-      {!isExcel && !isSheet && (
-        <TaskStatusTable tasks={s.tasks} deps={deps} rowFilter={rowFilter} setRowFilter={setRowFilter} />
-      )}
-
-      {/* Employee-added tasks (task templates only): HR awards marks
-          here.  These rows have no pre-set points; the value HR enters
-          contributes equally to earned and total points. */}
-      {!isExcel && !isSheet && (s.tasks || []).some((t) => t.addedByEmployee) && (
-        <Section
-          title="Employee-Added Tasks"
-          badgeClass="badge-blue"
-          count={(s.tasks || []).filter((t) => t.addedByEmployee).length}
-        >
-          <div className="text-[11px] text-slate-500 mb-2">
-            Tasks the employee added on top of the assigned template. Marks you enter here
-            count toward both <b>earned</b> and <b>total</b> points.
-          </div>
-          <div className="overflow-x-auto">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Task (added by employee)</th>
-                  <th className="w-40">Awarded Marks</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(s.tasks || []).filter((t) => t.addedByEmployee).map((t) => (
-                  <tr key={t._id}>
-                    <td className="font-medium text-slate-800">{t.title}</td>
-                    <td>
-                      <input
-                        className="input w-28"
-                        type="number" min="0"
-                        placeholder="Marks"
-                        value={(taskMarks || {})[String(t._id)] ?? ''}
-                        onChange={(e) => setTaskMark(String(t._id), e.target.value === '' ? '' : Number(e.target.value))}
-                      />
-                    </td>
+                {sales.map((r, i) => (
+                  <tr key={i} className="border-t border-slate-100">
+                    <td className="px-3 py-1.5">{r.productName || '—'} <span className="text-[11px] text-slate-400">({r.productUnit || ''})</span></td>
+                    <td className="px-3 py-1.5 text-right">{Number(r.quantity ?? r.quantityValue) || 0}</td>
+                    <td className="px-3 py-1.5 text-right text-green-700 font-semibold">{Math.round((Number(r.salesValue) || 0) * 100) / 100}</td>
+                    <td className="px-3 py-1.5 text-right">{Math.round((Number(r.nbvValue) || 0) * 100) / 100}</td>
                   </tr>
                 ))}
+                <tr className="bg-slate-50 border-t-2 border-slate-200 font-semibold">
+                  <td className="px-3 py-1.5 text-right">Total</td>
+                  <td className="px-3 py-1.5 text-right">{Math.round(totQty * 100) / 100}</td>
+                  <td className="px-3 py-1.5 text-right text-green-700">{Math.round(totSales * 100) / 100}</td>
+                  <td className="px-3 py-1.5 text-right">{Math.round(totNbv * 100) / 100}</td>
+                </tr>
               </tbody>
             </table>
           </div>
-          <div className="mt-2 text-xs text-slate-600 text-right">
-            Additional marks subtotal: <b>{taskAddedEarned}</b>
-          </div>
-        </Section>
+        </div>
       )}
 
-      <div className="grid md:grid-cols-3 gap-3">
-        {/* Self observation */}
-        <Section title="Self Observation">
-          {s.selfRating == null && !s.selfNote
-            ? <Empty>Employee did not record self observation.</Empty>
-            : <div className="text-sm space-y-1">
-                <div>Rating: <span className="font-semibold text-slate-800">{s.selfRating ?? '-'}/10</span></div>
-                {s.selfNote && <div className="text-slate-600">"{s.selfNote}"</div>}
-              </div>}
-        </Section>
-
-        {/* Idea / innovation */}
-        <Section title="Business Idea / Innovation" badgeClass="badge-blue" count={s.idea ? 1 : 0}>
-          {s.idea
-            ? <p className="text-sm text-slate-700 whitespace-pre-wrap">{s.idea}</p>
-            : <Empty>Employee did not share an idea.</Empty>}
-        </Section>
-
-        {/* Submission meta */}
-        <Section title="Submission Details">
-          <div className="text-sm space-y-1 text-slate-700">
-            <Row label="Submitted" value={s.submittedAt ? new Date(s.submittedAt).toLocaleString() : '-'} />
-            <Row label="Work earned" value={`${s.workEarnedPoints} pts`} />
-            <Row label="Work total" value={`${s.workTotalPoints} pts`} />
-            <Row label="Date" value={fmtDate(s.date)} />
+      {farmers.length > 0 && (
+        <div>
+          <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-1">
+            Farmer Records ({farmers.length})
           </div>
-        </Section>
+          <div className="space-y-2">
+            {farmers.map((f, i) => (
+              <div key={i} className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-2 text-sm">
+                <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                  <div className="font-medium text-slate-800">
+                    {f.name || '—'} <span className="text-slate-400 font-normal">{f.mobile ? `· ${f.mobile}` : ''}</span>
+                  </div>
+                  <div className="text-[12px] text-slate-600">
+                    {f.dealerFirmSnapshot || f.dealerNameSnapshot || f.dealerLocation || '—'}
+                    {f.dealerPlaceSnapshot ? <> · {f.dealerPlaceSnapshot}</> : ''}
+                    {f.village ? <> · Village: {f.village}</> : ''}
+                  </div>
+                </div>
+                {Array.isArray(f.products) && f.products.length > 0 && (
+                  <div className="mt-1 pl-3 text-[12px] text-slate-700">
+                    {f.products.map((p, j) => (
+                      <div key={j}>• {p.productName || '—'} <span className="text-slate-400">({p.productUnit || ''})</span> · qty {Number(p.quantity) || 0}</div>
+                    ))}
+                  </div>
+                )}
+                {/* Legacy single-product mirror */}
+                {(!f.products || f.products.length === 0) && f.productName && (
+                  <div className="mt-1 pl-3 text-[12px] text-slate-700">• {f.productName} {f.quantityLabel ? `(${f.quantityLabel})` : ''}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {sales.length === 0 && farmers.length === 0 && (
+        <div className="text-xs text-slate-500 italic">No product sales or farmer records on this submission.</div>
+      )}
+    </div>
+  );
+}
+
+/* ----------------- Generic custom-template panel ----------------- */
+function CustomResponsesPanel({ responses, fields }) {
+  if (responses.length === 0) return <div className="text-xs text-slate-500 italic">No responses.</div>;
+  const byKey = Object.fromEntries(responses.map((r) => [r.key, r.value]));
+  const ordered = (fields || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  return (
+    <div className="grid md:grid-cols-3 gap-2">
+      {ordered.map((f) => (
+        <KV key={f.key} k={f.label || f.key} v={String(byKey[f.key] ?? '')} />
+      ))}
+    </div>
+  );
+}
+
+/* ----------------- Task rollup (read-only summary) ----------------- */
+function TaskRollupPanel({ tasks }) {
+  const done    = tasks.filter((t) => t.status === 'done').length;
+  const ongoing = tasks.filter((t) => t.status === 'ongoing').length;
+  const pending = tasks.filter((t) => t.status === 'pending').length;
+  const wna     = tasks.filter((t) => t.status === 'work_not_available').length;
+  return (
+    <div className="grid grid-cols-4 gap-2">
+      <KPI label="Done"       value={done}    accent="green" />
+      <KPI label="Ongoing"    value={ongoing} accent="blue" />
+      <KPI label="Pending"    value={pending} accent="red" />
+      <KPI label="Work N/A"   value={wna}     accent="amber" />
+    </div>
+  );
+}
+
+/* ===================================================================== */
+/* Daily Discipline + Innovation entry                                    */
+/* ===================================================================== */
+function DailyReviewPanel({ employeeId, date, review, onSaved }) {
+  const reviewed = review && review.reviewStatus === 'reviewed';
+  const [d, setD]     = useState(String(review?.disciplineMarks ?? ''));
+  const [maxD, setMaxD] = useState(String(review?.maxDisciplineMarks ?? '3'));
+  const [i, setI]     = useState(String(review?.ideaMarks ?? ''));
+  const [maxI, setMaxI] = useState(String(review?.maxIdeaMarks ?? '2'));
+  const [dn, setDn]   = useState(review?.disciplineNote || '');
+  const [iFb, setIFb] = useState(review?.ideaFeedback || '');
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.post('/daily-review/finalize', {
+        employeeId,
+        date,
+        disciplineMarks: Number(d) || 0,
+        maxDisciplineMarks: Number(maxD) || 3,
+        ideaMarks: Number(i) || 0,
+        maxIdeaMarks: Number(maxI) || 2,
+        disciplineNote: dn,
+        ideaFeedback: iFb,
+      });
+      toast.success(reviewed ? 'Daily review updated' : 'Daily review finalised');
+      onSaved?.();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="rounded-lg bg-brand-50 border border-brand-200 p-3 space-y-3">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-semibold text-brand-800 uppercase tracking-wide">Daily Discipline &amp; Innovation</div>
+        {reviewed && (
+          <div className="text-[11px] text-brand-700">
+            Reviewed by {review.reviewedBy?.name || '—'} on {review.reviewedAt ? new Date(review.reviewedAt).toLocaleString() : ''}
+          </div>
+        )}
       </div>
-
-      {/* Marking section */}
-      <div className="card">
-        <div className="card-head">
-          <div>
-            <div className="text-sm font-semibold text-slate-900">HR Evaluation</div>
-            <div className="text-xs text-slate-500">Marks are added to BOTH earned and total points.</div>
-          </div>
-          {s.reviewStatus === 'reviewed' && (
-            <span className="badge-green">Already reviewed - editing will update marks</span>
-          )}
-        </div>
-        <div className="card-body grid md:grid-cols-2 gap-5">
-          {/* Discipline */}
-          <div className="space-y-2">
-            <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Discipline</div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="label">Marks</label>
-                <input className="input" type="number" min="0" max={maxDisciplineMarks}
-                  placeholder="Enter marks"
-                  value={disciplineMarks ?? ''} onChange={(e) => setDraft({ disciplineMarks: e.target.value === '' ? '' : Number(e.target.value) })} />
-              </div>
-              <div>
-                <label className="label">Max</label>
-                <input className="input" type="number" min="0" placeholder="3"
-                  value={maxDisciplineMarks || ''}
-                  onChange={(e) => setDraft({ maxDisciplineMarks: e.target.value === '' ? '' : Number(e.target.value) })} />
-              </div>
-            </div>
-            <div>
-              <label className="label">Discipline note (optional)</label>
-              <textarea className="input" rows={2} value={disciplineNote}
-                onChange={(e) => setDraft({ disciplineNote: e.target.value })} placeholder="e.g. punctual, neat sub-mission..." />
-            </div>
-          </div>
-
-          {/* Innovation */}
-          <div className="space-y-2">
-            <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide">Innovation / Idea</div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="label">Marks</label>
-                <input className="input" type="number" min="0" max={maxIdeaMarks}
-                  placeholder="Enter marks"
-                  value={ideaMarks ?? ''} onChange={(e) => setDraft({ ideaMarks: e.target.value === '' ? '' : Number(e.target.value) })} />
-              </div>
-              <div>
-                <label className="label">Max</label>
-                <input className="input" type="number" min="0" placeholder="2"
-                  value={maxIdeaMarks || ''}
-                  onChange={(e) => setDraft({ maxIdeaMarks: e.target.value === '' ? '' : Number(e.target.value) })} />
-              </div>
-            </div>
-            <div>
-              <label className="label">Feedback on the idea (optional)</label>
-              <textarea className="input" rows={2} value={ideaFeedback}
-                onChange={(e) => setDraft({ ideaFeedback: e.target.value })} placeholder="e.g. great suggestion, will discuss in retro" />
-            </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+        <div>
+          <label className="label">Discipline</label>
+          <div className="flex items-center gap-2">
+            <input className="input" type="number" min="0" value={d}    onChange={(e) => setD(e.target.value)} />
+            <span className="text-slate-400">/</span>
+            <input className="input max-w-[70px]" type="number" min="0" value={maxD} onChange={(e) => setMaxD(e.target.value)} />
           </div>
         </div>
-
-        <div className="px-5 pb-5 flex items-center justify-between flex-wrap gap-2">
-          <div className="text-sm text-slate-600 bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
-            Final: <span className="font-semibold text-slate-900">{finalEarned}</span> / {finalTotal}
-            {' '}({finalPct.toFixed(1)}%)
-            <span className="ml-3 text-[11px] text-slate-500">
-              {isExcel || isSheet ? 'report' : 'work'} {workEarned}/{s.workTotalPoints} • discipline {disciplineMarks || 0}/{maxDisciplineMarks} • idea {ideaMarks || 0}/{maxIdeaMarks}
-            </span>
+        <div>
+          <label className="label">Innovation</label>
+          <div className="flex items-center gap-2">
+            <input className="input" type="number" min="0" value={i}    onChange={(e) => setI(e.target.value)} />
+            <span className="text-slate-400">/</span>
+            <input className="input max-w-[70px]" type="number" min="0" value={maxI} onChange={(e) => setMaxI(e.target.value)} />
           </div>
-          <button className="btn-primary" disabled={busy} onClick={save}>
-            {busy ? 'Saving...' : (s.reviewStatus === 'reviewed' ? 'Update Review' : 'Save Review')}
-          </button>
         </div>
+        <div className="md:col-span-2">
+          <label className="label">Discipline Note</label>
+          <input className="input" value={dn} onChange={(e) => setDn(e.target.value)} />
+        </div>
+        <div className="md:col-span-4">
+          <label className="label">Idea Feedback</label>
+          <textarea className="input" rows={2} value={iFb} onChange={(e) => setIFb(e.target.value)} />
+        </div>
+      </div>
+      <div className="flex justify-end">
+        <button className="btn-primary" disabled={busy} onClick={save}>
+          {busy ? 'Saving…' : (reviewed ? 'Update Daily Review' : 'Finalise Day')}
+        </button>
       </div>
     </div>
   );
 }
 
-const Section = ({ title, badgeClass, count, children }) => (
-  <div className="bg-white rounded-xl border border-slate-200 p-4">
-    <div className="flex items-center justify-between mb-2">
-      <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide">{title}</div>
-      {badgeClass !== undefined && count !== undefined && (
-        <span className={badgeClass}>{count}</span>
-      )}
+/* ===================================================================== */
+/* Tiny presentational helpers                                            */
+/* ===================================================================== */
+const KPI = ({ label, value, accent = 'slate' }) => {
+  const cls = {
+    slate: 'bg-slate-50 text-slate-800 border-slate-200',
+    blue:  'bg-blue-50  text-blue-800  border-blue-200',
+    green: 'bg-green-50 text-green-800 border-green-200',
+    amber: 'bg-amber-50 text-amber-800 border-amber-200',
+    red:   'bg-red-50   text-red-800   border-red-200',
+  }[accent] || 'bg-slate-50 text-slate-800 border-slate-200';
+  return (
+    <div className={`rounded-lg border ${cls} px-3 py-2`}>
+      <div className="text-[10px] uppercase tracking-wide opacity-70">{label}</div>
+      <div className="text-base font-semibold mt-0.5">{value}</div>
     </div>
-    {children}
+  );
+};
+
+const KV = ({ k, v, multiline = false }) => (
+  <div>
+    <div className="text-[10px] uppercase tracking-wide text-slate-500">{k}</div>
+    <div className={`text-sm text-slate-800 ${multiline ? 'whitespace-pre-wrap' : 'truncate'} font-medium`}>{v || <span className="text-slate-400">—</span>}</div>
   </div>
 );
-
-const Row = ({ label, value }) => (
-  <div className="flex justify-between gap-3">
-    <span className="text-slate-500">{label}</span>
-    <span className="font-medium">{value}</span>
-  </div>
-);
-
-const Empty = ({ children }) => <div className="text-xs text-slate-400 italic">{children}</div>;

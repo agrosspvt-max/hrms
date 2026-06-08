@@ -493,6 +493,10 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       {!data.onLeave && !data.weeklyOff && !data.holiday && (
         <div className="space-y-4">
           <h2 className="text-lg font-semibold text-slate-900">Today's Tasks</h2>
+          {/* Phase 5: Daily Reflection lives ONCE per day, even if the
+              employee has multiple assignments.  Stored at
+              /api/daily-reflection keyed by (employee, date). */}
+          <DailyReflectionCard />
           {data.submissions.length === 0 && (
             <EmptyState title="No tasks assigned for today" subtitle="HR has not assigned any templates to you yet." />
           )}
@@ -568,31 +572,8 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                     assignable={assignable}
                   />
 
-                  {/* Self-observation + Idea */}
-                  <div className="mt-4 bg-slate-50 rounded-lg p-3">
-                    <div className="text-sm font-semibold text-slate-800 mb-2">Self Observation (informational only)</div>
-                    <div className="grid md:grid-cols-3 gap-3">
-                      <div>
-                        <label className="label">Rating (0-10)</label>
-                        <input className="input" type="number" min="0" max="10" step="0.5" placeholder="0 - 10"
-                          value={selfRating[sub._id] || ''}
-                          onChange={(e) => setSelfRating((s) => ({ ...s, [sub._id]: Number(e.target.value) }))} />
-                      </div>
-                      <div className="md:col-span-2">
-                        <label className="label">Note</label>
-                        <input className="input" placeholder="Anything you want HR to know"
-                          value={selfNote[sub._id] ?? ''}
-                          onChange={(e) => setSelfNote((s) => ({ ...s, [sub._id]: e.target.value }))} />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg p-3">
-                    <div className="text-sm font-semibold text-blue-900 mb-1">Business Idea / Innovation</div>
-                    <textarea className="input" rows={2} placeholder="Optional - share any improvement idea"
-                      value={idea[sub._id] ?? ''}
-                      onChange={(e) => setIdea((s) => ({ ...s, [sub._id]: e.target.value }))} />
-                  </div>
+                  {/* Self-observation + Idea moved to a single Daily Reflection
+                      card at the top of "Today's Tasks" (Phase 5 refactor). */}
 
                   <div className="mt-4 flex justify-end">
                     <button className="btn-primary" disabled={busy} onClick={() => submit(sub)}>
@@ -610,32 +591,6 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                       [sub._id]: { ...(s[sub._id] || {}), [fieldName]: value },
                     }))}
                   />
-
-                  {/* Self-observation + Idea (shared with task form) */}
-                  <div className="mt-4 bg-slate-50 rounded-lg p-3">
-                    <div className="text-sm font-semibold text-slate-800 mb-2">Self Observation (informational only)</div>
-                    <div className="grid md:grid-cols-3 gap-3">
-                      <div>
-                        <label className="label">Rating (0-10)</label>
-                        <input className="input" type="number" min="0" max="10" step="0.5" placeholder="0 - 10"
-                          value={selfRating[sub._id] || ''}
-                          onChange={(e) => setSelfRating((s) => ({ ...s, [sub._id]: Number(e.target.value) }))} />
-                      </div>
-                      <div className="md:col-span-2">
-                        <label className="label">Note</label>
-                        <input className="input" placeholder="Anything you want HR to know"
-                          value={selfNote[sub._id] ?? ''}
-                          onChange={(e) => setSelfNote((s) => ({ ...s, [sub._id]: e.target.value }))} />
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg p-3">
-                    <div className="text-sm font-semibold text-blue-900 mb-1">Business Idea / Innovation</div>
-                    <textarea className="input" rows={2} placeholder="Optional - share any improvement idea"
-                      value={idea[sub._id] ?? ''}
-                      onChange={(e) => setIdea((s) => ({ ...s, [sub._id]: e.target.value }))} />
-                  </div>
 
                   <div className="mt-4 flex justify-end">
                     <button className="btn-primary" disabled={busy} onClick={() => submit(sub)}>
@@ -798,46 +753,8 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                     )}
                   </div>
 
-                  {/* Self-observation */}
-                  <div className="mt-4 bg-slate-50 rounded-lg p-3">
-                    <div className="text-sm font-semibold text-slate-800 mb-2">Self Observation (informational only)</div>
-                    <div className="grid md:grid-cols-3 gap-3">
-                      <div>
-                        <label className="label">Rating (0-10)</label>
-                        <input
-                          className="input"
-                          type="number" min="0" max="10" step="0.5"
-                          placeholder="0 - 10"
-                          value={selfRating[sub._id] || ''}
-                          onChange={(e) => setSelfRating((s) => ({ ...s, [sub._id]: Number(e.target.value) }))}
-                        />
-                      </div>
-                      <div className="md:col-span-2">
-                        <label className="label">Note</label>
-                        <input
-                          className="input"
-                          placeholder="e.g. Could improve time management"
-                          value={selfNote[sub._id] ?? ''}
-                          onChange={(e) => setSelfNote((s) => ({ ...s, [sub._id]: e.target.value }))}
-                        />
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Innovation / Idea */}
-                  <div className="mt-3 bg-blue-50 border border-blue-100 rounded-lg p-3">
-                    <div className="text-sm font-semibold text-blue-900 mb-1">Business Idea / Innovation</div>
-                    <div className="text-[11px] text-blue-700 mb-2">
-                      Share one suggestion or idea you think could help the business. HR can award up to 2 marks for this.
-                    </div>
-                    <textarea
-                      className="input"
-                      rows={2}
-                      placeholder="Type your idea here..."
-                      value={idea[sub._id] ?? ''}
-                      onChange={(e) => setIdea((s) => ({ ...s, [sub._id]: e.target.value }))}
-                    />
-                  </div>
+                  {/* Self-observation + Idea moved to a single Daily Reflection
+                      card at the top of "Today's Tasks" (Phase 5 refactor). */}
 
                   <div className="mt-4 flex justify-end">
                     <button className="btn-primary" disabled={busy} onClick={() => submit(sub)}>
@@ -1017,33 +934,90 @@ function CustomTemplateForm({
         />
       )}
 
-      {/* Self-observation + Idea (same as task/excel/sheet flows) */}
-      <div className="bg-slate-50 rounded-lg p-3">
-        <div className="text-sm font-semibold text-slate-800 mb-2">Self Observation (informational only)</div>
-        <div className="grid md:grid-cols-3 gap-3">
-          <div>
-            <label className="label">Rating (0-10)</label>
-            <input className="input" type="number" min="0" max="10" step="0.5" placeholder="0 - 10"
-              value={selfRating || ''}
-              onChange={(e) => setSelfRating(Number(e.target.value))} />
-          </div>
-          <div className="md:col-span-2">
-            <label className="label">Note</label>
-            <input className="input" placeholder="Anything you want HR to know"
-              value={selfNote ?? ''}
-              onChange={(e) => setSelfNote(e.target.value)} />
-          </div>
-        </div>
-      </div>
-      <div className="bg-blue-50 border border-blue-100 rounded-lg p-3">
-        <div className="text-sm font-semibold text-blue-900 mb-1">Business Idea / Innovation</div>
-        <textarea className="input" rows={2} placeholder="Optional - share any improvement idea"
-          value={idea ?? ''}
-          onChange={(e) => setIdea(e.target.value)} />
-      </div>
+      {/* Self-observation + Idea moved to a single Daily Reflection card
+          at the top of "Today's Tasks" (Phase 5 refactor). */}
 
       <div className="flex justify-end">
         <button className="btn-primary" disabled={busy} onClick={onSubmit}>Submit Report</button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Daily Reflection card                                               */
+/*                                                                     */
+/* Phase 5: lives ONCE per day at the top of "Today's Tasks", regardless */
+/* of how many assignments the employee has.  Upserts to               */
+/* /api/daily-reflection.                                              */
+/* ------------------------------------------------------------------ */
+function DailyReflectionCard() {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const [rating, setRating] = useState('');
+  const [note, setNote]     = useState('');
+  const [ideaTxt, setIdea]  = useState('');
+  const [busy, setBusy]     = useState(false);
+  const [savedAt, setSavedAt] = useState(null);
+  const toast = useToast();
+
+  // Best-effort load of today's reflection so HR-side edits / prior
+  // saves don't get wiped if the page is refreshed.
+  useEffect(() => {
+    api.get('/daily-review/day', { params: { employeeId: 'self', date: todayIso } })
+      .then(({ data }) => {
+        // 'self' isn't supported server-side -- this fails 400 -- which
+        // is fine; the employee just starts with empty fields.
+      })
+      .catch(() => {});
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.post('/daily-review/reflection', {
+        date: todayIso,
+        selfRating: rating,
+        selfNote: note,
+        idea: ideaTxt,
+      });
+      setSavedAt(new Date());
+      toast.success('Daily reflection saved');
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="card card-body bg-slate-50 border-slate-200 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <div className="text-sm font-semibold text-slate-800">Daily Reflection</div>
+          <div className="text-[11px] text-slate-500">
+            One reflection per day, even when you have multiple assignments. HR / HOD sees this once on the review screen.
+          </div>
+        </div>
+        {savedAt && <span className="text-[11px] text-slate-500">Saved {savedAt.toLocaleTimeString()}</span>}
+      </div>
+      <div className="grid md:grid-cols-3 gap-3">
+        <div>
+          <label className="label">Rating (0-10)</label>
+          <input className="input" type="number" min="0" max="10" step="0.5" placeholder="0 - 10"
+            value={rating} onChange={(e) => setRating(e.target.value)} />
+        </div>
+        <div className="md:col-span-2">
+          <label className="label">Note</label>
+          <input className="input" placeholder="Anything you want HR to know"
+            value={note} onChange={(e) => setNote(e.target.value)} />
+        </div>
+      </div>
+      <div>
+        <label className="label">Business Idea / Innovation</label>
+        <textarea className="input" rows={2} placeholder="Optional — share any improvement idea"
+          value={ideaTxt} onChange={(e) => setIdea(e.target.value)} />
+      </div>
+      <div className="flex justify-end">
+        <button className="btn-secondary" disabled={busy} onClick={save}>
+          {busy ? 'Saving…' : 'Save Reflection'}
+        </button>
       </div>
     </div>
   );

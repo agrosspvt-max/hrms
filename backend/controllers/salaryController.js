@@ -51,8 +51,20 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
     submitted: true,
     ...liveSubmissionFilter({}),
   });
-  const earned = submissions.reduce((s, x) => s + x.earnedPoints, 0);
-  const total = submissions.reduce((s, x) => s + x.totalPoints, 0);
+  // Phase 6: work scoring sums from submissions; day-level discipline
+  // + innovation come from DailyReview, ONCE per (employee, date).
+  let earned = submissions.reduce((s, x) => s + (Number(x.earnedPoints) || 0), 0);
+  let total  = submissions.reduce((s, x) => s + (Number(x.totalPoints)  || 0), 0);
+  const DailyReview = require('../models/DailyReview');
+  const dailyReviews = await DailyReview.find({
+    employee: employee._id,
+    date: { $gte: from, $lt: to },
+    reviewStatus: 'reviewed',
+  }).select('disciplineMarks maxDisciplineMarks ideaMarks maxIdeaMarks').lean();
+  for (const r of dailyReviews) {
+    earned += (Number(r.disciplineMarks)    || 0) + (Number(r.ideaMarks)    || 0);
+    total  += (Number(r.maxDisciplineMarks) || 0) + (Number(r.maxIdeaMarks) || 0);
+  }
   const completionPercentage = total > 0 ? (earned / total) * 100 : 0;
 
   const backlogTasks = await Submission.aggregate([
