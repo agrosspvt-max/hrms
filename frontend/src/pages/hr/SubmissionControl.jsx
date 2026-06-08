@@ -139,6 +139,14 @@ export default function SubmissionControl() {
     try { const { data } = await api.post('/submission-control/rebuild-analytics'); toast.success(data.message || 'OK'); }
     catch (err) { toast.error(errMsg(err)); }
   };
+  const runRebuildCarryForward = async () => {
+    if (!confirm('Recompute yesterdayPending + every derived formula on all unsubmitted Calling Reports? Already-submitted reports are never touched. Safe to re-run.')) return;
+    try {
+      const { data } = await api.post('/submission-control/rebuild-carry-forward');
+      toast.success(data.message || `Rebuilt ${data.rebuilt}`);
+      load();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
 
   const exportUrl = () => {
     const qs = new URLSearchParams();
@@ -175,6 +183,9 @@ export default function SubmissionControl() {
             <div className="absolute right-0 mt-1 w-72 bg-white border border-slate-200 rounded-lg shadow-lg p-2 z-20 space-y-1">
               <button className="block w-full text-left px-3 py-2 text-sm hover:bg-slate-50 rounded" onClick={runRebuildScores}>
                 Recalculate Employee Scores
+              </button>
+              <button className="block w-full text-left px-3 py-2 text-sm hover:bg-slate-50 rounded" onClick={runRebuildCarryForward}>
+                Rebuild Pending Carry Forward
               </button>
               <button className="block w-full text-left px-3 py-2 text-sm hover:bg-slate-50 rounded" onClick={runRebuildAnalytics}>
                 Rebuild Analytics (informational)

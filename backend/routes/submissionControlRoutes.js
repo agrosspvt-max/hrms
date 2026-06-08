@@ -16,8 +16,9 @@ router.post('/bulk/restore',    c.bulkRestore);
 router.post('/bulk/mark-test',  c.bulkMarkTest);
 
 // Admin tool endpoints.
-router.post('/rebuild-scores',    c.rebuildScores);
-router.post('/rebuild-analytics', c.rebuildAnalytics);
+router.post('/rebuild-scores',         c.rebuildScores);
+router.post('/rebuild-analytics',      c.rebuildAnalytics);
+router.post('/rebuild-carry-forward',  c.rebuildCarryForward);
 
 // Export (GET so the existing authUrl() anchor-download helper works).
 router.get('/export', c.exportFiltered);

@@ -30,6 +30,19 @@ const Template   = require('../models/Template');
 const Assignment = require('../models/Assignment');
 const Department = require('../models/Department');
 const { logAudit } = require('../utils/audit');
+// Phase 9: keep already-generated unsubmitted Calling Reports in sync
+// with the live dataset after HR flips any test/delete flag.
+const { rebuildCarryForward } = require('../services/carryForwardRebuild');
+
+/** Safe wrapper -- never lets a rebuild failure poison the originating action. */
+const _safeRebuild = async (employeeIds) => {
+  try {
+    return await rebuildCarryForward({ employeeIds });
+  } catch (e) {
+    console.error('[carry-forward] rebuild failed:', e.message);
+    return { walked: 0, rebuilt: 0, skipped: 0, error: e.message };
+  }
+};
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 const isTruthy = (v) => TRUTHY.has(String(v || '').toLowerCase());
@@ -283,7 +296,8 @@ const remove = asyncHandler(async (req, res) => {
     targetLabel: `${s.employee} · ${String(s.date).slice(0, 10)}`,
     meta: { reason: s.deleteReason },
   });
-  res.json({ ok: true, _id: s._id });
+  const carry = await _safeRebuild([s.employee]);
+  res.json({ ok: true, _id: s._id, carryForward: carry });
 });
 
 /**
@@ -307,7 +321,8 @@ const restore = asyncHandler(async (req, res) => {
     targetId: s._id,
     targetLabel: `${s.employee} · ${String(s.date).slice(0, 10)}`,
   });
-  res.json({ ok: true, _id: s._id });
+  const carry = await _safeRebuild([s.employee]);
+  res.json({ ok: true, _id: s._id, carryForward: carry });
 });
 
 /**
@@ -328,7 +343,8 @@ const markTest = asyncHandler(async (req, res) => {
     targetId: s._id,
     targetLabel: `${s.employee} · ${String(s.date).slice(0, 10)}`,
   });
-  res.json({ ok: true, _id: s._id, isTestData: s.isTestData });
+  const carry = await _safeRebuild([s.employee]);
+  res.json({ ok: true, _id: s._id, isTestData: s.isTestData, carryForward: carry });
 });
 
 /**
@@ -358,7 +374,9 @@ const bulkDelete = asyncHandler(async (req, res) => {
     targetLabel: `${ids.length} submissions`,
     meta: { count: r.modifiedCount, reason: req.body?.reason || '' },
   });
-  res.json({ ok: true, modified: r.modifiedCount });
+  const affectedEmployees = (await Submission.find({ _id: { $in: ids } }).select('employee').lean()).map((x) => x.employee);
+  const carry = await _safeRebuild(affectedEmployees);
+  res.json({ ok: true, modified: r.modifiedCount, carryForward: carry });
 });
 
 const bulkRestore = asyncHandler(async (req, res) => {
@@ -369,7 +387,9 @@ const bulkRestore = asyncHandler(async (req, res) => {
     { $set: { deleted: false }, $unset: { deletedBy: 1, deletedAt: 1, deleteReason: 1 } },
   );
   logAudit(req, { action: 'submission.bulk-restore', targetType: 'Submission', targetLabel: `${ids.length} submissions`, meta: { count: r.modifiedCount } });
-  res.json({ ok: true, modified: r.modifiedCount });
+  const affectedEmployees = (await Submission.find({ _id: { $in: ids } }).select('employee').lean()).map((x) => x.employee);
+  const carry = await _safeRebuild(affectedEmployees);
+  res.json({ ok: true, modified: r.modifiedCount, carryForward: carry });
 });
 
 const bulkMarkTest = asyncHandler(async (req, res) => {
@@ -388,7 +408,9 @@ const bulkMarkTest = asyncHandler(async (req, res) => {
     targetLabel: `${ids.length} submissions`,
     meta: { count: r.modifiedCount },
   });
-  res.json({ ok: true, modified: r.modifiedCount, isTestData: flag });
+  const affectedEmployees = (await Submission.find({ _id: { $in: ids } }).select('employee').lean()).map((x) => x.employee);
+  const carry = await _safeRebuild(affectedEmployees);
+  res.json({ ok: true, modified: r.modifiedCount, isTestData: flag, carryForward: carry });
 });
 
 /**
@@ -504,6 +526,29 @@ const rebuildAnalytics = asyncHandler(async (_req, res) => {
 });
 
 /**
+ * POST /api/submission-control/rebuild-carry-forward
+ *
+ * Walks every UNSUBMITTED custom-template submission (the Calling
+ * Report today + any future custom template that declares a
+ * systemGenerated `yesterdayPending`) and rewrites its
+ * yesterdayPending + every dependent formula field from the
+ * most-recent LIVE prior submission's totalPending.
+ *
+ * Idempotent: rows whose carry-forward already matches the live
+ * dataset are reported as "skipped".  Safe to run on demand or as a
+ * recovery step.
+ */
+const rebuildCarryForwardEndpoint = asyncHandler(async (req, res) => {
+  const r = await rebuildCarryForward({});
+  logAudit(req, { action: 'submission-control.rebuild-carry-forward', meta: r });
+  res.json({
+    ok: true,
+    ...r,
+    message: `Rebuilt: ${r.rebuilt} · Skipped: ${r.skipped} · Walked: ${r.walked}`,
+  });
+});
+
+/**
  * GET /api/submission-control/filter-options
  *
  * Compact payload for the filter bar: departments, employees, reviewers,
@@ -526,6 +571,6 @@ module.exports = {
   remove, restore, markTest,
   bulkDelete, bulkRestore, bulkMarkTest,
   exportFiltered,
-  rebuildScores, rebuildAnalytics,
+  rebuildScores, rebuildAnalytics, rebuildCarryForward: rebuildCarryForwardEndpoint,
   filterOptions,
 };
