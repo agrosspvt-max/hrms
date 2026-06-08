@@ -279,10 +279,16 @@ const submissionSchema = new mongoose.Schema(
           // submissions; new flow uses dealerId).
           dealerLocation:  { type: String, default: '' },
 
-          // New: Dealer Master reference + snapshot.
+          // New: Dealer Master reference + snapshot.  After Phase 3 the
+          // canonical breakdown is firm + place + dealerName; the older
+          // dealerNameSnapshot column is kept for back-compat and is
+          // populated to firmName by the submit handler so any older
+          // analytics path that reads it still resolves.
           dealerId:            { type: mongoose.Schema.Types.ObjectId, ref: 'Dealer' },
-          dealerNameSnapshot:  { type: String, default: '' },
+          dealerNameSnapshot:  { type: String, default: '' },   // legacy = firmName
           dealerPlaceSnapshot: { type: String, default: '' },
+          dealerFirmSnapshot:  { type: String, default: '' },   // explicit firm
+          dealerPersonSnapshot:{ type: String, default: '' },   // dealer person name
 
           // Legacy single product fields -- mirror the first products[] row.
           productId:       { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },

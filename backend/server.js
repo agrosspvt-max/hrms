@@ -126,6 +126,12 @@ const start = async () => {
     const { migrateDepartmentAnalyticsType } = require('./services/departmentMigration');
     await migrateDepartmentAnalyticsType();
   } catch (e) { console.error('[migrate] department analyticsType failed:', e.message); }
+  // Backfill firmName + dealerName on every legacy Dealer row + swap
+  // the old name-unique index for the new (firmName, place) compound.
+  try {
+    const { migrateDealerSchema } = require('./services/dealerMigration');
+    await migrateDealerSchema();
+  } catch (e) { console.error('[migrate] dealer schema failed:', e.message); }
   // Backfill Attendance records for every currently-approved Leave so the
   // calendar reflects historical approvals + HR can revoke from there.
   // Idempotent / safe to re-run; never modifies HR's manual overrides.

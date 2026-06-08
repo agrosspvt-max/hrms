@@ -647,10 +647,12 @@ function CallingMode({ data }) {
             <div>
               <div className="text-sm font-semibold text-slate-800 mb-2">Top Dealers</div>
               <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
-                <Leaderboard title="By Sales (₹)"   rows={(dLb.topSales    || []).map((d) => ({ name: d.name, employeeId: d.place, sales: d.sales }))} metric="sales" suffix="" />
-                <Leaderboard title="By Quantity"    rows={(dLb.topQuantity || []).map((d) => ({ name: d.name, employeeId: d.place, qty: d.qty }))}    metric="qty"   suffix="" />
-                <Leaderboard title="By NBV (₹)"     rows={(dLb.topNbv      || []).map((d) => ({ name: d.name, employeeId: d.place, nbv: d.nbv }))}    metric="nbv"   suffix="" />
-                <Leaderboard title="By Farmers"     rows={(dLb.topFarmers  || []).map((d) => ({ name: d.name, employeeId: d.place, farmers: d.farmers }))} metric="farmers" suffix="" />
+                {/* Leaderboard label = "Firm — Place" because the same   */}
+                {/* firm can exist in multiple places (per Phase 3 spec). */}
+                <Leaderboard title="By Sales (₹)"   rows={(dLb.topSales    || []).map((d) => ({ name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', sales: d.sales }))}    metric="sales"   suffix="" />
+                <Leaderboard title="By Quantity"    rows={(dLb.topQuantity || []).map((d) => ({ name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', qty: d.qty }))}        metric="qty"     suffix="" />
+                <Leaderboard title="By NBV (₹)"     rows={(dLb.topNbv      || []).map((d) => ({ name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', nbv: d.nbv }))}        metric="nbv"     suffix="" />
+                <Leaderboard title="By Farmers"     rows={(dLb.topFarmers  || []).map((d) => ({ name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', farmers: d.farmers }))} metric="farmers" suffix="" />
               </div>
             </div>
 
@@ -664,8 +666,9 @@ function CallingMode({ data }) {
                 <table className="table">
                   <thead>
                     <tr>
-                      <th>Dealer</th>
+                      <th>Firm Name</th>
                       <th>Place</th>
+                      <th>Dealer Name</th>
                       <th className="text-right">Farmers</th>
                       <th className="text-right">Products</th>
                       <th className="text-right">Quantity</th>
@@ -676,8 +679,9 @@ function CallingMode({ data }) {
                   <tbody>
                     {dealers.map((d) => (
                       <tr key={d._id}>
-                        <td className="font-medium text-slate-800">{d.name || '—'}</td>
+                        <td className="font-medium text-slate-800">{d.firmName || d.name || '—'}</td>
                         <td>{d.place || <span className="text-slate-400">—</span>}</td>
+                        <td>{d.dealerName || <span className="text-slate-400">—</span>}</td>
                         <td className="text-right">{d.farmers}</td>
                         <td className="text-right">{d.products}</td>
                         <td className="text-right">{d.qty}</td>

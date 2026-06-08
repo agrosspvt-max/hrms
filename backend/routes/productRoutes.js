@@ -36,8 +36,15 @@ router.delete('/quantities/:id',   authorize('hr'), c.deactivateQuantity);
 // Dealer Master.  Reads open to any authenticated user (employees need
 // the dropdown when filing a Farmer Record); writes HR / Super Admin only.
 router.get('/dealers',         d.listDealers);
-router.post('/dealers',        authorize('hr'), d.createDealer);
-router.put('/dealers/:id',     authorize('hr'), d.updateDealer);
-router.delete('/dealers/:id',  authorize('hr'), d.deactivateDealer);
+// Bulk: download sample + export full catalogue (HR / SA).  GETs so the
+// existing authUrl() anchor-download helper works.
+router.get('/dealers/import-sample', authorize('hr'), d.importSample);
+router.get('/dealers/export',        authorize('hr'), d.exportDealers);
+// Bulk import (HR / SA, multipart "file").  Reuses the Products multer
+// instance defined at the top of this file (memory storage, 5 MB cap).
+router.post('/dealers/import',  authorize('hr'), upload.single('file'), d.importBulk);
+router.post('/dealers',         authorize('hr'), d.createDealer);
+router.put('/dealers/:id',      authorize('hr'), d.updateDealer);
+router.delete('/dealers/:id',   authorize('hr'), d.deactivateDealer);
 
 module.exports = router;

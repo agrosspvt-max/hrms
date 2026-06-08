@@ -1159,6 +1159,16 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
 
   const productById = new Map((products || []).map((p) => [p._id, p]));
   const dealerById  = new Map((dealers  || []).map((d) => [d._id, d]));
+  // Sort dealers by firm + place so the dropdown is easy to skim, and
+  // resolve a display label that disambiguates same-firm rows across
+  // different places.  Dealer Name is intentionally NOT shown to
+  // employees -- per Phase 3 spec it lives in HR + analytics only.
+  const dealerLabel = (d) => {
+    const firm  = d.firmName || d.name || '—';
+    const place = d.place    || '';
+    return place ? `${firm} — ${place}` : firm;
+  };
+  const sortedDealers = [...(dealers || [])].sort((a, b) => dealerLabel(a).localeCompare(dealerLabel(b)));
 
   const editProduct = (rowIdx, prodIdx, patch) => setRows((cur) => cur.map((r, i) => {
     if (i !== rowIdx) return r;
@@ -1206,7 +1216,7 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
                     <input className="input" value={r.village} onChange={(e) => editRow(i, { village: e.target.value })} />
                   </div>
                   <div className="col-span-2">
-                    <label className="label text-[10px] uppercase">Dealer</label>
+                    <label className="label text-[10px] uppercase">Firm Name</label>
                     <select
                       className="input"
                       value={r.dealerId || ''}
@@ -1215,8 +1225,10 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
                         editRow(i, { dealerId: e.target.value, dealerPlace: d?.place || '' });
                       }}
                     >
-                      <option value="">Select dealer…</option>
-                      {(dealers || []).map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
+                      <option value="">Select firm…</option>
+                      {sortedDealers.map((d) => (
+                        <option key={d._id} value={d._id}>{dealerLabel(d)}</option>
+                      ))}
                     </select>
                   </div>
                   <div className="col-span-2">

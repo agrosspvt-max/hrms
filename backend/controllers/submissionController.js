@@ -498,10 +498,15 @@ const submitOne = asyncHandler(async (req, res) => {
           // before Dealer Master existed, or for legacy clients).
           dealerLocation: String(row.dealerLocation || '').trim(),
 
-          // New dealer snapshot.
-          dealerId:            dealer?._id,
-          dealerNameSnapshot:  dealer?.name  || '',
-          dealerPlaceSnapshot: dealer?.place || '',
+          // New dealer snapshot (Phase 3 split).  We mirror firmName
+          // into the legacy dealerNameSnapshot field so any older
+          // analytics path that reads it keeps producing the same
+          // bucket labels it did before the rename.
+          dealerId:             dealer?._id,
+          dealerNameSnapshot:   dealer?.firmName || dealer?.name || '',  // legacy = firm
+          dealerPlaceSnapshot:  dealer?.place || '',
+          dealerFirmSnapshot:   dealer?.firmName || dealer?.name || '',
+          dealerPersonSnapshot: dealer?.dealerName || '',
 
           // Legacy single-product mirror.
           productId:     first?.productId,

@@ -878,8 +878,12 @@ const callingAnalytics = asyncHandler(async (req, res) => {
       const key = String(f.dealerId);
       if (!dealerAgg.has(key)) dealerAgg.set(key, {
         _id: key,
-        name:  f.dealerNameSnapshot  || '',
-        place: f.dealerPlaceSnapshot || '',
+        // Phase 3: surface all three labels.  Legacy `name` mirrors
+        // firmName so older frontends keep rendering something useful.
+        firmName:   f.dealerFirmSnapshot   || f.dealerNameSnapshot || '',
+        place:      f.dealerPlaceSnapshot  || '',
+        dealerName: f.dealerPersonSnapshot || '',
+        name:       f.dealerFirmSnapshot   || f.dealerNameSnapshot || '',
         farmers: 0, products: 0, sales: 0, nbv: 0, qty: 0,
       });
       const da = dealerAgg.get(key);
