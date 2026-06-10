@@ -227,6 +227,29 @@ const templateSchema = new mongoose.Schema(
     // Future templates (Dealer Visit, Site Visit, Collection Report)
     // can re-use the same sections without code changes.
     customSections: { type: [String], default: [] },
+
+    /* ---- Phase 11: Dynamic Analytics + workflow scaffolding ----
+       All optional + backward-compatible.
+
+         department       Owning department (used to scope which HOD can
+                          see this template's analytics).  Null => global.
+         analyticsName    Display label for the auto-generated analytics
+                          page.  Derived from `title` if blank (e.g.
+                          "Accounts Template" -> "Accounts Analytics").
+         reviewFlow       'direct_hr' (default) or 'hod_first'.  Mirrors
+                          the per-employee reviewFlow already on User --
+                          when a template carries hod_first, every
+                          submission routes through the HOD first
+                          regardless of the employee's personal setting.
+                          Currently advisory; the existing submission
+                          pipeline still defers to the employee's
+                          reviewFlow.  Stored so the builder UI + future
+                          enforcement have a single source of truth.
+    */
+    department:    { type: mongoose.Schema.Types.ObjectId, ref: 'Department', index: true },
+    analyticsName: { type: String, default: '', trim: true },
+    reviewFlow:    { type: String, enum: ['direct_hr', 'hod_first'], default: 'direct_hr' },
+
     // Lifecycle toggle so HR can deactivate templates without deleting.
     isActive: { type: Boolean, default: true },
 

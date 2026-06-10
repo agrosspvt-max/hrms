@@ -33,6 +33,7 @@ import HRManagement from './pages/superadmin/HRManagement.jsx';
 import AuditLog from './pages/superadmin/AuditLog.jsx';
 import HRSalary from './pages/hr/HRSalary.jsx';
 import SubmissionControl from './pages/hr/SubmissionControl.jsx';
+import TemplateAnalytics from './pages/hr/TemplateAnalytics.jsx';
 
 import EmployeeDashboard from './pages/employee/EmployeeDashboard.jsx';
 import MyAttendance from './pages/employee/MyAttendance.jsx';
@@ -102,6 +103,11 @@ export default function App() {
         <Route path="/backlog" element={<ProtectedRoute role="hr"><GlobalBacklog /></ProtectedRoute>} />
         <Route path="/reviews" element={<ProtectedRoute role="hr"><SubmissionReviews /></ProtectedRoute>} />
         <Route path="/submission-control" element={<ProtectedRoute role="hr"><SubmissionControl /></ProtectedRoute>} />
+        {/* Phase 11: Dynamic Analytics Engine.  Picker view at /template-analytics,
+            per-template auto-generated dashboards at /template-analytics/:id.  HOD
+            access permitted (backend clamps to their department). */}
+        <Route path="/template-analytics"      element={<PerformanceGate><TemplateAnalytics /></PerformanceGate>} />
+        <Route path="/template-analytics/:templateId" element={<PerformanceGate><TemplateAnalytics /></PerformanceGate>} />
         <Route path="/sent-alerts" element={<ProtectedRoute role="hr"><SentAlerts /></ProtectedRoute>} />
         <Route path="/reset-requests" element={<ProtectedRoute role="hr"><ResetRequests /></ProtectedRoute>} />
 

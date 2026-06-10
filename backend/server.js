@@ -35,6 +35,7 @@ app.use('/api/audit', require('./routes/auditRoutes'));
 app.use('/api', require('./routes/productRoutes'));
 app.use('/api/submission-control', require('./routes/submissionControlRoutes'));
 app.use('/api/daily-review', require('./routes/dailyReviewRoutes'));
+app.use('/api/template-analytics', require('./routes/templateAnalyticsRoutes'));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date() }));
 
@@ -141,6 +142,13 @@ const start = async () => {
     const { migrateDailyReviews } = require('./services/dailyReviewMigration');
     await migrateDailyReviews();
   } catch (e) { console.error('[migrate] daily-review backfill failed:', e.message); }
+  // Backfill analyticsName + reviewFlow defaults on existing templates
+  // so the Dynamic Analytics page renders a sensible label for every
+  // historical row (idempotent).
+  try {
+    const { migrateTemplateAnalytics } = require('./services/templateAnalyticsMigration');
+    await migrateTemplateAnalytics();
+  } catch (e) { console.error('[migrate] template analytics failed:', e.message); }
   // Backfill Attendance records for every currently-approved Leave so the
   // calendar reflects historical approvals + HR can revoke from there.
   // Idempotent / safe to re-run; never modifies HR's manual overrides.
