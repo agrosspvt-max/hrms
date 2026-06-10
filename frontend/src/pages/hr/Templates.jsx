@@ -95,10 +95,18 @@ export default function Templates({ embedded = false } = {}) {
 
   const save = async (form) => {
     try {
-      if (modal.mode === 'create') await api.post('/templates', form);
-      else await api.put(`/templates/${modal.data._id}`, form);
-      toast.success('Saved'); setModal(null); load();
-    } catch (err) { toast.error(errMsg(err)); }
+      // Diagnostic: log the exact payload + endpoint so a failing save
+      // shows up in the Network tab and the console at the same time.
+      const url = modal.mode === 'create' ? '/templates' : `/templates/${modal.data._id}`;
+      const method = modal.mode === 'create' ? 'POST' : 'PUT';
+      console.log(`[Templates] ${method} ${url}`, form);
+      if (modal.mode === 'create') await api.post(url, form);
+      else                         await api.put(url, form);
+      toast.success('Template saved'); setModal(null); load();
+    } catch (err) {
+      console.error('[Templates] save failed:', err?.response?.status, err?.response?.data || err.message);
+      toast.error(errMsg(err) || 'Save failed -- see console for details');
+    }
   };
   const del = async (id) => {
     if (!confirm('Delete template?')) return;
@@ -335,9 +343,166 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
   const form = modal.data;
   const set = (k, v) => setModal({ ...modal, data: { ...form, [k]: v } });
   const [departments, setDepartments] = useState([]);
+  const [errors, setErrors] = useState({}); // { errorKey: 'message' }
+  const fieldRefs = useRef({});             // { errorKey: DOM input/textarea/select }
+  const summaryRef = useRef(null);
+  const toast = useToast();
   useEffect(() => {
     api.get('/departments').then((r) => setDepartments(r.data || [])).catch(() => setDepartments([]));
   }, []);
+
+  /* ---- Error registry helpers ---- */
+  const setRef = (errorKey) => (el) => { if (el) fieldRefs.current[errorKey] = el; };
+  const focusField = (errorKey) => {
+    const el = fieldRefs.current[errorKey];
+    if (!el) return;
+    try { el.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (_) {}
+    setTimeout(() => { try { el.focus(); } catch (_) {} }, 280);
+  };
+  const clearError = (errorKey) => {
+    setErrors((prev) => {
+      if (!prev[errorKey]) return prev;
+      const { [errorKey]: _drop, ...rest } = prev;
+      return rest;
+    });
+  };
+
+  /**
+   * Single-pass validator.  Collects EVERY error rather than bailing on
+   * the first one so the summary panel can list them all and HR can
+   * fix in any order.  Returns a map of errorKey -> message; empty
+   * map = ready to save.
+   *
+   * errorKey conventions (must match setRef + focusField):
+   *   title                       Template Name
+   *   sub_<subId>_name            Sub-template name
+   *   field_<idx>_label           Task Work Name
+   *   field_<idx>_key             Task Field Key
+   *   field_<idx>_formula         Auto-calc formula
+   *   field_<idx>_options         Dropdown options
+   *   _noTasks                    Template-level "needs at least one task"
+   */
+  const validate = (fieldsRaw, subsRaw) => {
+    const errs = {};
+    if (!(form.title || '').trim()) errs.title = 'Template Name is required';
+    subsRaw.forEach((s, i) => {
+      if (!(s.name || '').trim()) errs[`sub_${s._id}_name`] = `Sub-Template #${i + 1}: Name is required`;
+    });
+    const seenKeys = new Set();
+    let filledRows = 0;
+    fieldsRaw.forEach((f, idx) => {
+      const label = (f.label || '').trim();
+      const key   = (f.key   || '').trim();
+      const desc  = (f.description || '').trim();
+      const anyFilled = !!(label || key || desc || (f.formula || '').trim() || (Array.isArray(f.options) && f.options.length > 0));
+      if (!anyFilled) return;             // fully blank rows are dropped, not errored
+      filledRows += 1;
+      const tag = label || `Task #${idx + 1}`;
+      if (!label) errs[`field_${idx}_label`] = `Task #${idx + 1}: Work Name is required`;
+      if (!key) {
+        errs[`field_${idx}_key`] = `Task "${tag}": Field Key is required`;
+      } else if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(key)) {
+        errs[`field_${idx}_key`] = `Task "${tag}": Field Key must start with a letter and use only letters, digits, or underscores`;
+      } else if (seenKeys.has(key)) {
+        errs[`field_${idx}_key`] = `Task "${tag}": Field Key "${key}" is duplicated`;
+      } else {
+        seenKeys.add(key);
+      }
+      if (f.fieldType === 'auto' && !(f.formula || '').trim()) {
+        errs[`field_${idx}_formula`] = `Auto-calc task "${tag}": Formula is required`;
+      }
+      if (f.fieldType === 'dropdown' && (!Array.isArray(f.options) || f.options.filter(Boolean).length === 0)) {
+        errs[`field_${idx}_options`] = `Dropdown task "${tag}": at least one option is required`;
+      }
+    });
+    if (filledRows === 0) errs._noTasks = 'Add at least one task. The template has no fields to submit.';
+    return errs;
+  };
+
+  /**
+   * Submit pipeline.  Runs validate() up front and, if anything blocks,
+   * shows the summary + red borders + inline messages and scrolls to
+   * the first invalid field.  The Save button stays enabled in every
+   * state so HR always gets feedback.
+   */
+  const handleSave = () => {
+    try {
+      const fieldsRaw = Array.isArray(form.customFields) ? form.customFields : [];
+      const subsRaw   = Array.isArray(form.subTemplates) ? form.subTemplates : [];
+
+      const errs = validate(fieldsRaw, subsRaw);
+      const errKeys = Object.keys(errs);
+      if (errKeys.length > 0) {
+        setErrors(errs);
+        // Scroll the summary into view first, then focus the first
+        // invalid field so the user sees the full context.
+        setTimeout(() => {
+          try { summaryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch (_) {}
+          const first = errKeys[0] === '_noTasks' && errKeys.length > 1 ? errKeys[1] : errKeys[0];
+          if (first !== '_noTasks') focusField(first);
+        }, 50);
+        return;
+      }
+      setErrors({});
+
+      // Strip fully-empty rows + sanitise survivors.  Same logic the
+      // validator implicitly approved.
+      const cleaned = [];
+      for (let i = 0; i < fieldsRaw.length; i += 1) {
+        const f = fieldsRaw[i];
+        const label = (f.label || '').trim();
+        const key   = (f.key   || '').trim();
+        const desc  = (f.description || '').trim();
+        const anyFilled = !!(label || key || desc || (f.formula || '').trim() || (Array.isArray(f.options) && f.options.length > 0));
+        if (!anyFilled) continue;
+        const sid = String(f.subTemplateId || '');
+        const subStillExists = sid === '' || subsRaw.some((s) => String(s._id) === sid);
+        cleaned.push({
+          key, label,
+          fieldType: f.fieldType || 'number',
+          required: !!f.required,
+          options: Array.isArray(f.options) ? f.options.map((o) => String(o).trim()).filter(Boolean) : [],
+          group: (f.group || '').trim(),
+          description: desc,
+          formula: (f.formula || '').trim(),
+          systemGenerated: !!f.systemGenerated,
+          visibleTo: Array.isArray(f.visibleTo) && f.visibleTo.length > 0
+            ? f.visibleTo
+            : ['employee', 'hod', 'hr', 'super_admin'],
+          order: Number(f.order) || 0,
+          subTemplateId: subStillExists ? sid : '',
+          supportsStatus: !!f.supportsStatus,
+          supportsRemark: f.supportsRemark !== false,
+          dependencyType: f.dependencyType === 'dependent' ? 'dependent' : 'independent',
+          isAnalyticsEligible: f.isAnalyticsEligible !== false,
+        });
+      }
+
+      const payload = {
+        ...form,
+        title:         (form.title || '').trim(),
+        description:   (form.description || '').trim(),
+        analyticsName: (form.analyticsName || '').trim(),
+        customKind:    (form.customKind || '').trim().toLowerCase(),
+        reviewFlow:    form.reviewFlow === 'hod_first' ? 'hod_first' : 'direct_hr',
+        department:    form.department && /^[a-f0-9]{24}$/i.test(form.department) ? form.department : null,
+        isActive:      form.isActive !== false,
+        subTemplates:  subsRaw.map((s) => ({
+          _id: typeof s._id === 'string' && s._id.startsWith('tmp_') ? undefined : s._id,
+          name: String(s.name || '').trim(),
+          description: String(s.description || '').trim(),
+          isActive: s.isActive !== false,
+          order: Number(s.order) || 0,
+        })),
+        customFields:  cleaned,
+      };
+
+      onSave(payload);
+    } catch (err) {
+      console.error('[CustomTemplateForm] handleSave failed:', err);
+      toast.error(`Could not prepare save payload: ${err.message}`);
+    }
+  };
 
   // Stable temporary id for newly-created sub-templates so customFields
   // can reference them before the row hits the database.
@@ -423,9 +588,6 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
     return { root, bySub };
   })();
 
-  const titleMissing = !(form.title || '').trim();
-  const fieldsValid = fields.every((f) => (f.key || '').trim() && (f.label || '').trim());
-
   return (
     <Modal
       open
@@ -434,16 +596,56 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
       title={modal.mode === 'create' ? 'Create Custom Assignment Template' : `Edit ${form.title || 'Custom Template'}`}
       footer={<>
         <button className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
-        <button className="btn-primary" disabled={titleMissing || !fieldsValid} onClick={() => onSave(form)}>Save</button>
+        {/* Phase 12 bug fix: never disable Save silently -- every
+            blocking condition raises a specific toast inside handleSave
+            so HR knows what to fix.  Empty / half-filled task rows are
+            stripped before the payload is sent. */}
+        <button className="btn-primary" onClick={handleSave}>Save</button>
       </>}
     >
       <div className="space-y-5">
+        {/* ----- Validation summary panel (Phase 12.9) ----- */}
+        {Object.keys(errors).length > 0 && (
+          <div
+            ref={summaryRef}
+            className="rounded-lg border border-red-300 bg-red-50 p-3"
+            role="alert"
+            aria-live="polite"
+          >
+            <div className="text-sm font-semibold text-red-800 mb-1.5">
+              Cannot save template. Fix {Object.keys(errors).length} issue(s):
+            </div>
+            <ul className="space-y-0.5 text-sm">
+              {Object.entries(errors).map(([k, msg]) => (
+                <li key={k}>
+                  <button
+                    type="button"
+                    className={`text-left text-red-700 ${k === '_noTasks' ? '' : 'hover:underline cursor-pointer'}`}
+                    onClick={() => k !== '_noTasks' && focusField(k)}
+                  >
+                    • {msg}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
         {/* ----- Metadata ----- */}
         <Section title="Template Settings">
           <div className="grid md:grid-cols-2 gap-3">
             <div>
-              <label className="label">Template Name *</label>
-              <input className="input" value={form.title || ''} onChange={(e) => set('title', e.target.value)} placeholder="e.g. Accounts Template" />
+              <label className="label">
+                Template Name <span className="text-red-500">*</span>
+              </label>
+              <input
+                ref={setRef('title')}
+                className={`input ${errors.title ? 'border-red-400 ring-1 ring-red-200' : ''}`}
+                value={form.title || ''}
+                onChange={(e) => { set('title', e.target.value); clearError('title'); }}
+                placeholder="e.g. Accounts Template"
+              />
+              {errors.title && <div className="text-xs text-red-600 mt-1">{errors.title}</div>}
             </div>
             <div>
               <label className="label">Analytics Name</label>
@@ -509,12 +711,24 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
             <div className="text-xs text-slate-500 italic">No sub-templates yet — every task you add will live in the template root. Sub-templates let you group tasks (Billing / Collections / Ledger / Reconciliation, etc.) and assign just one sub-template to an employee.</div>
           ) : (
             <div className="space-y-2">
-              {subs.map((s) => (
+              {subs.map((s) => {
+                const subErrKey = `sub_${s._id}_name`;
+                const subErr = errors[subErrKey];
+                return (
                 <div key={s._id} className="rounded-lg border border-slate-200 p-2.5 bg-slate-50/40 space-y-2">
                   <div className="grid grid-cols-12 gap-2">
                     <div className="col-span-4">
-                      <label className="label text-[10px] uppercase">Sub-Template Name</label>
-                      <input className="input" value={s.name} onChange={(e) => updateSubTemplate(s._id, { name: e.target.value })} placeholder="e.g. Billing" />
+                      <label className="label text-[10px] uppercase">
+                        Sub-Template Name <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        ref={setRef(subErrKey)}
+                        className={`input ${subErr ? 'border-red-400 ring-1 ring-red-200' : ''}`}
+                        value={s.name}
+                        onChange={(e) => { updateSubTemplate(s._id, { name: e.target.value }); clearError(subErrKey); }}
+                        placeholder="e.g. Billing"
+                      />
+                      {subErr && <div className="text-xs text-red-600 mt-1">{subErr}</div>}
                     </div>
                     <div className="col-span-6">
                       <label className="label text-[10px] uppercase">Description</label>
@@ -526,7 +740,8 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </Section>
@@ -542,6 +757,9 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
             onRemove={removeField}
             onMove={moveField}
             disabled={subs.length > 0 && groupedFields.root.length === 0}
+            errors={errors}
+            setRef={setRef}
+            clearError={clearError}
           />
           {subs.map((s) => (
             <FieldsGroup
@@ -553,6 +771,9 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
               onUpdate={updateField}
               onRemove={removeField}
               onMove={moveField}
+              errors={errors}
+              setRef={setRef}
+              clearError={clearError}
             />
           ))}
         </Section>
@@ -573,7 +794,7 @@ function Section({ title, right, children }) {
   );
 }
 
-function FieldsGroup({ label, subId, entries, onAdd, onUpdate, onRemove, onMove, disabled }) {
+function FieldsGroup({ label, subId, entries, onAdd, onUpdate, onRemove, onMove, disabled, errors, setRef, clearError }) {
   return (
     <div className="mb-3 last:mb-0">
       <div className="flex items-center justify-between gap-2 mb-2">
@@ -593,6 +814,9 @@ function FieldsGroup({ label, subId, entries, onAdd, onUpdate, onRemove, onMove,
               onPatch={(p) => onUpdate(f.__idx, p)}
               onRemove={() => onRemove(f.__idx)}
               onMove={(dir) => onMove(f.__idx, dir)}
+              errors={errors}
+              setRef={setRef}
+              clearError={clearError}
             />
           ))}
         </div>
@@ -601,27 +825,54 @@ function FieldsGroup({ label, subId, entries, onAdd, onUpdate, onRemove, onMove,
   );
 }
 
-function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove }) {
+function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove, errors = {}, setRef = () => () => {}, clearError = () => {} }) {
   const f = field;
+  const idx = f.__idx;
+  // Error registry keys must match the ones validate() emits.
+  const eLabel   = `field_${idx}_label`;
+  const eKey     = `field_${idx}_key`;
+  const eFormula = `field_${idx}_formula`;
+  const eOpts    = `field_${idx}_options`;
+  // Tailwind classnames for invalid inputs.
+  const errCls = 'border-red-400 ring-1 ring-red-200';
   return (
     <div className="rounded-lg border border-slate-200 p-2.5 bg-slate-50/40 space-y-2">
       <div className="grid grid-cols-12 gap-2">
         <div className="col-span-3">
-          <label className="label text-[10px] uppercase">Work Name *</label>
-          <input className="input" value={f.label} onChange={(e) => {
-            const label = e.target.value;
-            const next = { label };
-            // Auto-derive a stable key from the label for newly-added rows.
-            if (!f.key || f.key === _slug(f.__lastLabel || '')) {
-              next.key = _slug(label);
-              next.__lastLabel = label;
-            }
-            onPatch(next);
-          }} placeholder="e.g. Bills Generated Within 1 Hour" />
+          <label className="label text-[10px] uppercase">
+            Work Name <span className="text-red-500">*</span>
+          </label>
+          <input
+            ref={setRef(eLabel)}
+            className={`input ${errors[eLabel] ? errCls : ''}`}
+            value={f.label}
+            onChange={(e) => {
+              const label = e.target.value;
+              const next = { label };
+              if (!f.key || f.key === _slug(f.__lastLabel || '')) {
+                next.key = _slug(label);
+                next.__lastLabel = label;
+              }
+              onPatch(next);
+              clearError(eLabel);
+              if (next.key) clearError(eKey);
+            }}
+            placeholder="e.g. Bills Generated Within 1 Hour"
+          />
+          {errors[eLabel] && <div className="text-[11px] text-red-600 mt-0.5">{errors[eLabel]}</div>}
         </div>
         <div className="col-span-2">
-          <label className="label text-[10px] uppercase">Field Key *</label>
-          <input className="input" value={f.key} onChange={(e) => onPatch({ key: _slug(e.target.value) })} placeholder="auto" />
+          <label className="label text-[10px] uppercase">
+            Field Key <span className="text-red-500">*</span>
+          </label>
+          <input
+            ref={setRef(eKey)}
+            className={`input ${errors[eKey] ? errCls : ''}`}
+            value={f.key}
+            onChange={(e) => { onPatch({ key: _slug(e.target.value) }); clearError(eKey); }}
+            placeholder="auto"
+          />
+          {errors[eKey] && <div className="text-[11px] text-red-600 mt-0.5">{errors[eKey]}</div>}
         </div>
         <div className="col-span-2">
           <label className="label text-[10px] uppercase">Value Type</label>
@@ -661,21 +912,36 @@ function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove }) {
       </div>
       {f.fieldType === 'auto' && (
         <div>
-          <label className="label text-[10px] uppercase">Formula</label>
-          <input className="input font-mono text-xs" value={f.formula || ''} onChange={(e) => onPatch({ formula: e.target.value })} placeholder="e.g. assignedCalls - todayCallsCompleted" />
-          <div className="text-[10px] text-slate-500 mt-1">Reference other field keys with arithmetic only (+, -, *, /, parentheses). No function calls.</div>
+          <label className="label text-[10px] uppercase">
+            Formula <span className="text-red-500">*</span>
+          </label>
+          <input
+            ref={setRef(eFormula)}
+            className={`input font-mono text-xs ${errors[eFormula] ? errCls : ''}`}
+            value={f.formula || ''}
+            onChange={(e) => { onPatch({ formula: e.target.value }); clearError(eFormula); }}
+            placeholder="e.g. assignedCalls - todayCallsCompleted"
+          />
+          {errors[eFormula]
+            ? <div className="text-[11px] text-red-600 mt-0.5">{errors[eFormula]}</div>
+            : <div className="text-[10px] text-slate-500 mt-1">Reference other field keys with arithmetic only (+, -, *, /, parentheses). No function calls.</div>
+          }
         </div>
       )}
       {f.fieldType === 'dropdown' && (
         <div>
-          <label className="label text-[10px] uppercase">Dropdown Options (one per line)</label>
+          <label className="label text-[10px] uppercase">
+            Dropdown Options <span className="text-red-500">*</span> <span className="text-slate-400 normal-case font-normal">(one per line)</span>
+          </label>
           <textarea
-            className="input font-mono text-xs"
+            ref={setRef(eOpts)}
+            className={`input font-mono text-xs ${errors[eOpts] ? errCls : ''}`}
             rows={2}
             value={(f.options || []).join('\n')}
-            onChange={(e) => onPatch({ options: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) })}
+            onChange={(e) => { onPatch({ options: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) }); clearError(eOpts); }}
             placeholder={'Option A\nOption B\nOption C'}
           />
+          {errors[eOpts] && <div className="text-[11px] text-red-600 mt-0.5">{errors[eOpts]}</div>}
         </div>
       )}
     </div>
