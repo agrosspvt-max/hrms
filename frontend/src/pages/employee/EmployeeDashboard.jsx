@@ -58,6 +58,10 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const [addedTasks, setAddedTasks] = useState({}); // { subId: [{ title }] }
   // Custom-template field values per submission: { subId: { key: value } }.
   const [customValues, setCustomValues] = useState({});
+  // Phase 14: per-field { status, remark } sidecar so the renderer can
+  // expose status + remark controls without breaking the existing
+  // values shape.  Stored as { subId: { fieldKey: { status, remark } } }.
+  const [customMeta, setCustomMeta] = useState({});
   // Product Sales rows per submission: { subId: [{ productId, quantityId }] }
   const [productSales, setProductSales] = useState({});
   // Farmer rows per submission: { subId: [{ name, mobile, ... }] }
@@ -240,7 +244,21 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
             return;
           }
         }
-        const payload = Object.entries(raw).map(([key, value]) => ({ key, value }));
+        // Phase 14: include status + remark per field; dependent +
+        // pending requires a remark (mirrors the backend guard).
+        const metaForSub = customMeta[sub._id] || {};
+        for (const f of fields) {
+          const m = metaForSub[f.key] || {};
+          if (m.status === 'pending' && !(m.remark || '').trim()) {
+            toast.error(`Pending reason is required for "${f.label}".`);
+            setBusy(false);
+            return;
+          }
+        }
+        const payload = Object.entries(raw).map(([key, value]) => {
+          const m = metaForSub[key] || {};
+          return { key, value, status: m.status || '', remark: m.remark || '' };
+        });
         // Repeating sub-tables (any template that opts in via customSections).
         const sections = sub.template?.customSections || [];
         const cleanProductSales = sections.includes('productSales')
@@ -535,6 +553,16 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                       [sub._id]: { ...(s[sub._id] || {}), [key]: value },
                     }))
                   }
+                  meta={customMeta[sub._id] || {}}
+                  onMeta={(key, patch) =>
+                    setCustomMeta((s) => ({
+                      ...s,
+                      [sub._id]: {
+                        ...(s[sub._id] || {}),
+                        [key]: { ...((s[sub._id] || {})[key] || {}), ...patch },
+                      },
+                    }))
+                  }
                   productSales={productSales[sub._id] || []}
                   setProductSales={(updater) =>
                     setProductSales((s) => ({
@@ -825,14 +853,24 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
  */
 function CustomTemplateForm({
   sub, values, onChange,
+  meta = {}, onMeta = () => {},
   productSales = [], setProductSales,
   farmerRecords = [], setFarmerRecords,
   products = [], quantities = [], dealers = [],
   selfRating, setSelfRating, selfNote, setSelfNote, idea, setIdea,
   busy, onSubmit,
 }) {
+  // Phase 14: scope-aware filter.  The daily engine only seeds
+  // customResponses for fields belonging to the assignment's
+  // sub-templates (Phase 13).  So a field key that didn't get seeded
+  // shouldn't render here either, even if the template defines it.
+  // Falls back to "render everything" when the submission has no
+  // seeded responses at all (covers legacy submissions + the moment
+  // before the employee starts typing).
+  const seededKeys = new Set((sub.customResponses || []).map((r) => r.key));
   const fields = (sub.template?.customFields || [])
     .filter((f) => !f.visibleTo || f.visibleTo.includes('employee'))
+    .filter((f) => seededKeys.size === 0 || seededKeys.has(f.key))
     .slice()
     .sort((a, b) => (a.order || 0) - (b.order || 0));
 
@@ -852,54 +890,141 @@ function CustomTemplateForm({
     groups[seen.get(g)].items.push(f);
   }
 
+  /**
+   * Phase 14 renderer.  One card per task with:
+   *   - Work Name (label) + Required asterisk + Dependent badge
+   *   - Description (read-only helper text)
+   *   - Value control matching fieldType (number/currency/percentage/
+   *     text/textarea/yes_no/dropdown/date/time/auto-readonly)
+   *   - Status dropdown (when supportsStatus)
+   *   - Remark input (when supportsRemark, mandatory if status=pending)
+   */
   const renderField = (f) => {
-    const isEditable = f.fieldType !== 'auto' && f.fieldType !== 'readonly' && !f.systemGenerated;
-    const valueForDisplay = computed[f.key];
+    const m = meta[f.key] || {};
+    const isAuto = f.fieldType === 'auto' || f.fieldType === 'readonly' || !!f.systemGenerated;
+    const v = values[f.key];
+    const computedValue = computed[f.key];
 
-    if (!isEditable) {
-      // Read-only / auto / system field: show the live-computed value.
-      const display = typeof valueForDisplay === 'number'
-        ? (Number.isInteger(valueForDisplay) ? valueForDisplay : valueForDisplay.toFixed(1))
-        : (valueForDisplay ?? '');
-      return (
-        <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-          <div className="text-[11px] uppercase tracking-wide text-slate-500">{f.label}</div>
-          <div className="text-base font-semibold text-slate-900 mt-0.5">
-            {display}
+    // ----- value input -----
+    let valueControl;
+    if (isAuto) {
+      const display = typeof computedValue === 'number'
+        ? (Number.isInteger(computedValue) ? computedValue : computedValue.toFixed(2))
+        : (computedValue ?? '');
+      valueControl = (
+        <div className="input bg-slate-50 font-mono text-sm flex items-center text-slate-700">
+          {display === '' || display == null ? <span className="text-slate-400">auto-calculated</span> : display}
+        </div>
+      );
+    } else if (f.fieldType === 'dropdown') {
+      valueControl = (
+        <select className="input" value={v ?? ''} onChange={(e) => onChange(f.key, e.target.value)}>
+          <option value="">Select…</option>
+          {(f.options || []).map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+        </select>
+      );
+    } else if (f.fieldType === 'yes_no') {
+      valueControl = (
+        <select className="input" value={v ?? ''} onChange={(e) => onChange(f.key, e.target.value)}>
+          <option value="">Select…</option>
+          <option value="yes">Yes</option>
+          <option value="no">No</option>
+        </select>
+      );
+    } else if (f.fieldType === 'textarea' || f.fieldType === 'long_text') {
+      valueControl = (
+        <textarea className="input" rows={3} value={v ?? ''} onChange={(e) => onChange(f.key, e.target.value)} />
+      );
+    } else if (f.fieldType === 'date') {
+      valueControl = (
+        <input className="input" type="date" value={v ?? ''} onChange={(e) => onChange(f.key, e.target.value)} />
+      );
+    } else if (f.fieldType === 'time') {
+      valueControl = (
+        <input className="input" type="time" value={v ?? ''} onChange={(e) => onChange(f.key, e.target.value)} />
+      );
+    } else if (f.fieldType === 'number' || f.fieldType === 'currency' || f.fieldType === 'percentage') {
+      const prefix = f.fieldType === 'currency'   ? '₹' : '';
+      const suffix = f.fieldType === 'percentage' ? '%' : '';
+      valueControl = (
+        <div className="relative">
+          {prefix && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{prefix}</span>}
+          <input
+            className={`input ${prefix ? 'pl-7' : ''} ${suffix ? 'pr-7' : ''}`}
+            type="number"
+            step="any"
+            min="0"
+            value={v ?? ''}
+            onChange={(e) => onChange(f.key, e.target.value === '' ? '' : Number(e.target.value))}
+          />
+          {suffix && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{suffix}</span>}
+        </div>
+      );
+    } else {
+      // text + any unknown future type fall through here.
+      valueControl = (
+        <input className="input" type="text" value={v ?? ''} onChange={(e) => onChange(f.key, e.target.value)} />
+      );
+    }
+
+    const isDependent = f.dependencyType === 'dependent';
+    const pendingNeedsRemark = m.status === 'pending';
+
+    return (
+      <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+        {/* Header: label + required + dependent badge */}
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-slate-800">
+              {f.label}
+              {f.required && <span className="text-red-500"> *</span>}
+            </div>
+            {f.description && (
+              <div className="text-[11px] text-slate-500 mt-0.5">{f.description}</div>
+            )}
+          </div>
+          <div className="flex items-center gap-1 flex-wrap">
+            {isDependent && <span className="badge bg-indigo-50 text-indigo-700 text-[10px]">Dependent Task</span>}
+            {isAuto && <span className="badge bg-slate-100 text-slate-600 text-[10px]">Auto</span>}
           </div>
         </div>
-      );
-    }
 
-    if (f.fieldType === 'dropdown') {
-      return (
-        <div>
-          <label className="label">{f.label}{f.required && <span className="text-red-500"> *</span>}</label>
-          <select className="input" value={values[f.key] ?? ''} onChange={(e) => onChange(f.key, e.target.value)}>
-            <option value="">Select...</option>
-            {(f.options || []).map((opt) => <option key={opt} value={opt}>{opt}</option>)}
-          </select>
+        {/* Value + status + remark side by side when room, stacked when narrow */}
+        <div className="grid md:grid-cols-12 gap-2">
+          <div className={`md:col-span-${f.supportsStatus || f.supportsRemark ? '5' : '12'}`}>
+            <div className="label text-[10px] uppercase">Value</div>
+            {valueControl}
+          </div>
+          {f.supportsStatus && (
+            <div className="md:col-span-3">
+              <div className="label text-[10px] uppercase">Status</div>
+              <select
+                className="input"
+                value={m.status || ''}
+                onChange={(e) => onMeta(f.key, { status: e.target.value })}
+              >
+                <option value="">—</option>
+                <option value="done">Done</option>
+                <option value="pending">Pending</option>
+                <option value="work_not_available">Work N/A</option>
+              </select>
+            </div>
+          )}
+          {f.supportsRemark && (
+            <div className={`md:col-span-${f.supportsStatus ? '4' : '7'}`}>
+              <div className="label text-[10px] uppercase">
+                Remark
+                {pendingNeedsRemark && <span className="text-red-500"> *</span>}
+              </div>
+              <input
+                className={`input ${pendingNeedsRemark && !(m.remark || '').trim() ? 'border-red-400' : ''}`}
+                placeholder={pendingNeedsRemark ? 'Reason required for Pending' : 'Optional'}
+                value={m.remark || ''}
+                onChange={(e) => onMeta(f.key, { remark: e.target.value })}
+              />
+            </div>
+          )}
         </div>
-      );
-    }
-    if (f.fieldType === 'textarea') {
-      return (
-        <div>
-          <label className="label">{f.label}{f.required && <span className="text-red-500"> *</span>}</label>
-          <textarea className="input" rows={3} value={values[f.key] ?? ''} onChange={(e) => onChange(f.key, e.target.value)} />
-        </div>
-      );
-    }
-    return (
-      <div>
-        <label className="label">{f.label}{f.required && <span className="text-red-500"> *</span>}</label>
-        <input
-          className="input"
-          type={f.fieldType === 'number' ? 'number' : f.fieldType === 'date' ? 'date' : 'text'}
-          min={f.fieldType === 'number' ? '0' : undefined}
-          value={values[f.key] ?? ''}
-          onChange={(e) => onChange(f.key, f.fieldType === 'number' ? (e.target.value === '' ? '' : Number(e.target.value)) : e.target.value)}
-        />
       </div>
     );
   };
@@ -908,8 +1033,10 @@ function CustomTemplateForm({
     <div className="space-y-4">
       {groups.map((g) => (
         <div key={g.name}>
-          <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">{g.name}</div>
-          <div className="grid md:grid-cols-3 gap-3">
+          {g.name !== 'General' && (
+            <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">{g.name}</div>
+          )}
+          <div className="space-y-2">
             {g.items.map((f) => (
               <div key={f.key}>{renderField(f)}</div>
             ))}

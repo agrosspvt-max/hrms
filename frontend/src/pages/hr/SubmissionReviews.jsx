@@ -348,13 +348,43 @@ function ProductFarmerPanel({ sub }) {
 /* ----------------- Generic custom-template panel ----------------- */
 function CustomResponsesPanel({ responses, fields }) {
   if (responses.length === 0) return <div className="text-xs text-slate-500 italic">No responses.</div>;
-  const byKey = Object.fromEntries(responses.map((r) => [r.key, r.value]));
+  // Phase 14: surface { value, status, remark } per row, with a
+  // status badge + remark below the value.  Legacy { key, value }
+  // rows render only the value (status/remark default to '').
+  const byKey = Object.fromEntries(responses.map((r) => [r.key, r]));
   const ordered = (fields || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
+  const STATUS_META = {
+    done:               { label: 'Done',     cls: 'bg-green-50 text-green-700' },
+    ongoing:            { label: 'Ongoing',  cls: 'bg-blue-50 text-blue-700' },
+    pending:            { label: 'Pending',  cls: 'bg-amber-50 text-amber-700' },
+    work_not_available: { label: 'Work N/A', cls: 'bg-slate-100 text-slate-600' },
+  };
   return (
-    <div className="grid md:grid-cols-3 gap-2">
-      {ordered.map((f) => (
-        <KV key={f.key} k={f.label || f.key} v={String(byKey[f.key] ?? '')} />
-      ))}
+    <div className="grid md:grid-cols-2 gap-2">
+      {ordered.map((f) => {
+        const row = byKey[f.key] || {};
+        const meta = STATUS_META[row.status];
+        return (
+          <div key={f.key} className="rounded border border-slate-200 px-3 py-2">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[10px] uppercase tracking-wide text-slate-500">{f.label || f.key}</div>
+                <div className="text-sm font-medium text-slate-800 break-all">
+                  {row.value === '' || row.value == null
+                    ? <span className="text-slate-400">—</span>
+                    : String(row.value)}
+                </div>
+              </div>
+              {meta && <span className={`badge ${meta.cls} text-[10px] whitespace-nowrap`}>{meta.label}</span>}
+            </div>
+            {row.remark && (
+              <div className="text-[11px] text-slate-600 mt-1">
+                <span className="font-semibold">Remark:</span> {row.remark}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -381,10 +381,21 @@ const submitOne = asyncHandler(async (req, res) => {
     // Build a working map from the incoming responses; respect
     // system-generated fields by overlaying their seeded values from sub.
     const incoming = {};
-    (customResponses || []).forEach((r) => { if (r && r.key) incoming[r.key] = r.value; });
+    const incomingMeta = {}; // Phase 14: per-key { status, remark }
+    (customResponses || []).forEach((r) => {
+      if (!r || !r.key) return;
+      incoming[r.key] = r.value;
+      incomingMeta[r.key] = {
+        status: r.status || '',
+        remark: typeof r.remark === 'string' ? r.remark : '',
+      };
+    });
     (sub.customResponses || []).forEach((r) => {
       const def = tpl.customFields.find((f) => f.key === r.key);
-      if (def && def.systemGenerated) incoming[r.key] = r.value;
+      if (def && def.systemGenerated) {
+        incoming[r.key] = r.value;
+        incomingMeta[r.key] = { status: r.status || '', remark: r.remark || '' };
+      }
     });
     // Validate: required + employee-editable fields must be present.
     for (const f of tpl.customFields) {
@@ -396,8 +407,26 @@ const submitOne = asyncHandler(async (req, res) => {
         throw new Error(`Required field missing: ${f.label}`);
       }
     }
+    // Phase 14: dependency + pending => remark is mandatory.  Mirrors
+    // the existing task / excel / sheet semantics so analytics can
+    // trust that every pending row carries a reason.
+    for (const f of tpl.customFields) {
+      const meta = incomingMeta[f.key];
+      if (!meta) continue;
+      if (meta.status === 'pending' && !(meta.remark || '').trim()) {
+        res.status(400);
+        throw new Error(`Pending reason is required for "${f.label}".`);
+      }
+    }
     const evaluated = computeAutoFields(tpl, incoming);
-    sub.customResponses = evaluated;
+    // Phase 14: re-attach status + remark per row.  computeAutoFields
+    // returns the canonical [{ key, value }] shape; we layer the
+    // incoming { status, remark } back on so the storage matches the
+    // new schema.
+    sub.customResponses = evaluated.map((row) => {
+      const meta = incomingMeta[row.key] || { status: '', remark: '' };
+      return { key: row.key, value: row.value, status: meta.status, remark: meta.remark };
+    });
     sub.customKind = tpl.customKind || sub.customKind || '';
     sub.markModified('customResponses');
 

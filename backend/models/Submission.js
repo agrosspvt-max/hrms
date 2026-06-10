@@ -210,11 +210,23 @@ const submissionSchema = new mongoose.Schema(
        at submit and stored alongside employee-entered values so analytics
        can read everything from one shape.  System-generated fields (e.g.
        yesterdayPending) are populated by the daily engine. */
+    /* Phase 14: per-field status + remark live alongside the value so
+       analytics can compute Done/Pending/W-N-A rates without a join.
+       Legacy submissions { key, value } resolve too -- status defaults
+       to '' (treated as "no status"), remark defaults to ''.
+       status enum mirrors the task statuses so analytics math stays
+       uniform across template kinds. */
     customResponses: {
       type: [new mongoose.Schema(
         {
-          key: { type: String, required: true },
-          value: { type: mongoose.Schema.Types.Mixed, default: '' },
+          key:    { type: String, required: true },
+          value:  { type: mongoose.Schema.Types.Mixed, default: '' },
+          status: {
+            type: String,
+            enum: ['', 'done', 'ongoing', 'pending', 'work_not_available'],
+            default: '',
+          },
+          remark: { type: String, default: '' },
         },
         { _id: false },
       )],

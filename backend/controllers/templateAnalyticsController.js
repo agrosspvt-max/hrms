@@ -175,6 +175,16 @@ const generate = asyncHandler(async (req, res) => {
   let extraTasksDone = 0, extraTasksPending = 0, extraTasksWNA = 0;
   const taskAgg = new Map();      // taskTitle -> { done, pending, wna }
   const extraByTitle = new Map(); // extra-work title -> { done, pending, wna, count }
+  // Phase 14: custom-template fields with supportsStatus carry status
+  // on customResponses[].status, not on tasks[].  Aggregate them into
+  // the same taskAgg map so Done/Pending/Work N/A counts work
+  // uniformly for both shapes.
+  const statusFieldByKey = new Map(
+    (tpl.customFields || [])
+      .filter((f) => f.supportsStatus)
+      .map((f) => [f.key, f]),
+  );
+
   for (const s of subs) {
     for (const t of (s.tasks || [])) {
       const key = (t.title || '').trim() || '(untitled)';
@@ -194,6 +204,20 @@ const generate = asyncHandler(async (req, res) => {
         else if (t.status === 'pending') { b.pending += 1; totalTasksPending += 1; }
         else if (t.status === 'work_not_available') { b.wna += 1; totalTasksWNA += 1; }
       }
+    }
+    // Phase 14: per-customField status aggregation.  Each
+    // status-supporting field contributes one row per submission to the
+    // task agg keyed by its label (or key).
+    for (const r of (s.customResponses || [])) {
+      const def = statusFieldByKey.get(r.key);
+      if (!def) continue;
+      const key = (def.label || def.key || '').trim() || '(untitled)';
+      if (!taskAgg.has(key)) taskAgg.set(key, { title: key, done: 0, pending: 0, wna: 0, ongoing: 0 });
+      const b = taskAgg.get(key);
+      if (r.status === 'done')                    { b.done += 1; totalTasksDone += 1; }
+      else if (r.status === 'ongoing')            { b.ongoing += 1; totalTasksOngoing += 1; }
+      else if (r.status === 'pending')            { b.pending += 1; totalTasksPending += 1; }
+      else if (r.status === 'work_not_available') { b.wna += 1; totalTasksWNA += 1; }
     }
   }
   const totalTaskRows = totalTasksDone + totalTasksOngoing + totalTasksPending + totalTasksWNA;
