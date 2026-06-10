@@ -31,15 +31,34 @@ const blankSheet = {
 // custom templates (e.g. Site Visit Report, Dealer Visit Report) by
 // either starting blank or cloning an existing custom template (such
 // as the seeded Daily Calling Report) as a starting point.
+// Phase 12: full visual builder.  Sub-templates + tasks live here; the
+// modal replaces the old metadata-only popup.
 const blankCustom = {
   templateType: 'custom',
   title: '',
   description: '',
   customKind: '',
+  analyticsName: '',
+  reviewFlow: 'direct_hr',
+  department: '',
   isActive: true,
+  subTemplates: [],
   customFields: [],
 };
 const FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
+// Phase 12: full set of supported value types for custom-template task fields.
+const CUSTOM_FIELD_TYPES = [
+  { value: 'number',     label: 'Number' },
+  { value: 'currency',   label: 'Currency (₹)' },
+  { value: 'percentage', label: 'Percentage (%)' },
+  { value: 'text',       label: 'Text' },
+  { value: 'textarea',   label: 'Long Text' },
+  { value: 'yes_no',     label: 'Yes / No' },
+  { value: 'dropdown',   label: 'Dropdown' },
+  { value: 'date',       label: 'Date' },
+  { value: 'time',       label: 'Time' },
+  { value: 'auto',       label: 'Auto-Calculated (formula)' },
+];
 
 /* Scoring helpers shared across the sheet builder */
 const scoreKey = (s) =>
@@ -95,14 +114,24 @@ export default function Templates({ embedded = false } = {}) {
     setModal({ mode: 'create', data: JSON.parse(JSON.stringify(base)) });
   };
 
-  // Clone a template: copies the source's structure into a new draft so
-  // HR doesn't start from scratch.  Satisfies the Phase-1 "Clone
-  // Templates" requirement for every template type.
-  const startClone = (t) => {
-    const data = JSON.parse(JSON.stringify(t));
-    delete data._id; delete data.createdAt; delete data.updatedAt;
-    data.title = `${data.title || 'Untitled'} (Copy)`;
-    setModal({ mode: 'create', data });
+  // Clone a template.  Phase 12: routes through the backend clone
+  // endpoint so sub-templates get fresh ObjectIds and the customFields'
+  // subTemplateId refs are remapped to the new ids.  Falls back to the
+  // legacy client-side copy if the API isn't available so older
+  // template types keep working.
+  const startClone = async (t) => {
+    try {
+      const { data } = await api.post(`/templates/${t._id}/clone`);
+      await load();
+      toast.success('Template cloned');
+      setModal({ mode: 'edit', data });
+    } catch (err) {
+      // Fallback for older backends.
+      const data = JSON.parse(JSON.stringify(t));
+      delete data._id; delete data.createdAt; delete data.updatedAt;
+      data.title = `${data.title || 'Untitled'} (Copy)`;
+      setModal({ mode: 'create', data });
+    }
   };
 
   return (
@@ -299,68 +328,364 @@ function CustomFieldsPreview({ tpl }) {
   );
 }
 
+/* ------------------------------------------------------------------ */
+/* Phase 12: Custom Template Builder                                  */
+/* ------------------------------------------------------------------ */
 function CustomTemplateForm({ modal, setModal, onSave }) {
   const form = modal.data;
   const set = (k, v) => setModal({ ...modal, data: { ...form, [k]: v } });
+  const [departments, setDepartments] = useState([]);
+  useEffect(() => {
+    api.get('/departments').then((r) => setDepartments(r.data || [])).catch(() => setDepartments([]));
+  }, []);
+
+  // Stable temporary id for newly-created sub-templates so customFields
+  // can reference them before the row hits the database.
+  const _newSubId = () => `tmp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+  const subs = form.subTemplates || [];
+  const fields = form.customFields || [];
+
+  const addSubTemplate = () => {
+    set('subTemplates', [...subs, { _id: _newSubId(), name: '', description: '', isActive: true, order: subs.length * 10 }]);
+  };
+  const updateSubTemplate = (id, patch) => {
+    set('subTemplates', subs.map((s) => (String(s._id) === String(id) ? { ...s, ...patch } : s)));
+  };
+  const removeSubTemplate = (id) => {
+    if (!confirm('Delete this sub-template and unlink all its tasks? Tasks will be moved back to "Template root".')) return;
+    set('subTemplates', subs.filter((s) => String(s._id) !== String(id)));
+    // Re-parent any field that referenced this sub-template.
+    set('customFields', fields.map((f) => (String(f.subTemplateId || '') === String(id) ? { ...f, subTemplateId: '' } : f)));
+  };
+
+  const _maxOrderIn = (subId) => fields
+    .filter((f) => String(f.subTemplateId || '') === String(subId || ''))
+    .reduce((m, f) => Math.max(m, Number(f.order) || 0), 0);
+
+  const addField = (subId = '') => {
+    const next = [...fields, {
+      key: '',
+      label: '',
+      fieldType: 'number',
+      required: false,
+      options: [],
+      group: '',
+      description: '',
+      formula: '',
+      systemGenerated: false,
+      visibleTo: ['employee', 'hod', 'hr', 'super_admin'],
+      order: _maxOrderIn(subId) + 10,
+      subTemplateId: subId || '',
+      supportsStatus: false,
+      supportsRemark: true,
+      dependencyType: 'independent',
+      isAnalyticsEligible: true,
+    }];
+    set('customFields', next);
+  };
+  const updateField = (idx, patch) => {
+    set('customFields', fields.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
+  };
+  const removeField = (idx) => set('customFields', fields.filter((_, i) => i !== idx));
+  // Move a field up / down WITHIN its sub-template scope.
+  const moveField = (idx, dir) => {
+    const f = fields[idx]; if (!f) return;
+    const sib = fields
+      .map((x, i) => ({ x, i }))
+      .filter(({ x }) => String(x.subTemplateId || '') === String(f.subTemplateId || ''));
+    const pos = sib.findIndex(({ i }) => i === idx);
+    const swapAt = pos + (dir === 'up' ? -1 : 1);
+    if (swapAt < 0 || swapAt >= sib.length) return;
+    const a = sib[pos].i, b = sib[swapAt].i;
+    const next = fields.slice();
+    [next[a], next[b]] = [next[b], next[a]];
+    // Re-stamp order field so the backend persists the sequence.
+    let counter = 10;
+    set('customFields', next.map((x) => {
+      if (String(x.subTemplateId || '') !== String(f.subTemplateId || '')) return x;
+      return { ...x, order: (counter += 10) };
+    }));
+  };
+
+  // Group fields for the UI: { 'root': [...], subId: [...] }.
+  const groupedFields = (() => {
+    const root = [];
+    const bySub = new Map();
+    fields.forEach((f, idx) => {
+      const sid = String(f.subTemplateId || '');
+      if (!sid) root.push({ ...f, __idx: idx });
+      else {
+        if (!bySub.has(sid)) bySub.set(sid, []);
+        bySub.get(sid).push({ ...f, __idx: idx });
+      }
+    });
+    return { root, bySub };
+  })();
+
+  const titleMissing = !(form.title || '').trim();
+  const fieldsValid = fields.every((f) => (f.key || '').trim() && (f.label || '').trim());
+
   return (
     <Modal
       open
-      size="lg"
+      size="xl"
       onClose={() => setModal(null)}
       title={modal.mode === 'create' ? 'Create Custom Assignment Template' : `Edit ${form.title || 'Custom Template'}`}
       footer={<>
         <button className="btn-secondary" onClick={() => setModal(null)}>Cancel</button>
-        <button className="btn-primary" onClick={() => onSave(form)}>Save</button>
+        <button className="btn-primary" disabled={titleMissing || !fieldsValid} onClick={() => onSave(form)}>Save</button>
       </>}
     >
-      <div className="space-y-3">
-        <div className="rounded-lg bg-indigo-50 border border-indigo-100 p-3 text-[12px] text-indigo-800">
-          Custom Assignments are field-driven reports (Calling, Site Visit, Dealer Visit, Dispatch, etc.) with auto-calculated KPIs.
-          The visual <b>field builder</b> ships in a follow-up; for now you can edit metadata and clone existing custom templates
-          (use <b>Clone</b> on a row) to inherit their field structure.
-        </div>
-        <div className="grid md:grid-cols-2 gap-3">
-          <div>
-            <label className="label">Title</label>
-            <input className="input" value={form.title || ''} onChange={(e) => set('title', e.target.value)} placeholder="e.g. Daily Calling Report" />
-          </div>
-          <div>
-            <label className="label">Analytics Kind</label>
-            <input
-              className="input"
-              value={form.customKind || ''}
-              onChange={(e) => set('customKind', e.target.value.trim().toLowerCase())}
-              placeholder="e.g. calling, site_visit, dealer_visit"
-            />
-            <div className="text-[11px] text-slate-500 mt-1">Used by Performance Analytics to discover this template's data.</div>
-          </div>
-        </div>
-        <div>
-          <label className="label">Description</label>
-          <textarea
-            className="input"
-            rows={2}
-            value={form.description || ''}
-            onChange={(e) => set('description', e.target.value)}
-            placeholder="Short description for HR and employees"
-          />
-        </div>
-        <label className="flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={form.isActive !== false} onChange={(e) => set('isActive', e.target.checked)} />
-          Active (assignable to employees)
-        </label>
-        {(form.customFields || []).length > 0 && (
-          <>
-            <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide pt-2">
-              Fields ({(form.customFields || []).length}) — read-only preview
+      <div className="space-y-5">
+        {/* ----- Metadata ----- */}
+        <Section title="Template Settings">
+          <div className="grid md:grid-cols-2 gap-3">
+            <div>
+              <label className="label">Template Name *</label>
+              <input className="input" value={form.title || ''} onChange={(e) => set('title', e.target.value)} placeholder="e.g. Accounts Template" />
             </div>
-            <CustomFieldsPreview tpl={form} />
-          </>
-        )}
+            <div>
+              <label className="label">Analytics Name</label>
+              <input
+                className="input"
+                value={form.analyticsName || ''}
+                onChange={(e) => set('analyticsName', e.target.value)}
+                placeholder={`Auto: "${(form.title || '').replace(/\s*(Template|Report|Form)s?\s*$/i, '')} Analytics"`}
+              />
+              <div className="text-[11px] text-slate-500 mt-1">Defaults to "(Name) Analytics" if blank.</div>
+            </div>
+            <div>
+              <label className="label">Department</label>
+              <select className="input" value={form.department || ''} onChange={(e) => set('department', e.target.value)}>
+                <option value="">— Global (all departments) —</option>
+                {departments.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
+              </select>
+              <div className="text-[11px] text-slate-500 mt-1">HOD analytics view shows only their department's templates.</div>
+            </div>
+            <div>
+              <label className="label">Review Flow</label>
+              <select className="input" value={form.reviewFlow || 'direct_hr'} onChange={(e) => set('reviewFlow', e.target.value)}>
+                <option value="direct_hr">Employee → HR</option>
+                <option value="hod_first">Employee → HOD → HR</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Analytics Kind (legacy)</label>
+              <input
+                className="input"
+                value={form.customKind || ''}
+                onChange={(e) => set('customKind', e.target.value.trim().toLowerCase())}
+                placeholder="e.g. calling, product_farmer"
+              />
+              <div className="text-[11px] text-slate-500 mt-1">Optional. Reserved values: <code>calling</code>, <code>product_farmer</code>.</div>
+            </div>
+            <div>
+              <label className="label">Status</label>
+              <label className="flex items-center gap-2 text-sm input bg-white">
+                <input type="checkbox" checked={form.isActive !== false} onChange={(e) => set('isActive', e.target.checked)} />
+                Active (assignable to employees)
+              </label>
+            </div>
+          </div>
+          <div className="mt-3">
+            <label className="label">Description</label>
+            <textarea
+              className="input"
+              rows={2}
+              value={form.description || ''}
+              onChange={(e) => set('description', e.target.value)}
+              placeholder="Short description for HR and employees"
+            />
+          </div>
+        </Section>
+
+        {/* ----- Sub-templates ----- */}
+        <Section
+          title={`Sub-Templates (${subs.length})`}
+          right={<button className="btn-secondary !py-1 !text-xs" type="button" onClick={addSubTemplate}>+ Add Sub-Template</button>}
+        >
+          {subs.length === 0 ? (
+            <div className="text-xs text-slate-500 italic">No sub-templates yet — every task you add will live in the template root. Sub-templates let you group tasks (Billing / Collections / Ledger / Reconciliation, etc.) and assign just one sub-template to an employee.</div>
+          ) : (
+            <div className="space-y-2">
+              {subs.map((s) => (
+                <div key={s._id} className="rounded-lg border border-slate-200 p-2.5 bg-slate-50/40 space-y-2">
+                  <div className="grid grid-cols-12 gap-2">
+                    <div className="col-span-4">
+                      <label className="label text-[10px] uppercase">Sub-Template Name</label>
+                      <input className="input" value={s.name} onChange={(e) => updateSubTemplate(s._id, { name: e.target.value })} placeholder="e.g. Billing" />
+                    </div>
+                    <div className="col-span-6">
+                      <label className="label text-[10px] uppercase">Description</label>
+                      <input className="input" value={s.description || ''} onChange={(e) => updateSubTemplate(s._id, { description: e.target.value })} placeholder="Optional" />
+                    </div>
+                    <div className="col-span-2 flex items-end justify-end">
+                      <label className="flex items-center gap-1 text-xs"><input type="checkbox" checked={s.isActive !== false} onChange={(e) => updateSubTemplate(s._id, { isActive: e.target.checked })} /> Active</label>
+                      <button type="button" className="btn-ghost text-red-600 !px-2" onClick={() => removeSubTemplate(s._id)}>✕</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </Section>
+
+        {/* ----- Task / Field builder, grouped by sub-template ----- */}
+        <Section title={`Tasks / Fields (${fields.length})`}>
+          <FieldsGroup
+            label="Template root"
+            subId=""
+            entries={groupedFields.root}
+            onAdd={() => addField('')}
+            onUpdate={updateField}
+            onRemove={removeField}
+            onMove={moveField}
+            disabled={subs.length > 0 && groupedFields.root.length === 0}
+          />
+          {subs.map((s) => (
+            <FieldsGroup
+              key={s._id}
+              label={s.name || '(unnamed sub-template)'}
+              subId={s._id}
+              entries={groupedFields.bySub.get(String(s._id)) || []}
+              onAdd={() => addField(s._id)}
+              onUpdate={updateField}
+              onRemove={removeField}
+              onMove={moveField}
+            />
+          ))}
+        </Section>
       </div>
     </Modal>
   );
 }
+
+function Section({ title, right, children }) {
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white">
+      <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+        <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide">{title}</div>
+        {right}
+      </div>
+      <div className="p-3">{children}</div>
+    </div>
+  );
+}
+
+function FieldsGroup({ label, subId, entries, onAdd, onUpdate, onRemove, onMove, disabled }) {
+  return (
+    <div className="mb-3 last:mb-0">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="text-[11px] font-semibold text-slate-700 uppercase">{label} <span className="text-slate-400 font-normal">· {entries.length} task(s)</span></div>
+        <button type="button" className="btn-ghost !text-xs !py-0.5" onClick={onAdd} disabled={disabled}>+ Add Task</button>
+      </div>
+      {entries.length === 0 ? (
+        <div className="text-[11px] text-slate-400 italic px-2">No tasks yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {entries.map((f, i) => (
+            <TaskFieldRow
+              key={f.__idx}
+              field={f}
+              isFirst={i === 0}
+              isLast={i === entries.length - 1}
+              onPatch={(p) => onUpdate(f.__idx, p)}
+              onRemove={() => onRemove(f.__idx)}
+              onMove={(dir) => onMove(f.__idx, dir)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove }) {
+  const f = field;
+  return (
+    <div className="rounded-lg border border-slate-200 p-2.5 bg-slate-50/40 space-y-2">
+      <div className="grid grid-cols-12 gap-2">
+        <div className="col-span-3">
+          <label className="label text-[10px] uppercase">Work Name *</label>
+          <input className="input" value={f.label} onChange={(e) => {
+            const label = e.target.value;
+            const next = { label };
+            // Auto-derive a stable key from the label for newly-added rows.
+            if (!f.key || f.key === _slug(f.__lastLabel || '')) {
+              next.key = _slug(label);
+              next.__lastLabel = label;
+            }
+            onPatch(next);
+          }} placeholder="e.g. Bills Generated Within 1 Hour" />
+        </div>
+        <div className="col-span-2">
+          <label className="label text-[10px] uppercase">Field Key *</label>
+          <input className="input" value={f.key} onChange={(e) => onPatch({ key: _slug(e.target.value) })} placeholder="auto" />
+        </div>
+        <div className="col-span-2">
+          <label className="label text-[10px] uppercase">Value Type</label>
+          <select className="input" value={f.fieldType} onChange={(e) => onPatch({ fieldType: e.target.value })}>
+            {CUSTOM_FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+        </div>
+        <div className="col-span-2">
+          <label className="label text-[10px] uppercase">Dependency</label>
+          <select className="input" value={f.dependencyType || 'independent'} onChange={(e) => onPatch({ dependencyType: e.target.value })}>
+            <option value="independent">Independent</option>
+            <option value="dependent">Dependent</option>
+          </select>
+        </div>
+        <div className="col-span-2">
+          <label className="label text-[10px] uppercase">Group</label>
+          <input className="input" value={f.group || ''} onChange={(e) => onPatch({ group: e.target.value })} placeholder="(optional)" />
+        </div>
+        <div className="col-span-1 flex items-end justify-end gap-1">
+          <button type="button" className="btn-ghost !px-1.5 !py-0.5 text-xs" disabled={isFirst} onClick={() => onMove('up')} title="Move up">↑</button>
+          <button type="button" className="btn-ghost !px-1.5 !py-0.5 text-xs" disabled={isLast}  onClick={() => onMove('down')} title="Move down">↓</button>
+          <button type="button" className="btn-ghost text-red-600 !px-1.5 !py-0.5 text-xs" onClick={onRemove} title="Remove">✕</button>
+        </div>
+      </div>
+      <div className="grid grid-cols-12 gap-2">
+        <div className="col-span-12">
+          <label className="label text-[10px] uppercase">Description (shown read-only on employee form)</label>
+          <input className="input" value={f.description || ''} onChange={(e) => onPatch({ description: e.target.value })} placeholder="Optional helper text" />
+        </div>
+      </div>
+      <div className="flex items-center gap-4 flex-wrap text-xs text-slate-700">
+        <label className="flex items-center gap-1"><input type="checkbox" checked={!!f.required}             onChange={(e) => onPatch({ required: e.target.checked })} /> Required</label>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={!!f.supportsStatus}       onChange={(e) => onPatch({ supportsStatus: e.target.checked })} /> Status enabled (Done / Pending / Work N/A)</label>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={f.supportsRemark !== false} onChange={(e) => onPatch({ supportsRemark: e.target.checked })} /> Remark enabled</label>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={f.isAnalyticsEligible !== false} onChange={(e) => onPatch({ isAnalyticsEligible: e.target.checked })} /> Show on analytics</label>
+        <label className="flex items-center gap-1"><input type="checkbox" checked={!!f.systemGenerated}      onChange={(e) => onPatch({ systemGenerated: e.target.checked })} /> System-generated (carry-forward)</label>
+      </div>
+      {f.fieldType === 'auto' && (
+        <div>
+          <label className="label text-[10px] uppercase">Formula</label>
+          <input className="input font-mono text-xs" value={f.formula || ''} onChange={(e) => onPatch({ formula: e.target.value })} placeholder="e.g. assignedCalls - todayCallsCompleted" />
+          <div className="text-[10px] text-slate-500 mt-1">Reference other field keys with arithmetic only (+, -, *, /, parentheses). No function calls.</div>
+        </div>
+      )}
+      {f.fieldType === 'dropdown' && (
+        <div>
+          <label className="label text-[10px] uppercase">Dropdown Options (one per line)</label>
+          <textarea
+            className="input font-mono text-xs"
+            rows={2}
+            value={(f.options || []).join('\n')}
+            onChange={(e) => onPatch({ options: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) })}
+            placeholder={'Option A\nOption B\nOption C'}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+const _slug = (s) => String(s || '').trim().replace(/[^a-zA-Z0-9]+/g, ' ').trim()
+  .split(' ').filter(Boolean)
+  .map((w, i) => i === 0 ? w.toLowerCase() : w[0].toUpperCase() + w.slice(1).toLowerCase())
+  .join('');
 
 function TaskPreview({ tasks }) {
   return (

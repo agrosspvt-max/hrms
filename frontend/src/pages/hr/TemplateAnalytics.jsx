@@ -159,12 +159,59 @@ export default function TemplateAnalytics() {
       {loading || !data ? <Loader /> : (
         <div className="space-y-6">
           <OverviewCards data={data} />
+          <SubTemplatesSection subTemplates={data.subTemplates || []} />
           <FieldsSection fields={data.fields || []} />
           <TasksSection tasks={data.tasks || []} />
           <EmployeePerformanceSection perf={data.employeePerformance || {}} />
           <ExtraWorkSection extra={data.extraWork || {}} />
         </div>
       )}
+    </div>
+  );
+}
+
+/* =================================================================== */
+/* SUB-TEMPLATE BREAKDOWN                                               */
+/* =================================================================== */
+function SubTemplatesSection({ subTemplates }) {
+  if (!subTemplates || subTemplates.length === 0) return null;
+  return (
+    <div>
+      <div className="text-sm font-semibold text-slate-800 mb-2">Sub-Template Comparison</div>
+      <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {subTemplates.map((s) => (
+          <div key={s._id} className="card overflow-hidden">
+            <div className="px-4 py-2 border-b border-slate-100 bg-slate-50">
+              <div className="font-semibold text-slate-800">{s.name || '(unnamed)'}</div>
+              {s.description && <div className="text-[11px] text-slate-500">{s.description}</div>}
+            </div>
+            <div className="p-3 space-y-3">
+              <div className="grid grid-cols-3 gap-2">
+                <StatCard label="Done %"    value={`${s.overview.donePct ?? 0}%`}    accent="green" />
+                <StatCard label="Pending %" value={`${s.overview.pendingPct ?? 0}%`} accent="red" />
+                <StatCard label="W/N A %"   value={`${s.overview.wnaPct ?? 0}%`}     accent="amber" />
+              </div>
+              {s.fields && s.fields.length > 0 && (
+                <table className="w-full text-xs">
+                  <thead className="text-[10px] text-slate-500 uppercase">
+                    <tr><th className="text-left">Field</th><th className="text-right">Total</th><th className="text-right">Avg</th><th className="text-right">Max</th></tr>
+                  </thead>
+                  <tbody>
+                    {s.fields.map((f) => (
+                      <tr key={f.key} className="border-t border-slate-100">
+                        <td className="py-0.5 text-slate-700">{f.label}</td>
+                        <td className="py-0.5 text-right font-medium">{f.total}</td>
+                        <td className="py-0.5 text-right">{f.avg}</td>
+                        <td className="py-0.5 text-right">{f.max}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

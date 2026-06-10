@@ -163,32 +163,66 @@ const customFieldSchema = new mongoose.Schema(
     label: { type: String, required: true, trim: true }, // HR-facing display name
     fieldType: {
       type: String,
-      enum: ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date'],
+      // Phase 12: 'currency' / 'percentage' / 'yes_no' / 'time' are
+      // first-class display variants.  Numeric math treats currency +
+      // percentage exactly like 'number'; yes_no is a 2-option
+      // dropdown; time accepts HH:MM strings.
+      enum: ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date', 'currency', 'percentage', 'yes_no', 'time'],
       default: 'number',
     },
     required: { type: Boolean, default: false },
     options: { type: [String], default: [] }, // dropdown options
     group: { type: String, default: '' },     // visually groups fields in the form
     description: { type: String, default: '' },
-    // Auto-calculated formula: a JS-like expression over other field
-    // keys, e.g. "yesterdayCallsCompleted + todayCallsCompleted".  Only
-    // arithmetic + parentheses are supported by the evaluator -- no
-    // function calls, no property access.
     formula: { type: String, default: '' },
-    // System-managed fields (e.g. yesterdayPending) are populated by the
-    // daily engine on submission creation and are never employee-edited.
     systemGenerated: { type: Boolean, default: false },
-    // Role visibility: which roles can SEE this field's value.  Hidden
-    // fields still get computed server-side; they just don't render.
     visibleTo: {
       type: [String],
       enum: ['employee', 'hod', 'hr', 'super_admin'],
       default: ['employee', 'hod', 'hr', 'super_admin'],
     },
-    // Display ordering inside the form / report.
     order: { type: Number, default: 0 },
+
+    /* ---- Phase 12: builder UI flags + sub-template membership ----
+       All optional and default to behaviour the existing flow already
+       provides, so legacy templates render unchanged.
+
+         subTemplateId       Which sub-template this field belongs to.
+                             Empty / null = template root (the legacy
+                             flat structure).
+         supportsStatus      Render a Done / Pending / Work N/A picker
+                             alongside this field on the employee form.
+         supportsRemark      Show a remark text field alongside.
+         dependencyType      'independent' (default) or 'dependent'.
+                             Drives dependency hand-off semantics like
+                             task templates.
+         isAnalyticsEligible Surface this field on the Dynamic Analytics
+                             page.  Defaults to true for numeric types.
+    */
+    subTemplateId:       { type: String, default: '' },
+    supportsStatus:      { type: Boolean, default: false },
+    supportsRemark:      { type: Boolean, default: false },
+    dependencyType:      { type: String, enum: ['independent', 'dependent'], default: 'independent' },
+    isAnalyticsEligible: { type: Boolean, default: true },
   },
   { _id: false }
+);
+
+/* ------------------------------------------------------------------ */
+/* Phase 12: sub-templates                                            */
+/* A template may contain zero or more sub-templates.  Each holds its */
+/* own set of customFields (selected via customField.subTemplateId).  */
+/* Assignment.subTemplateId optionally scopes the daily submission to */
+/* a single sub-template; no scoping = entire template.                */
+/* ------------------------------------------------------------------ */
+const subTemplateSchema = new mongoose.Schema(
+  {
+    name:        { type: String, required: true, trim: true },
+    description: { type: String, default: '' },
+    isActive:    { type: Boolean, default: true },
+    order:       { type: Number, default: 0 },
+  },
+  { _id: true },
 );
 
 const templateSchema = new mongoose.Schema(
@@ -249,6 +283,10 @@ const templateSchema = new mongoose.Schema(
     department:    { type: mongoose.Schema.Types.ObjectId, ref: 'Department', index: true },
     analyticsName: { type: String, default: '', trim: true },
     reviewFlow:    { type: String, enum: ['direct_hr', 'hod_first'], default: 'direct_hr' },
+
+    // Phase 12: sub-templates the builder UI manages.  Fields are
+    // grouped under each sub-template via customField.subTemplateId.
+    subTemplates:  { type: [subTemplateSchema], default: [] },
 
     // Lifecycle toggle so HR can deactivate templates without deleting.
     isActive: { type: Boolean, default: true },

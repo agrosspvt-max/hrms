@@ -157,15 +157,20 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
     let customKind = '';
     if (tplType === 'custom') {
       customKind = a.template.customKind || '';
-      // For every defined custom field, seed an entry on the new
-      // submission.  System-generated fields default to 0 / '' here and
-      // get populated below from the prior submission.
-      freshCustom = (a.template.customFields || [])
+      // Phase 12: when the assignment is scoped to a single sub-template,
+      // only seed customResponses for that sub-template's fields.  Empty
+      // scope (the legacy default) seeds the entire template -- so old
+      // assignments behave exactly as before.
+      const wantSubId = a.subTemplateId || '';
+      const fieldsForScope = (a.template.customFields || []).filter((f) =>
+        !wantSubId || String(f.subTemplateId || '') === String(wantSubId),
+      );
+      freshCustom = fieldsForScope
         .slice()
         .sort((x, y) => (x.order || 0) - (y.order || 0))
         .map((f) => ({
           key: f.key,
-          value: f.fieldType === 'number' ? 0 : '',
+          value: f.fieldType === 'number' || f.fieldType === 'currency' || f.fieldType === 'percentage' ? 0 : '',
         }));
 
       // Carry-forward: for the well-known Calling kind, copy the prior

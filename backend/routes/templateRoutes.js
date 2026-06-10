@@ -18,5 +18,7 @@ router.get('/:id', c.get);
 router.post('/', authorize('hr'), c.create);
 router.put('/:id', authorize('hr'), c.update);
 router.delete('/:id', authorize('hr'), c.remove);
+// Phase 12: clone a template (duplicates fields + sub-templates + metadata).
+router.post('/:id/clone', authorize('hr'), c.clone);
 
 module.exports = router;

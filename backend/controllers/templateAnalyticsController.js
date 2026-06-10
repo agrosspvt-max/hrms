@@ -402,12 +402,75 @@ const generate = asyncHandler(async (req, res) => {
     byTitle: extraTypes,
   };
 
+  /* =================================================================
+   * SUB-TEMPLATE BREAKDOWN (Phase 12)
+   *
+   * For every sub-template defined on the parent template, emit a
+   * mini-block of overview KPIs + per-field totals so the analytics
+   * UI can compare sub-templates side by side.  Heavy-lifting reuses
+   * the same per-field math; we just bucket by subTemplateId.
+   * ================================================================= */
+  const subTemplates = [];
+  const subTemplateDefs = Array.isArray(tpl.subTemplates) ? tpl.subTemplates : [];
+  for (const sub of subTemplateDefs) {
+    const subFieldDefs = (tpl.customFields || []).filter((f) => String(f.subTemplateId || '') === String(sub._id));
+    const subNumeric = subFieldDefs.filter((f) => NUMERIC_TYPES.has(f.fieldType));
+    const subFields = [];
+    for (const f of subNumeric) {
+      let total = 0, count = 0, min = Infinity, max = -Infinity;
+      for (const s of subs) {
+        const row = (s.customResponses || []).find((r) => r.key === f.key);
+        if (!row) continue;
+        const v = Number(row.value);
+        if (!Number.isFinite(v)) continue;
+        total += v; count += 1;
+        if (v < min) min = v; if (v > max) max = v;
+      }
+      if (!Number.isFinite(min)) min = 0;
+      if (!Number.isFinite(max)) max = 0;
+      subFields.push({
+        key: f.key, label: f.label || f.key, fieldType: f.fieldType,
+        total: round2(total), avg: count > 0 ? round2(total / count) : 0,
+        min: round2(min), max: round2(max), count,
+      });
+    }
+    // Sub-template task aggregation (only count fields with status enabled
+    // OR any tasks whose title looks like one of the sub-template's fields).
+    let subDone = 0, subPending = 0, subWNA = 0;
+    for (const s of subs) {
+      for (const t of (s.tasks || [])) {
+        if (t.addedByEmployee) continue;
+        // Cross-reference: when a customField with supportsStatus exists
+        // in this sub-template AND a task.title matches its label,
+        // attribute that task to the sub-template.
+        const match = subFieldDefs.find((f) => (f.label || '') === (t.title || ''));
+        if (!match) continue;
+        if (t.status === 'done' || t.status === 'ongoing') subDone += 1;
+        else if (t.status === 'pending') subPending += 1;
+        else if (t.status === 'work_not_available') subWNA += 1;
+      }
+    }
+    const subTaskTotal = subDone + subPending + subWNA;
+    subTemplates.push({
+      _id: sub._id, name: sub.name, description: sub.description,
+      fieldCount: subFieldDefs.length,
+      overview: {
+        donePct:    safePct(subDone, subTaskTotal),
+        pendingPct: safePct(subPending, subTaskTotal),
+        wnaPct:     safePct(subWNA, subTaskTotal),
+        taskRows: subTaskTotal,
+      },
+      fields: subFields,
+    });
+  }
+
   res.json({
     template: {
       _id: tpl._id, title: tpl.title,
       analyticsName: tpl.analyticsName || `${tpl.title} Analytics`,
       templateType: tpl.templateType, customKind: tpl.customKind || '',
       fields: numericFields.map((f) => ({ key: f.key, label: f.label, fieldType: f.fieldType })),
+      subTemplates: subTemplateDefs.map((s) => ({ _id: s._id, name: s.name, description: s.description })),
     },
     range: { from: formatYMD(from), to: formatYMD(addDays(to, -1)) },
     overview,
@@ -415,6 +478,7 @@ const generate = asyncHandler(async (req, res) => {
     tasks,
     employeePerformance,
     extraWork,
+    subTemplates,
   });
 });
 

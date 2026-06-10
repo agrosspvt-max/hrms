@@ -108,8 +108,19 @@ const get = asyncHandler(async (req, res) => {
  * Normalise the incoming body so we never persist a mismatched shape -
  * task templates shouldn't carry excel columns, and vice-versa.
  */
-const CUSTOM_FIELD_TYPES = ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date'];
+// Phase 12: extended fieldType set + new builder UI flags.
+const CUSTOM_FIELD_TYPES = ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date', 'currency', 'percentage', 'yes_no', 'time'];
 const CUSTOM_VISIBLE_ROLES = ['employee', 'hod', 'hr', 'super_admin'];
+const DEP_TYPES = ['independent', 'dependent'];
+const REVIEW_FLOWS = ['direct_hr', 'hod_first'];
+
+// Auto-derive analyticsName when blank: "Calling Report" -> "Calling Analytics".
+const _deriveAnalyticsName = (title) => {
+  const t = String(title || '').trim();
+  if (!t) return '';
+  const stripped = t.replace(/\s*(Template|Report|Form)s?\s*$/i, '');
+  return `${stripped} Analytics`;
+};
 
 const normalisePayload = (body) => {
   const type = ['excel', 'sheet', 'custom'].includes(body.templateType) ? body.templateType : 'task';
@@ -156,13 +167,33 @@ const normalisePayload = (body) => {
         ? f.visibleTo.filter((r) => CUSTOM_VISIBLE_ROLES.includes(r))
         : CUSTOM_VISIBLE_ROLES.slice(),
       order: Number(f.order) || 0,
+      // Phase 12 builder fields (all optional / default-safe).
+      subTemplateId:       String(f.subTemplateId || '').trim(),
+      supportsStatus:      !!f.supportsStatus,
+      supportsRemark:      !!f.supportsRemark,
+      dependencyType:      DEP_TYPES.includes(f.dependencyType) ? f.dependencyType : 'independent',
+      isAnalyticsEligible: f.isAnalyticsEligible !== false,
     })).filter((f) => f.key && f.label);
-    // Preserve opt-in sub-tables (productSales / farmerRecords / future
-    // additions).  Earlier revisions dropped this from the PUT payload --
-    // any edit to the Product & Farmer Report then "erased" the report.
     out.customSections = Array.isArray(body.customSections)
       ? body.customSections.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim())
       : [];
+    // Phase 12 sub-templates.  Each entry: { _id?, name, description, isActive, order }.
+    out.subTemplates = Array.isArray(body.subTemplates)
+      ? body.subTemplates.map((s) => ({
+          _id:  s._id || undefined,
+          name: String(s.name || '').trim(),
+          description: String(s.description || '').trim(),
+          isActive: s.isActive !== false,
+          order: Number(s.order) || 0,
+        })).filter((s) => s.name)
+      : [];
+    out.analyticsName = String(body.analyticsName || '').trim() || _deriveAnalyticsName(body.title);
+    out.reviewFlow    = REVIEW_FLOWS.includes(body.reviewFlow) ? body.reviewFlow : 'direct_hr';
+    if (body.department && /^[a-f0-9]{24}$/i.test(String(body.department))) {
+      out.department = body.department;
+    } else {
+      out.department = null;
+    }
   }
   return out;
 };
@@ -230,4 +261,45 @@ const sheetParse = asyncHandler(async (req, res) => {
   }
 });
 
-module.exports = { list, get, create, update, remove, excelParse, sheetParse };
+/**
+ * POST /api/templates/:id/clone
+ *
+ * Phase 12: duplicate everything that defines a template -- title +
+ * customFields + subTemplates + customSections + customKind +
+ * reviewFlow + analyticsName + department + tasks / excelColumns /
+ * sheet -- so HR can fork a working template and tweak the copy.
+ * Returns the new doc; the UI opens it for editing.
+ */
+const clone = asyncHandler(async (req, res) => {
+  const src = await Template.findById(req.params.id).lean();
+  if (!src) { res.status(404); throw new Error('Template not found'); }
+  // Strip Mongo internals.
+  delete src._id; delete src.createdAt; delete src.updatedAt; delete src.__v;
+  // Re-stamp ownership + uniqueify the visible title.
+  src.title         = `${src.title} (Copy)`;
+  src.analyticsName = src.analyticsName ? `${src.analyticsName} (Copy)` : '';
+  src.createdBy     = req.user._id;
+  // For sub-templates we drop the _id so Mongoose mints a fresh one --
+  // otherwise the new template would carry the original sub-template
+  // ids, which would break cross-reference if HR later edits the original.
+  if (Array.isArray(src.subTemplates)) {
+    // Map old subTemplateId -> new id so customFields stay attached.
+    const idMap = new Map();
+    src.subTemplates = src.subTemplates.map((s) => {
+      const newId = new (require('mongoose').Types.ObjectId)();
+      idMap.set(String(s._id), String(newId));
+      return { ...s, _id: newId };
+    });
+    if (Array.isArray(src.customFields)) {
+      src.customFields = src.customFields.map((f) => (
+        f.subTemplateId && idMap.has(String(f.subTemplateId))
+          ? { ...f, subTemplateId: idMap.get(String(f.subTemplateId)) }
+          : f
+      ));
+    }
+  }
+  const created = await Template.create(src);
+  res.status(201).json(created);
+});
+
+module.exports = { list, get, create, update, remove, excelParse, sheetParse, clone };

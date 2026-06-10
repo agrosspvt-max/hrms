@@ -7,6 +7,11 @@ const mongoose = require('mongoose');
 const assignmentSchema = new mongoose.Schema(
   {
     template: { type: mongoose.Schema.Types.ObjectId, ref: 'Template', required: true },
+    // Phase 12: optional sub-template scoping.  When set, the daily
+    // engine only seeds fields belonging to that sub-template (the
+    // employee sees a single sub-template's tasks instead of the
+    // entire template).  Empty = whole template.
+    subTemplateId: { type: String, default: '' },
 
     targetType: {
       type: String,
