@@ -161,6 +161,7 @@ export default function TemplateAnalytics() {
           <OverviewCards data={data} />
           <SubTemplatesSection subTemplates={data.subTemplates || []} />
           <FieldsSection fields={data.fields || []} />
+          <DropdownsSection dropdowns={data.dropdowns || []} />
           <TasksSection tasks={data.tasks || []} />
           <EmployeePerformanceSection perf={data.employeePerformance || {}} />
           <ExtraWorkSection extra={data.extraWork || {}} />
@@ -334,6 +335,95 @@ function FieldCard({ field }) {
               <Area type="monotone" dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} />
             </AreaChart>
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* =================================================================== */
+/* DROPDOWN ANALYTICS                                                   */
+/* =================================================================== */
+function DropdownsSection({ dropdowns }) {
+  if (!dropdowns || dropdowns.length === 0) return null;
+  return (
+    <div className="space-y-4">
+      <div className="text-sm font-semibold text-slate-800">Dropdown Analytics</div>
+      {dropdowns.map((d) => <DropdownCard key={d.key} data={d} />)}
+    </div>
+  );
+}
+
+function DropdownCard({ data }) {
+  // Stacked colour palette per option.  Loop through a small palette so
+  // repeating colours don't matter; each option gets a stable index.
+  const PALETTE = ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#3b82f6', '#a855f7', '#14b8a6', '#ec4899'];
+  const colourFor = (i) => PALETTE[i % PALETTE.length];
+  const top = data.options.slice(0, 12);
+  return (
+    <div className="card overflow-hidden">
+      <div className="px-5 py-3 border-b border-slate-100 bg-slate-50">
+        <div className="font-semibold text-slate-800">{data.label}</div>
+        <div className="text-[11px] text-slate-500">
+          {data.totalAnswered} answer(s) recorded
+          {data.options.length > 0 && <> · {data.options.length} distinct value(s)</>}
+        </div>
+      </div>
+      <div className="p-5 space-y-4">
+        {data.options.length === 0 ? (
+          <EmptyState title="No answers in range" />
+        ) : (
+          <>
+            <table className="w-full text-sm">
+              <thead className="text-[11px] text-slate-500 uppercase">
+                <tr>
+                  <th className="text-left py-1">Option</th>
+                  <th className="text-right py-1">Count</th>
+                  <th className="text-right py-1">Share</th>
+                  <th className="text-left py-1">Top Employees</th>
+                </tr>
+              </thead>
+              <tbody>
+                {top.map((o, i) => (
+                  <tr key={o.option} className="border-t border-slate-100">
+                    <td className="py-1.5">
+                      <span className="inline-block w-2 h-2 rounded-full mr-2 align-middle" style={{ background: colourFor(i) }} />
+                      <span className="font-medium text-slate-800">{o.option}</span>
+                    </td>
+                    <td className="py-1.5 text-right">{o.count}</td>
+                    <td className="py-1.5 text-right">{o.pct}%</td>
+                    <td className="py-1.5 text-[12px] text-slate-700">
+                      {o.topEmployees.length === 0 ? (
+                        <span className="text-slate-400">—</span>
+                      ) : (
+                        o.topEmployees.slice(0, 3).map((e, j) => (
+                          <span key={e._id}>
+                            {j > 0 && <span className="text-slate-300"> · </span>}
+                            {e.name} <span className="text-slate-400">({e.count})</span>
+                          </span>
+                        ))
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {data.trend && data.trend.length > 0 && data.seriesKeys && data.seriesKeys.length > 0 && (
+              <div>
+                <div className="text-[11px] font-semibold text-slate-500 uppercase mb-1">Daily Trend</div>
+                <BarChart width={undefined} height={220} data={data.trend} style={{ width: '100%' }}>
+                  <CartesianGrid stroke="#eef2f7" />
+                  <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                  {data.seriesKeys.slice(0, 8).map((k, i) => (
+                    <Bar key={k} dataKey={k} stackId="opts" fill={colourFor(i)} />
+                  ))}
+                </BarChart>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>

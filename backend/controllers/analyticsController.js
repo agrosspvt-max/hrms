@@ -328,7 +328,8 @@ const completion = asyncHandler(async (req, res) => {
 
   const subWhere = {
     submitted: true, employee: { $in: empIds }, date: { $gte: from, $lt: to },
-    ...liveSubmissionFilter(readReqFlags(req)),
+    // Phase 15: completion analytics counts reviewed submissions only.
+    ...liveSubmissionFilter({ ...readReqFlags(req), onlyReviewed: true }),
   };
   if (['task', 'excel', 'sheet'].includes(req.query.templateType)) subWhere.templateType = req.query.templateType;
   if (['daily', 'weekly', 'monthly', 'one-time'].includes(req.query.recurrence)) subWhere.frequency = req.query.recurrence;
@@ -743,7 +744,8 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     templateType: 'custom',
     customKind: 'calling',
     date: { $gte: from, $lt: to },
-    ...liveSubmissionFilter(readReqFlags(req)),
+    // Phase 15: calling analytics counts reviewed submissions only.
+    ...liveSubmissionFilter({ ...readReqFlags(req), onlyReviewed: true }),
   }).select('employee date customResponses').lean();
 
   // ---- Headline KPIs (org-wide for the filtered scope) ----
@@ -875,7 +877,8 @@ const callingAnalytics = asyncHandler(async (req, res) => {
       { 'productSales.0': { $exists: true } },
       { 'farmerRecords.0': { $exists: true } },
     ],
-    ...liveSubmissionFilter(readReqFlags(req)),
+    // Phase 15: Product & Farmer + Dealer analytics count reviewed only.
+    ...liveSubmissionFilter({ ...readReqFlags(req), onlyReviewed: true }),
   }).select('employee date productSales farmerRecords').lean();
 
   // Dealer Master snapshot for the "active dealers" KPI.  Independent of
@@ -1122,7 +1125,8 @@ const myCallingAnalytics = asyncHandler(async (req, res) => {
     templateType: 'custom',
     customKind: 'calling',
     date: { $gte: from, $lt: to },
-    ...liveSubmissionFilter({}),
+    // Phase 15: employee's own analytics view also reviewed-only.
+    ...liveSubmissionFilter({ onlyReviewed: true }),
   }).select('date customResponses').lean();
 
   const totalAssignedCalls    = sumCustom(subs, 'assignedCalls');

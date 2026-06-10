@@ -154,12 +154,17 @@ const generate = asyncHandler(async (req, res) => {
   });
 
   // ----- Pull every submitted live submission in range -----
+  // Phase 15: Dynamic Analytics Engine includes REVIEWED submissions
+  // only.  Pending / rejected work can't move a KPI, leaderboard, or
+  // trend until HR/HOD approves it.  Submission counts on the Overview
+  // block already report this gate via submittedCount (= reviewed
+  // count under the new filter).
   const subs = await Submission.find({
     employee: { $in: empIds },
     template: tpl._id,
     date: { $gte: from, $lt: to },
     submitted: true,
-    ...liveSubmissionFilter(flags),
+    ...liveSubmissionFilter({ ...flags, onlyReviewed: true }),
   })
     .select('employee date submittedAt templateType customResponses tasks productSales farmerRecords earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus')
     .lean();
@@ -298,6 +303,94 @@ const generate = asyncHandler(async (req, res) => {
       key: f.key, label: f.label || f.key, fieldType: f.fieldType,
       total: round2(total), avg, min: round2(min), max: round2(max), count,
       topEmployees, byDepartment, trend,
+    });
+  }
+
+  /* =================================================================
+   * DROPDOWN ANALYTICS (Phase 15)
+   *
+   * For every customField with fieldType === 'dropdown', compute:
+   *   - per-option frequency + percentage of all submissions
+   *   - per-option top employees (who picked that option most)
+   *   - per-day trend (option counts over the range)
+   *
+   * Output shape mirrors `fields[]` so the frontend can render a
+   * uniform card per dropdown field.
+   * ================================================================= */
+  const dropdowns = [];
+  const dropdownFields = (tpl.customFields || []).filter((f) => f.fieldType === 'dropdown');
+  for (const f of dropdownFields) {
+    const optionCounts = new Map();      // option -> count
+    const perEmpPerOption = new Map();   // empId -> { option -> count }
+    const perDayPerOption = new Map();   // YMD -> { option -> count }
+    let totalAnswered = 0;
+    for (const s of subs) {
+      const row = (s.customResponses || []).find((r) => r.key === f.key);
+      const opt = String(row?.value ?? '').trim();
+      if (!opt) continue;
+      totalAnswered += 1;
+      optionCounts.set(opt, (optionCounts.get(opt) || 0) + 1);
+      const eid = String(s.employee);
+      if (!perEmpPerOption.has(eid)) perEmpPerOption.set(eid, new Map());
+      const emap = perEmpPerOption.get(eid);
+      emap.set(opt, (emap.get(opt) || 0) + 1);
+      const dk = formatYMD(s.date);
+      if (!perDayPerOption.has(dk)) perDayPerOption.set(dk, new Map());
+      const dmap = perDayPerOption.get(dk);
+      dmap.set(opt, (dmap.get(opt) || 0) + 1);
+    }
+    // Build options array sorted by frequency desc.  Templates only
+    // surface configured options; ad-hoc values employees somehow
+    // typed get included too so HR can spot data-entry mismatches.
+    const allOptions = Array.from(new Set([
+      ...(Array.isArray(f.options) ? f.options : []),
+      ...optionCounts.keys(),
+    ]));
+    const options = allOptions.map((opt) => {
+      const count = optionCounts.get(opt) || 0;
+      // Top employees picking this option (across all submissions in range).
+      const empBoard = [...perEmpPerOption.entries()]
+        .map(([eid, emap]) => {
+          const cnt = emap.get(opt) || 0;
+          if (cnt <= 0) return null;
+          const e = empMap.get(eid);
+          return e ? {
+            _id: eid, name: e.name, employeeId: e.employeeId,
+            department: e.department?.name || 'Unassigned',
+            count: cnt,
+          } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+      return {
+        option: opt,
+        count,
+        pct: safePct(count, totalAnswered),
+        topEmployees: empBoard,
+      };
+    }).sort((a, b) => b.count - a.count);
+
+    // Daily trend: one series per option.  Empty days yield 0 for each
+    // option so chart bars line up across the range.
+    const trend = [];
+    for (let d = startOfDay(from); d < startOfDay(to); d = addDays(d, 1)) {
+      const dk = formatYMD(d);
+      const dmap = perDayPerOption.get(dk) || new Map();
+      const day = { date: dk };
+      for (const opt of allOptions) day[opt] = dmap.get(opt) || 0;
+      trend.push(day);
+    }
+
+    dropdowns.push({
+      key: f.key,
+      label: f.label || f.key,
+      options,
+      totalAnswered,
+      trend,
+      // Mirror the options list keys so the frontend chart knows which
+      // series to plot without re-deriving them from `trend[0]`.
+      seriesKeys: allOptions,
     });
   }
 
@@ -599,6 +692,7 @@ const generate = asyncHandler(async (req, res) => {
     range: { from: formatYMD(from), to: formatYMD(addDays(to, -1)) },
     overview,
     fields,
+    dropdowns,
     tasks,
     employeePerformance,
     extraWork,

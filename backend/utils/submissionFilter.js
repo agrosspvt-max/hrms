@@ -22,10 +22,15 @@
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
-const liveSubmissionFilter = ({ includeTest = false, includeDeleted = false } = {}) => {
+const liveSubmissionFilter = ({ includeTest = false, includeDeleted = false, onlyReviewed = false } = {}) => {
   const out = {};
   if (!includeDeleted) out.deleted = { $ne: true };
   if (!includeTest)    out.isTestData = { $ne: true };
+  // Phase 15: analytics endpoints AND-in reviewStatus='reviewed' so a
+  // pending or rejected submission can't poison KPIs, leaderboards, or
+  // trends.  Pendency / carry-forward / Submission Control intentionally
+  // skip this gate -- they operate on unreviewed work by design.
+  if (onlyReviewed) out.reviewStatus = 'reviewed';
   return out;
 };
 

@@ -46,18 +46,21 @@ const blankCustom = {
   customFields: [],
 };
 const FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
-// Phase 12: full set of supported value types for custom-template task fields.
+// Phase 15: builder UI is intentionally limited to the two field types
+// that cover almost every operational reporting use case --
+//   * Number  (Bills Generated, Orders Processed, Collections, KYC Count,
+//              Dispatch Count, Pending Orders, ...)
+//   * Dropdown (Reason, Category, Status, ...)
+// All the other value types (currency, percentage, text, long_text,
+// yes_no, date, time, auto) remain VALID in the schema + accepted by
+// the renderer + processed by analytics -- existing fields keep
+// working -- but new tasks in the builder pick from this short list
+// so HR doesn't have to think about edge cases that don't help
+// analytics.  When a real need surfaces, the list can be widened
+// without touching backend or renderer.
 const CUSTOM_FIELD_TYPES = [
-  { value: 'number',     label: 'Number' },
-  { value: 'currency',   label: 'Currency (₹)' },
-  { value: 'percentage', label: 'Percentage (%)' },
-  { value: 'text',       label: 'Text' },
-  { value: 'textarea',   label: 'Long Text' },
-  { value: 'yes_no',     label: 'Yes / No' },
-  { value: 'dropdown',   label: 'Dropdown' },
-  { value: 'date',       label: 'Date' },
-  { value: 'time',       label: 'Time' },
-  { value: 'auto',       label: 'Auto-Calculated (formula)' },
+  { value: 'number',   label: 'Number' },
+  { value: 'dropdown', label: 'Dropdown' },
 ];
 
 /* Scoring helpers shared across the sheet builder */
@@ -878,6 +881,13 @@ function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove, error
           <label className="label text-[10px] uppercase">Value Type</label>
           <select className="input" value={f.fieldType} onChange={(e) => onPatch({ fieldType: e.target.value })}>
             {CUSTOM_FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            {/* If an existing field uses a legacy type that's no longer in
+                the builder list, surface it so HR can see it (and switch
+                it to Number/Dropdown if they want).  Doesn't break the
+                value; the backend still accepts the legacy type. */}
+            {f.fieldType && !CUSTOM_FIELD_TYPES.some((t) => t.value === f.fieldType) && (
+              <option value={f.fieldType}>{f.fieldType} (legacy)</option>
+            )}
           </select>
         </div>
         <div className="col-span-2">
