@@ -901,7 +901,17 @@ function CustomTemplateForm({
    */
   const renderField = (f) => {
     const m = meta[f.key] || {};
-    const isAuto = f.fieldType === 'auto' || f.fieldType === 'readonly' || !!f.systemGenerated;
+    // Editability is decided by fieldType ALONE.  Earlier versions
+    // also gated on `systemGenerated`, but that flag was a sentinel
+    // for the seeded Calling Report's `yesterdayPending` carry-forward
+    // field -- and that field ALREADY carries `fieldType: 'readonly'`
+    // independently.  Including systemGenerated here turned every
+    // builder-created field whose checkbox was accidentally ticked
+    // into a read-only zero, which is the bug HR reported.  The fix:
+    // trust fieldType and only fieldType.  Carry-forward fields stay
+    // read-only via their own `fieldType: 'readonly'`; Number /
+    // Currency / Percentage / Text / etc. are always editable.
+    const isAuto = f.fieldType === 'auto' || f.fieldType === 'readonly';
     const v = values[f.key];
     const computedValue = computed[f.key];
 

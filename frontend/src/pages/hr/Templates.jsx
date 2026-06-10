@@ -903,12 +903,20 @@ function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove, error
           <input className="input" value={f.description || ''} onChange={(e) => onPatch({ description: e.target.value })} placeholder="Optional helper text" />
         </div>
       </div>
+      {/* Phase 14 fix: the "System-generated (carry-forward)" checkbox
+          is removed.  It was an internal flag for the seeded Calling
+          Report's yesterdayPending field (which uses
+          fieldType: 'readonly' and never needed a user-facing toggle).
+          Keeping it on the builder produced a single-click landmine:
+          accidentally ticking it disabled the value input on the
+          employee form forever.  Editability is now driven solely by
+          Value Type.  Existing fields that carry the flag are
+          unaffected -- the renderer no longer reads it. */}
       <div className="flex items-center gap-4 flex-wrap text-xs text-slate-700">
         <label className="flex items-center gap-1"><input type="checkbox" checked={!!f.required}             onChange={(e) => onPatch({ required: e.target.checked })} /> Required</label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={!!f.supportsStatus}       onChange={(e) => onPatch({ supportsStatus: e.target.checked })} /> Status enabled (Done / Pending / Work N/A)</label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={f.supportsRemark !== false} onChange={(e) => onPatch({ supportsRemark: e.target.checked })} /> Remark enabled</label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={f.isAnalyticsEligible !== false} onChange={(e) => onPatch({ isAnalyticsEligible: e.target.checked })} /> Show on analytics</label>
-        <label className="flex items-center gap-1"><input type="checkbox" checked={!!f.systemGenerated}      onChange={(e) => onPatch({ systemGenerated: e.target.checked })} /> System-generated (carry-forward)</label>
       </div>
       {f.fieldType === 'auto' && (
         <div>
