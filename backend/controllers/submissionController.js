@@ -378,8 +378,16 @@ const submitOne = asyncHandler(async (req, res) => {
       res.status(400);
       throw new Error('Custom template is missing field definitions.');
     }
-    // Build a working map from the incoming responses; respect
-    // system-generated fields by overlaying their seeded values from sub.
+    // Build a working map from the incoming responses; only preserve
+    // the seeded value when the field is structurally read-only on
+    // the template (fieldType === 'readonly').  Earlier this loop
+    // gated on `def.systemGenerated`, which silently overwrote
+    // employee-typed values on every field where HR had accidentally
+    // ticked the (since-removed) System-generated checkbox in the
+    // builder.  Result: employee types 100, backend ignores 100 and
+    // writes the seeded 0.  Aligning the gate with fieldType matches
+    // what the frontend renderer treats as read-only and prevents
+    // future drift between the two layers.
     const incoming = {};
     const incomingMeta = {}; // Phase 14: per-key { status, remark }
     (customResponses || []).forEach((r) => {
@@ -392,7 +400,12 @@ const submitOne = asyncHandler(async (req, res) => {
     });
     (sub.customResponses || []).forEach((r) => {
       const def = tpl.customFields.find((f) => f.key === r.key);
-      if (def && def.systemGenerated) {
+      // Only structurally read-only fields (carry-forward sentinels
+      // like Calling Report's yesterdayPending) keep the seeded value
+      // -- those are populated by the daily engine and never edited.
+      // 'auto' fields don't need this guard because computeAutoFields
+      // re-evaluates their formulas at submit time anyway.
+      if (def && def.fieldType === 'readonly') {
         incoming[r.key] = r.value;
         incomingMeta[r.key] = { status: r.status || '', remark: r.remark || '' };
       }
