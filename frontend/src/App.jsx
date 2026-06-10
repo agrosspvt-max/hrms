@@ -41,7 +41,12 @@ import MySalary from './pages/employee/MySalary.jsx';
 import Notifications from './pages/employee/Notifications.jsx';
 
 import HODEmployees from './pages/hod/HODEmployees.jsx';
-import HODReviews from './pages/hod/HODReviews.jsx';
+// Phase 10: HOD Team Reviews renders the SAME page HR uses.  The
+// underlying /api/daily-review/grouped endpoint already enforces the
+// HOD department clamp, so display logic is identical -- only data
+// scope changes.  Legacy HODReviews.jsx is preserved for reference
+// but no longer wired into a route.
+// import HODReviews from './pages/hod/HODReviews.jsx';
 
 function HomeRouter() {
   const { user } = useAuth();
@@ -112,7 +117,7 @@ export default function App() {
 
         {/* HOD (Head of Department) routes - employee + isHOD */}
         <Route path="/team" element={<ProtectedRoute hod><HODEmployees /></ProtectedRoute>} />
-        <Route path="/team-reviews" element={<ProtectedRoute hod><HODReviews /></ProtectedRoute>} />
+        <Route path="/team-reviews" element={<ProtectedRoute hod><SubmissionReviews /></ProtectedRoute>} />
 
         {/* Employee routes */}
         <Route path="/my-attendance" element={<ProtectedRoute><MyAttendance /></ProtectedRoute>} />

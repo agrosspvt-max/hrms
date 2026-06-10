@@ -138,7 +138,7 @@ function EmployeeDayCard({ card, open, onToggle, onReload }) {
           {/* Per-submission render -- one per assignment, with custom widgets */}
           <div className="space-y-3">
             {submissions.map((s) => (
-              <SubmissionPanel key={s._id} sub={s} />
+              <SubmissionPanel key={s._id} sub={s} onReload={onReload} />
             ))}
           </div>
 
@@ -181,7 +181,7 @@ function DailyReflectionPanel({ reflection }) {
 /* ===================================================================== */
 /* Per-submission panel -- branches on templateType + customKind         */
 /* ===================================================================== */
-function SubmissionPanel({ sub }) {
+function SubmissionPanel({ sub, onReload }) {
   const kind = sub.template?.customKind || '';
   const isCalling = kind === 'calling';
   const isProductFarmer = kind === 'product_farmer'
@@ -197,6 +197,7 @@ function SubmissionPanel({ sub }) {
           </div>
           <div className="text-[11px] text-slate-500">
             {sub.templateType}{kind ? ` / ${kind}` : ''} · submitted {sub.submittedAt ? new Date(sub.submittedAt).toLocaleString() : ''}
+            {sub.totalPoints > 0 && <> · work score <b>{sub.earnedPoints}/{sub.totalPoints}</b></>}
           </div>
         </div>
         <Link className="text-xs text-brand-600 hover:underline" to={`/submission-control?focus=${sub._id}`}>
@@ -210,7 +211,7 @@ function SubmissionPanel({ sub }) {
           <CustomResponsesPanel responses={sub.customResponses || []} fields={sub.template?.customFields || []} />
         )}
         {sub.templateType === 'task' && (
-          <TaskRollupPanel tasks={sub.tasks || []} />
+          <TaskListPanel sub={sub} onReload={onReload} />
         )}
         {(sub.templateType === 'excel' || sub.templateType === 'sheet') && (
           <div className="text-xs text-slate-500 italic">
@@ -358,18 +359,128 @@ function CustomResponsesPanel({ responses, fields }) {
   );
 }
 
-/* ----------------- Task rollup (read-only summary) ----------------- */
-function TaskRollupPanel({ tasks }) {
+/* ----------------- Task list with per-row inline status editor ----------------- */
+function TaskListPanel({ sub, onReload }) {
+  const tasks = sub.tasks || [];
   const done    = tasks.filter((t) => t.status === 'done').length;
   const ongoing = tasks.filter((t) => t.status === 'ongoing').length;
   const pending = tasks.filter((t) => t.status === 'pending').length;
   const wna     = tasks.filter((t) => t.status === 'work_not_available').length;
+
   return (
-    <div className="grid grid-cols-4 gap-2">
-      <KPI label="Done"       value={done}    accent="green" />
-      <KPI label="Ongoing"    value={ongoing} accent="blue" />
-      <KPI label="Pending"    value={pending} accent="red" />
-      <KPI label="Work N/A"   value={wna}     accent="amber" />
+    <div className="space-y-3">
+      <div className="grid grid-cols-4 gap-2">
+        <KPI label="Done"     value={done}    accent="green" />
+        <KPI label="Ongoing"  value={ongoing} accent="blue" />
+        <KPI label="Pending"  value={pending} accent="red" />
+        <KPI label="Work N/A" value={wna}     accent="amber" />
+      </div>
+      <div className="space-y-1.5">
+        {tasks.map((t) => (
+          <TaskRowEditor key={t._id} submissionId={sub._id} task={t} onReload={onReload} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const STATUS_META = {
+  done:               { label: 'Done',     symbol: '✓', cls: 'text-green-700 bg-green-50 border-green-200' },
+  ongoing:            { label: 'Ongoing',  symbol: '◐', cls: 'text-blue-700  bg-blue-50  border-blue-200' },
+  pending:            { label: 'Pending',  symbol: '⚠', cls: 'text-amber-700 bg-amber-50 border-amber-200' },
+  work_not_available: { label: 'Work N/A', symbol: '✖', cls: 'text-slate-700 bg-slate-50 border-slate-200' },
+  pending_submit:     { label: 'Not filled', symbol: '·', cls: 'text-slate-500 bg-slate-50 border-slate-200' },
+};
+
+function TaskRowEditor({ submissionId, task, onReload }) {
+  const [status, setStatus] = useState(task.status);
+  const [reason, setReason] = useState(task.pendingReason || '');
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const meta = STATUS_META[task.status] || STATUS_META.pending_submit;
+  const dirty = status !== task.status || (status === 'pending' && reason !== (task.pendingReason || ''));
+
+  const save = async () => {
+    if (status === 'pending' && !reason.trim()) {
+      toast.error('A pending reason is required when status is Pending.');
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.post('/daily-review/task-status', {
+        submissionId,
+        taskId: task._id,
+        status,
+        pendingReason: status === 'pending' ? reason.trim() : '',
+      });
+      toast.success('Task updated');
+      setEditing(false);
+      onReload?.();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+
+  const cancel = () => {
+    setStatus(task.status);
+    setReason(task.pendingReason || '');
+    setEditing(false);
+  };
+
+  return (
+    <div className={`rounded border ${meta.cls} px-3 py-1.5`}>
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-base">{meta.symbol}</span>
+          <div className="min-w-0">
+            <div className="font-medium text-slate-800 truncate">{task.title}</div>
+            {task.points > 0 && (
+              <div className="text-[11px] text-slate-500">{task.points} pts{task.addedByEmployee ? ' · employee-added' : ''}</div>
+            )}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {!editing ? (
+            <>
+              <span className="text-[11px] font-medium uppercase tracking-wide opacity-80">{meta.label}</span>
+              <button className="btn-ghost !py-0.5 !text-xs" onClick={() => setEditing(true)}>Edit</button>
+            </>
+          ) : (
+            <>
+              <select
+                className="input !py-1 !text-xs max-w-[140px]"
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+              >
+                <option value="done">Done</option>
+                <option value="ongoing">Ongoing</option>
+                <option value="pending">Pending</option>
+                <option value="work_not_available">Work N/A</option>
+              </select>
+              <button className="btn-primary !py-0.5 !text-xs" disabled={busy || !dirty} onClick={save}>
+                {busy ? 'Saving…' : 'Save'}
+              </button>
+              <button className="btn-ghost !py-0.5 !text-xs" onClick={cancel}>Cancel</button>
+            </>
+          )}
+        </div>
+      </div>
+      {/* Pending reason -- shown when employee or reviewer set status=pending */}
+      {(editing && status === 'pending') ? (
+        <div className="mt-1.5">
+          <input
+            className="input !py-1 !text-xs"
+            placeholder="Pending reason (required)"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+        </div>
+      ) : (!editing && task.status === 'pending' && task.pendingReason) ? (
+        <div className="mt-1 text-[12px] text-slate-700">
+          <b>Reason:</b> {task.pendingReason}
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -13,5 +13,7 @@ router.post('/reflection', c.saveReflection);
 router.get('/grouped',  c.listGrouped);
 router.get('/day',      c.getDay);
 router.post('/finalize', c.finalizeDay);
+// Per-task status edit during review (Phase 10).
+router.post('/task-status', c.editTaskStatus);
 
 module.exports = router;

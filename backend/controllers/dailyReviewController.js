@@ -305,4 +305,134 @@ const finalizeDay = asyncHandler(async (req, res) => {
   res.json({ ok: true, review, submissionCount: subs.length, primarySubmissionId: primary._id });
 });
 
-module.exports = { listGrouped, getDay, saveReflection, finalizeDay };
+/* ------------------------------------------------------------------ */
+/* Per-task status edit (HR / SA / HOD)                                */
+/*                                                                     */
+/* Phase 10: reviewers need to flip a single task's status (e.g. an   */
+/* employee marked "Done" on a task they didn't actually complete).    */
+/* This endpoint patches the row, optionally captures a pending        */
+/* reason, recomputes workEarnedPoints + workTotalPoints + cached      */
+/* earnedPoints / completionPercentage, and audits the change.         */
+/*                                                                     */
+/* Marks pipeline preserved:                                           */
+/*   - Same scoring formula the existing reviewSubmission uses:        */
+/*     done/ongoing earn points + count toward total; pending counts   */
+/*     toward total only; work_not_available counts neither.           */
+/*   - HR-defined rows use their template `points`; employee-added     */
+/*     rows use `awardedMarks`.                                        */
+/*                                                                     */
+/* Discipline + idea live exclusively on DailyReview, so this endpoint */
+/* never touches them.                                                 */
+/* ------------------------------------------------------------------ */
+const ALLOWED_TASK_STATUSES = ['done', 'ongoing', 'pending', 'work_not_available', 'pending_submit'];
+
+const editTaskStatus = asyncHandler(async (req, res) => {
+  const { submissionId, taskId, status, pendingReason } = req.body || {};
+  if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+    res.status(400); throw new Error('Valid submissionId is required.');
+  }
+  if (!mongoose.Types.ObjectId.isValid(taskId)) {
+    res.status(400); throw new Error('Valid taskId is required.');
+  }
+  if (!ALLOWED_TASK_STATUSES.includes(status)) {
+    res.status(400); throw new Error(`status must be one of: ${ALLOWED_TASK_STATUSES.join(', ')}`);
+  }
+  const sub = await Submission.findById(submissionId);
+  if (!sub) { res.status(404); throw new Error('Submission not found.'); }
+  if (sub.templateType !== 'task') {
+    res.status(400); throw new Error('This endpoint only edits task-template submissions.');
+  }
+
+  // Role gate -- mirror the finalizeDay rules so HOD can only edit
+  // their own department's submissions.
+  const role = req.user.role;
+  const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  if (role !== 'hr' && role !== 'super_admin' && !isHOD) {
+    res.status(403); throw new Error('Only HR / Super Admin / HOD may edit task status.');
+  }
+  if (String(sub.employee) === String(req.user._id)) {
+    res.status(403); throw new Error('You cannot edit your own submission.');
+  }
+  const owner = await User.findById(sub.employee).select('role department').lean();
+  if (!owner) { res.status(404); throw new Error('Submission owner not found.'); }
+  if (role === 'hr' && (owner.role === 'hr' || owner.role === 'super_admin')) {
+    res.status(403); throw new Error('Only Super Admin can edit HR submissions.');
+  }
+  if (isHOD && role !== 'hr' && role !== 'super_admin') {
+    if (String(owner.department) !== String(req.user.hodDepartment)) {
+      res.status(403); throw new Error('Department clamp: not your department.');
+    }
+  }
+
+  const task = (sub.tasks || []).id(taskId);
+  if (!task) { res.status(404); throw new Error('Task row not found on this submission.'); }
+
+  const oldStatus = task.status;
+  const oldReason = task.pendingReason || '';
+
+  // Pending-since stamping: if we're flipping INTO pending, set
+  // pendingSince now (matches the daily engine's first-seen semantic).
+  if (status === 'pending' && oldStatus !== 'pending') {
+    task.pendingSince = task.pendingSince || new Date();
+  }
+  // Clear completedAt when moving out of done/ongoing back to pending.
+  if (status !== 'done' && status !== 'ongoing') {
+    task.completedAt = undefined;
+  } else if (!task.completedAt && (status === 'done' || status === 'ongoing')) {
+    task.completedAt = new Date();
+  }
+  task.status = status;
+  task.pendingReason = status === 'pending'
+    ? String(pendingReason || oldReason || '').trim()
+    : '';
+
+  sub.markModified('tasks');
+
+  // Recompute work scoring -- same formula reviewSubmission uses.
+  let earned = 0, total = 0;
+  for (const t of sub.tasks) {
+    if (t.addedByEmployee) {
+      const awarded = Number(t.awardedMarks) || 0;
+      earned += awarded;
+      total  += awarded;
+    } else {
+      if (t.status === 'done' || t.status === 'ongoing') earned += Number(t.points) || 0;
+      if (t.status === 'done' || t.status === 'ongoing' || t.status === 'pending') {
+        total += Number(t.points) || 0;
+      }
+    }
+  }
+  sub.workEarnedPoints = earned;
+  sub.workTotalPoints  = total;
+  // Cached earned/total are WORK-ONLY (Phase 6 -- discipline + idea
+  // live on DailyReview).  Daily totals fold in at analytics time.
+  sub.earnedPoints = earned;
+  sub.totalPoints  = total;
+  sub.completionPercentage = total > 0 ? (earned / total) * 100 : 0;
+
+  // Edit history -- captures who/what/when so HR audit log + edit
+  // history surface the change.
+  sub.editHistory = sub.editHistory || [];
+  sub.editHistory.push({
+    editedBy: req.user._id,
+    editorName: req.user.name,
+    role,
+    fields: [`tasks.${taskId}.status`],
+    note: `${oldStatus} → ${status}${status === 'pending' && task.pendingReason ? ` · reason: ${task.pendingReason}` : ''}`,
+    timestamp: new Date(),
+  });
+
+  await sub.save();
+
+  logAudit(req, {
+    action: 'submission.task-status-edit',
+    targetType: 'Submission',
+    targetId: sub._id,
+    targetLabel: `${owner._id} · ${String(sub.date).slice(0, 10)}`,
+    meta: { taskId: String(taskId), from: oldStatus, to: status, pendingReason: task.pendingReason || '' },
+  });
+
+  res.json({ ok: true, submission: sub });
+});
+
+module.exports = { listGrouped, getDay, saveReflection, finalizeDay, editTaskStatus };
