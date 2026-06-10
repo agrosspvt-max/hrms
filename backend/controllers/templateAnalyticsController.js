@@ -403,15 +403,49 @@ const generate = asyncHandler(async (req, res) => {
   };
 
   /* =================================================================
-   * SUB-TEMPLATE BREAKDOWN (Phase 12)
+   * SUB-TEMPLATE BREAKDOWN (Phase 12 / 13)
    *
    * For every sub-template defined on the parent template, emit a
    * mini-block of overview KPIs + per-field totals so the analytics
    * UI can compare sub-templates side by side.  Heavy-lifting reuses
    * the same per-field math; we just bucket by subTemplateId.
+   *
+   * Phase 13 additions: per-sub-template assignedCount (how many
+   * employees have this sub-template scoped in any live assignment)
+   * + submittedCount + completionRate + pendingRate + a daily trend
+   * series so HR can compare Billing vs Collections head-on.
    * ================================================================= */
   const subTemplates = [];
   const subTemplateDefs = Array.isArray(tpl.subTemplates) ? tpl.subTemplates : [];
+
+  // Pre-fetch every live assignment for this template so the per-sub
+  // assignedCount is one query, not N.  Active + not revoked only.
+  let subAssignmentRows = [];
+  if (subTemplateDefs.length > 0) {
+    subAssignmentRows = await Assignment.find({
+      template: tpl._id,
+      active: true,
+      revokedAt: null,
+    }).select('targetType targetRef subTemplateIds subTemplateId').lean();
+  }
+
+  // Helper: expand a single assignment's target to the set of
+  // currently-active employee ids it covers (intersected with empIds
+  // so HOD scope + filters apply correctly).
+  const _empIdsFor = (a) => {
+    if (a.targetType === 'employee') {
+      const id = String(a.targetRef);
+      return empIds.filter((x) => String(x) === id);
+    }
+    return employees
+      .filter((e) => {
+        if (a.targetType === 'department')  return String(e.department?._id || e.department) === String(a.targetRef);
+        if (a.targetType === 'designation') return String(e.designation?._id || e.designation) === String(a.targetRef);
+        return false;
+      })
+      .map((e) => e._id);
+  };
+
   for (const sub of subTemplateDefs) {
     const subFieldDefs = (tpl.customFields || []).filter((f) => String(f.subTemplateId || '') === String(sub._id));
     const subNumeric = subFieldDefs.filter((f) => NUMERIC_TYPES.has(f.fieldType));
@@ -451,6 +485,62 @@ const generate = asyncHandler(async (req, res) => {
       }
     }
     const subTaskTotal = subDone + subPending + subWNA;
+
+    /* ---- Phase 13: assigned + submitted + per-employee + trend ---- */
+    // assignedCount = distinct employees whose assignment covers this
+    // sub-template (including assignments with empty subTemplateIds =
+    // "all sub-templates").
+    const assignedSet = new Set();
+    for (const a of subAssignmentRows) {
+      const scope = Array.isArray(a.subTemplateIds) && a.subTemplateIds.length > 0
+        ? a.subTemplateIds.map(String)
+        : (a.subTemplateId ? [String(a.subTemplateId)] : []);
+      const matches = scope.length === 0 || scope.includes(String(sub._id));
+      if (!matches) continue;
+      for (const eid of _empIdsFor(a)) assignedSet.add(String(eid));
+    }
+
+    // submittedCount + per-employee ranking + daily trend.  A submission
+    // counts toward this sub-template when ANY of its customResponses
+    // matches a field belonging to this sub-template (non-null/non-zero).
+    const subFieldKeys = new Set(subFieldDefs.map((f) => f.key));
+    const subEmpAgg = new Map();    // empId -> { submissions, donePct numerator/denominator }
+    const subDailyAgg = new Map();  // YMD -> { subs, done, pending }
+    let subSubmitted = 0;
+    for (const s of subs) {
+      const responses = s.customResponses || [];
+      const touched = responses.some((r) => subFieldKeys.has(r.key));
+      if (!touched) continue;
+      subSubmitted += 1;
+      const eid = String(s.employee);
+      if (!subEmpAgg.has(eid)) subEmpAgg.set(eid, { submissions: 0, earned: 0, total: 0 });
+      const pe = subEmpAgg.get(eid);
+      pe.submissions += 1;
+      pe.earned += Number(s.earnedPoints) || 0;
+      pe.total  += Number(s.totalPoints)  || 0;
+      const dk = formatYMD(s.date);
+      if (!subDailyAgg.has(dk)) subDailyAgg.set(dk, { date: dk, submissions: 0 });
+      subDailyAgg.get(dk).submissions += 1;
+    }
+    const submittedExpected = assignedSet.size > 0
+      ? assignedSet.size * Math.max(1, Math.ceil((to - from) / 86400000))
+      : 0;
+    const employeeRanking = [...subEmpAgg.entries()].map(([eid, m]) => {
+      const e = empMap.get(eid);
+      return e ? {
+        _id: eid, name: e.name, employeeId: e.employeeId,
+        department: e.department?.name || 'Unassigned',
+        submissions: m.submissions,
+        completionPct: m.total > 0 ? round1((m.earned / m.total) * 100) : 0,
+      } : null;
+    }).filter(Boolean).sort((a, b) => (b.completionPct - a.completionPct) || (b.submissions - a.submissions)).slice(0, 10);
+
+    const subTrend = [];
+    for (let d = startOfDay(from); d < startOfDay(to); d = addDays(d, 1)) {
+      const dk = formatYMD(d);
+      subTrend.push({ date: dk, submissions: (subDailyAgg.get(dk)?.submissions || 0) });
+    }
+
     subTemplates.push({
       _id: sub._id, name: sub.name, description: sub.description,
       fieldCount: subFieldDefs.length,
@@ -459,8 +549,18 @@ const generate = asyncHandler(async (req, res) => {
         pendingPct: safePct(subPending, subTaskTotal),
         wnaPct:     safePct(subWNA, subTaskTotal),
         taskRows: subTaskTotal,
+        assignedCount:  assignedSet.size,
+        submittedCount: subSubmitted,
+        completionRate: subSubmitted > 0
+          ? round1((subEmpAgg.size > 0
+              ? [...subEmpAgg.values()].reduce((s, v) => s + (v.total > 0 ? (v.earned / v.total) * 100 : 0), 0) / subEmpAgg.size
+              : 0))
+          : 0,
+        submissionRate: submittedExpected > 0 ? safePct(subSubmitted, submittedExpected) : 0,
       },
       fields: subFields,
+      employeeRanking,
+      trend: subTrend,
     });
   }
 

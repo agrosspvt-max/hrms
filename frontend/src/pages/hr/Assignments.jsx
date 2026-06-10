@@ -23,6 +23,9 @@ const blank = {
   startDate: new Date().toISOString().substring(0, 10),
   priority: 'normal',
   holidayOverride: false, overrideScope: 'once', overrideReason: '',
+  // Phase 13: sub-template scope.  Empty array = "All Sub Templates"
+  // per spec; populated array = only those sub-templates seed.
+  subTemplateIds: [],
 };
 
 export default function Assignments({ embedded = false } = {}) {
@@ -187,7 +190,25 @@ export default function Assignments({ embedded = false } = {}) {
             {filtered.length === 0 && <tr><td colSpan="7"><EmptyState title="No matching assignments" /></td></tr>}
             {filtered.map((a) => (
               <tr key={a._id} className="cursor-pointer hover:bg-slate-50" onClick={() => openDetail(a)} title="Click for details">
-                <td className="font-medium">{a.template?.title}</td>
+                <td className="font-medium">
+                  {a.template?.title}
+                  {/* Phase 13: surface the sub-template scope so HR can see
+                      at a glance which slices of a custom template this
+                      assignment generates.  Empty array = all sub-templates. */}
+                  {(() => {
+                    const tpl = templates.find((t) => String(t._id) === String(a.template?._id || a.template));
+                    if (!tpl || tpl.templateType !== 'custom' || !Array.isArray(tpl.subTemplates) || tpl.subTemplates.length === 0) return null;
+                    const ids = Array.isArray(a.subTemplateIds) && a.subTemplateIds.length > 0 ? a.subTemplateIds.map(String) : null;
+                    const label = ids
+                      ? tpl.subTemplates.filter((s) => ids.includes(String(s._id))).map((s) => s.name).join(' · ') || `${ids.length} sub-template(s)`
+                      : 'All sub-templates';
+                    return (
+                      <div className="text-[11px] text-slate-500 mt-0.5">
+                        <span className="badge bg-indigo-50 text-indigo-700">{label}</span>
+                      </div>
+                    );
+                  })()}
+                </td>
                 <td className="capitalize">{a.targetType}</td>
                 <td>{resolveTarget(a)}</td>
                 <td><ScheduleTag frequency={a.frequency} label={a.scheduleLabel} /></td>
@@ -237,11 +258,69 @@ export default function Assignments({ embedded = false } = {}) {
             </>}>
             <div className="space-y-3">
               <div><label className="label">Template</label>
-                <select className="input" value={f.template} onChange={(e) => set('template', e.target.value)}>
+                <select
+                  className="input"
+                  value={f.template}
+                  onChange={(e) => setModal({
+                    ...modal,
+                    // Clear sub-template scope when the template changes so
+                    // a stale set of ids from the prior template can't leak
+                    // into the new save.
+                    data: { ...f, template: e.target.value, subTemplateIds: [] },
+                  })}
+                >
                   <option value="">Select template</option>
                   {templates.map((t) => <option key={t._id} value={t._id}>{t.title}</option>)}
                 </select>
               </div>
+
+              {/* Phase 13: sub-template picker.  Only renders for custom
+                  templates that actually declare sub-templates.  The "All
+                  Sub Templates" toggle clears the array; the daily engine
+                  treats an empty array as "all" per spec.  Root-level
+                  fields are always included regardless. */}
+              {(() => {
+                const tpl = templates.find((t) => String(t._id) === String(f.template));
+                const subs = (tpl?.subTemplates || []).filter((s) => s.isActive !== false);
+                if (!tpl || tpl.templateType !== 'custom' || subs.length === 0) return null;
+                const selectedIds = Array.isArray(f.subTemplateIds) ? f.subTemplateIds.map(String) : [];
+                const allSelected = selectedIds.length === 0;
+                const toggleAll = (checked) => set('subTemplateIds', checked ? [] : subs.map((s) => String(s._id)));
+                const toggleOne = (id) => {
+                  const s = String(id);
+                  // Start from "all" if currently empty, then drop the toggled id.
+                  const base = allSelected ? subs.map((x) => String(x._id)) : selectedIds.slice();
+                  const next = base.includes(s) ? base.filter((x) => x !== s) : [...base, s];
+                  // If user re-picked every sub-template, collapse back to "all".
+                  set('subTemplateIds', next.length === subs.length ? [] : next);
+                };
+                return (
+                  <div className="rounded-lg border border-indigo-100 bg-indigo-50/40 p-3 space-y-2">
+                    <div className="text-xs font-semibold text-indigo-900">Sub-Templates</div>
+                    <label className="flex items-center gap-2 text-sm text-indigo-900">
+                      <input type="checkbox" checked={allSelected} onChange={(e) => toggleAll(e.target.checked)} />
+                      <b>All Sub Templates</b>
+                      <span className="text-[11px] text-indigo-700 font-normal">— send every sub-template to this target</span>
+                    </label>
+                    <div className="grid sm:grid-cols-2 gap-1.5 pl-5">
+                      {subs.map((s) => (
+                        <label key={s._id} className="flex items-center gap-2 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={allSelected || selectedIds.includes(String(s._id))}
+                            onChange={() => toggleOne(s._id)}
+                          />
+                          {s.name}
+                          {s.description && <span className="text-[11px] text-slate-500">· {s.description}</span>}
+                        </label>
+                      ))}
+                    </div>
+                    <div className="text-[11px] text-indigo-700">
+                      Only the sub-templates checked above are generated for the assignee. Template-root fields are always included.
+                    </div>
+                  </div>
+                );
+              })()}
               <div className="grid grid-cols-2 gap-3">
                 <div><label className="label">Target Type</label>
                   <select

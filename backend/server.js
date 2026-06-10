@@ -149,6 +149,13 @@ const start = async () => {
     const { migrateTemplateAnalytics } = require('./services/templateAnalyticsMigration');
     await migrateTemplateAnalytics();
   } catch (e) { console.error('[migrate] template analytics failed:', e.message); }
+  // Phase 13: copy any legacy single-id Assignment.subTemplateId into
+  // the new subTemplateIds array so the daily engine + analytics can
+  // rely on the array alone.  Idempotent.
+  try {
+    const { migrateAssignmentSubTemplateIds } = require('./services/assignmentSubTemplateMigration');
+    await migrateAssignmentSubTemplateIds();
+  } catch (e) { console.error('[migrate] assignment sub-template ids failed:', e.message); }
   // Backfill Attendance records for every currently-approved Leave so the
   // calendar reflects historical approvals + HR can revoke from there.
   // Idempotent / safe to re-run; never modifies HR's manual overrides.

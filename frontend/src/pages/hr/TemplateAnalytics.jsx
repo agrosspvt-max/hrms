@@ -186,6 +186,13 @@ function SubTemplatesSection({ subTemplates }) {
               {s.description && <div className="text-[11px] text-slate-500">{s.description}</div>}
             </div>
             <div className="p-3 space-y-3">
+              {/* Phase 13: assigned / submitted / rates strip. */}
+              <div className="grid grid-cols-2 gap-2">
+                <StatCard label="Assigned"        value={s.overview.assignedCount ?? 0}     accent="brand" />
+                <StatCard label="Submitted"       value={s.overview.submittedCount ?? 0}    accent="blue" />
+                <StatCard label="Completion %"    value={`${s.overview.completionRate ?? 0}%`} accent={(s.overview.completionRate ?? 0) >= 80 ? 'green' : 'amber'} />
+                <StatCard label="Submission %"    value={`${s.overview.submissionRate ?? 0}%`} accent={(s.overview.submissionRate ?? 0) >= 80 ? 'green' : 'amber'} />
+              </div>
               <div className="grid grid-cols-3 gap-2">
                 <StatCard label="Done %"    value={`${s.overview.donePct ?? 0}%`}    accent="green" />
                 <StatCard label="Pending %" value={`${s.overview.pendingPct ?? 0}%`} accent="red" />
@@ -207,6 +214,38 @@ function SubTemplatesSection({ subTemplates }) {
                     ))}
                   </tbody>
                 </table>
+              )}
+              {/* Phase 13: employee ranking + trend per sub-template. */}
+              {s.employeeRanking && s.employeeRanking.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold text-slate-500 uppercase mb-1">Top Employees</div>
+                  <table className="w-full text-xs">
+                    <thead className="text-[10px] text-slate-500 uppercase">
+                      <tr><th className="text-left">Name</th><th className="text-right">Subs</th><th className="text-right">Completion %</th></tr>
+                    </thead>
+                    <tbody>
+                      {s.employeeRanking.slice(0, 5).map((e) => (
+                        <tr key={e._id} className="border-t border-slate-100">
+                          <td className="py-0.5 text-slate-700">{e.name} <span className="text-slate-400">({e.employeeId})</span></td>
+                          <td className="py-0.5 text-right">{e.submissions}</td>
+                          <td className="py-0.5 text-right font-medium">{e.completionPct}%</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {s.trend && s.trend.length > 0 && (
+                <div>
+                  <div className="text-[10px] font-semibold text-slate-500 uppercase mb-1">Daily Submissions</div>
+                  <AreaChart width={undefined} height={120} data={s.trend} style={{ width: '100%' }}>
+                    <CartesianGrid stroke="#eef2f7" />
+                    <XAxis dataKey="date" tick={{ fontSize: 9 }} />
+                    <YAxis tick={{ fontSize: 9 }} />
+                    <Tooltip />
+                    <Area type="monotone" dataKey="submissions" stroke="#6366f1" fill="#6366f1" fillOpacity={0.2} />
+                  </AreaChart>
+                </div>
               )}
             </div>
           </div>

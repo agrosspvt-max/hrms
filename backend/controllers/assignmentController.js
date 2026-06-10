@@ -85,6 +85,21 @@ const guardHRTarget = async (req, assignment) => {
   return null;
 };
 
+/**
+ * Phase 13: collapse the legacy single subTemplateId + new
+ * subTemplateIds[] body shapes into one canonical array.  Returns []
+ * (= "all sub-templates") when nothing is scoped.
+ */
+const _normaliseSubTemplateIds = (body = {}) => {
+  if (Array.isArray(body.subTemplateIds)) {
+    return body.subTemplateIds.map((x) => String(x || '').trim()).filter(Boolean);
+  }
+  if (typeof body.subTemplateId === 'string' && body.subTemplateId.trim()) {
+    return [body.subTemplateId.trim()];
+  }
+  return [];
+};
+
 const create = asyncHandler(async (req, res) => {
   const { template, targetType, targetRef } = req.body;
   if (!template || !targetType || !targetRef) {
@@ -103,6 +118,8 @@ const create = asyncHandler(async (req, res) => {
     holidayOverride: !!req.body.holidayOverride,
     overrideScope: req.body.overrideScope === 'all' ? 'all' : 'once',
     overrideReason: (req.body.overrideReason || '').trim(),
+    // Phase 13: multi-sub-template scope.  Empty array = "all".
+    subTemplateIds: _normaliseSubTemplateIds(req.body),
     createdBy: req.user._id,
   });
   const populated = await a.populate('template', 'title templateType tasks');
@@ -149,6 +166,12 @@ const update = asyncHandler(async (req, res) => {
       startDate: req.body.startDate ?? existing.startDate,
       endDate: req.body.endDate ?? existing.endDate,
     }));
+  }
+  // Phase 13: only rewrite scope when the body actually carries one;
+  // otherwise leave existing.subTemplateIds untouched so partial PATCH
+  // calls don't accidentally clear it.
+  if ('subTemplateIds' in req.body || 'subTemplateId' in req.body) {
+    update.subTemplateIds = _normaliseSubTemplateIds(req.body);
   }
 
   const a = await Assignment.findByIdAndUpdate(req.params.id, update, { new: true })

@@ -157,14 +157,21 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
     let customKind = '';
     if (tplType === 'custom') {
       customKind = a.template.customKind || '';
-      // Phase 12: when the assignment is scoped to a single sub-template,
-      // only seed customResponses for that sub-template's fields.  Empty
-      // scope (the legacy default) seeds the entire template -- so old
-      // assignments behave exactly as before.
-      const wantSubId = a.subTemplateId || '';
-      const fieldsForScope = (a.template.customFields || []).filter((f) =>
-        !wantSubId || String(f.subTemplateId || '') === String(wantSubId),
-      );
+      // Phase 13: scope to the assignment's subTemplateIds[].  Empty
+      // array = "all sub-templates" (preserves the legacy default for
+      // assignments that never set a scope).  Single-id legacy
+      // subTemplateId is folded in for back-compat with any document
+      // the boot migration hasn't touched yet.  ROOT-level fields
+      // (subTemplateId === '') are always included.
+      const wantIds = Array.isArray(a.subTemplateIds) && a.subTemplateIds.length > 0
+        ? a.subTemplateIds.map(String)
+        : (a.subTemplateId ? [String(a.subTemplateId)] : []);
+      const allSubs = wantIds.length === 0;
+      const fieldsForScope = (a.template.customFields || []).filter((f) => {
+        const sid = String(f.subTemplateId || '');
+        if (!sid) return true;                  // template root always seeded
+        return allSubs || wantIds.includes(sid);
+      });
       freshCustom = fieldsForScope
         .slice()
         .sort((x, y) => (x.order || 0) - (y.order || 0))

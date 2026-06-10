@@ -7,11 +7,19 @@ const mongoose = require('mongoose');
 const assignmentSchema = new mongoose.Schema(
   {
     template: { type: mongoose.Schema.Types.ObjectId, ref: 'Template', required: true },
-    // Phase 12: optional sub-template scoping.  When set, the daily
-    // engine only seeds fields belonging to that sub-template (the
-    // employee sees a single sub-template's tasks instead of the
-    // entire template).  Empty = whole template.
-    subTemplateId: { type: String, default: '' },
+    // Phase 12 / 13: sub-template scoping.
+    //
+    // - `subTemplateIds` (Phase 13, preferred): set of sub-template ids
+    //   the daily engine should seed for the employee.  Empty array =
+    //   "all sub-templates" per the spec (so legacy assignments with no
+    //   scoping continue to seed every field exactly as before).
+    //
+    // - `subTemplateId` (Phase 12, legacy): single-id form kept for
+    //   backward compatibility.  On boot, the migration copies any
+    //   populated value into subTemplateIds[0] so reads can rely on the
+    //   array alone.  New assignments stop writing this field.
+    subTemplateIds: { type: [String], default: [] },
+    subTemplateId:  { type: String, default: '' },
 
     targetType: {
       type: String,
