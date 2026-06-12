@@ -572,12 +572,21 @@ function DailyReviewPanel({ employeeId, date, review, onSaved }) {
     finally { setBusy(false); }
   };
 
+    /* Phase 22 (Issue: dark-mode visibility): the brand palette is a
+       custom Tailwind colour defined in tailwind.config.js, so the
+       index.css dark safety net (which targets Tailwind's stock
+       palettes) doesn't catch `bg-brand-50` / `border-brand-200` /
+       `text-brand-700` / `text-brand-800`.  In dark mode those classes
+       rendered as a bright off-white panel with dark indigo text --
+       barely legible.  Added explicit dark: variants below so the
+       panel reads as a quiet brand-tinted surface against the dark
+       review card, matching the rest of the page. */
   return (
-    <div className="rounded-lg bg-brand-50 border border-brand-200 p-3 space-y-3">
+    <div className="rounded-lg bg-brand-50 border border-brand-200 p-3 space-y-3 dark:bg-brand-500/15 dark:border-brand-500/30">
       <div className="flex items-center justify-between">
-        <div className="text-xs font-semibold text-brand-800 uppercase tracking-wide">Daily Discipline &amp; Innovation</div>
+        <div className="text-xs font-semibold text-brand-800 uppercase tracking-wide dark:text-brand-300">Daily Discipline &amp; Innovation</div>
         {reviewed && (
-          <div className="text-[11px] text-brand-700">
+          <div className="text-[11px] text-brand-700 dark:text-brand-300">
             Reviewed by {review.reviewedBy?.name || '—'} on {review.reviewedAt ? new Date(review.reviewedAt).toLocaleString() : ''}
           </div>
         )}
