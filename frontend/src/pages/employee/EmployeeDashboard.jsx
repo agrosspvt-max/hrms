@@ -8,8 +8,54 @@ import SheetWorkflowGrid from '../../components/SheetWorkflowGrid.jsx';
 import UpcomingEventsWidget from '../../components/UpcomingEventsWidget.jsx';
 import ScheduleTag from '../../components/ScheduleTag.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
+import useDraftAutosave from '../../hooks/useDraftAutosave';
 import { useToast } from '../../context/ToastContext.jsx';
 import { delayBadgeClass, delayLabel, errMsg, fmtDate } from '../../utils/helpers';
+
+/* ------------------------------------------------------------------ */
+/* Phase 19: Draft autosave status pill + Save Draft button.          */
+/*                                                                    */
+/* Renders a thin strip at the top of every unsubmitted submission    */
+/* card.  Mounts useDraftAutosave for THIS submission only -- each    */
+/* card gets its own hook instance so they autosave independently.    */
+/* ------------------------------------------------------------------ */
+function DraftAutosaveBar({ sub, buildPayload }) {
+  const { status, savedAt, saveNow } = useDraftAutosave({
+    submissionId: sub._id,
+    buildPayload,
+    initialSavedAt: sub.lastDraftSavedAt,
+    enabled: !sub.submitted,
+  });
+  const fmt = (d) => d
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '';
+  let label = '';
+  let cls = 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300';
+  if (status === 'saving') { label = 'Saving…'; cls = 'bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300'; }
+  else if (status === 'dirty') { label = 'Unsaved changes'; cls = 'bg-amber-50 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'; }
+  else if (status === 'saved' && savedAt) { label = `Saved at ${fmt(savedAt)}`; cls = 'bg-green-50 text-green-700 dark:bg-green-500/15 dark:text-green-300'; }
+  else if (status === 'error') { label = 'Save failed — will retry'; cls = 'bg-red-50 text-red-700 dark:bg-red-500/15 dark:text-red-300'; }
+  else if (savedAt)              { label = `Last saved at ${fmt(savedAt)}`; }
+  else                           { label = 'Draft autosaves every 30s'; }
+  return (
+    <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-slate-100 bg-slate-50/40 dark:bg-slate-800/40 dark:border-slate-700 flex-wrap">
+      <div className="flex items-center gap-2 text-[12px]">
+        <span className={`badge text-[10px] ${cls}`}>{label}</span>
+        <span className="text-slate-500 dark:text-slate-400 text-[11px]">
+          Your work is saved as you go. Refreshes are safe.
+        </span>
+      </div>
+      <button
+        type="button"
+        className="btn-secondary !py-1 !text-xs"
+        onClick={saveNow}
+        disabled={status === 'saving'}
+      >
+        {status === 'saving' ? 'Saving…' : 'Save Draft'}
+      </button>
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* Tiny client-side mirror of the backend formula evaluator.           */
@@ -101,6 +147,81 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const resolveDep = async (id) => {
     try { await api.post(`/dependencies/${id}/resolve`, {}); toast.success('Dependency resolved'); loadDeps(); }
     catch (err) { toast.error(errMsg(err)); }
+  };
+
+  /**
+   * Phase 19: build the draft payload for ONE submission, using the
+   * same shape the submit endpoint accepts so a manual Save Draft and
+   * Submit Report produce identical bodies (only the URL differs).
+   * Backend's /draft handler raw-persists this; /submit validates and
+   * runs auto-formulas.  Because the same payload is reusable, the
+   * autosave hook can call this on every interval without knowing
+   * anything template-specific.
+   */
+  const buildDraftPayload = (sub) => {
+    if (!sub || sub.submitted) return {};
+    const payload = {
+      selfRating: selfRating[sub._id],
+      selfNote:   selfNote[sub._id],
+      idea:       idea[sub._id],
+    };
+    if (sub.templateType === 'custom') {
+      const raw = customValues[sub._id] || {};
+      const metaForSub = customMeta[sub._id] || {};
+      payload.customResponses = Object.entries(raw).map(([key, value]) => {
+        const m = metaForSub[key] || {};
+        return { key, value, status: m.status || '', remark: m.remark || '' };
+      });
+      const sections = sub.template?.customSections || [];
+      if (sections.includes('productSales')) {
+        payload.productSales = (productSales[sub._id] || [])
+          .filter((r) => r.productId && (Number(r.quantity) > 0 || r.quantityId))
+          .map((r) => ({
+            productId: r.productId,
+            quantity: Number(r.quantity) > 0 ? Number(r.quantity) : undefined,
+            quantityId: r.quantityId || undefined,
+          }));
+      }
+      if (sections.includes('farmerRecords')) {
+        payload.farmerRecords = (farmerRecords[sub._id] || [])
+          .filter((r) => (r.name || '').trim())
+          .map((r) => ({
+            name: r.name.trim(),
+            mobile:  (r.mobile || '').trim(),
+            village: (r.village || '').trim(),
+            dealerLocation: (r.dealerLocation || '').trim(),
+            dealerId: r.dealerId || undefined,
+            products: (r.products || [])
+              .filter((p) => p.productId && Number(p.quantity) > 0)
+              .map((p) => ({ productId: p.productId, quantity: Number(p.quantity) })),
+          }));
+      }
+    } else if (sub.templateType === 'excel') {
+      const values = excelValues[sub._id] || {};
+      payload.excelResponses = (sub.excelResponses || []).map((r) => ({
+        fieldName: r.fieldName,
+        value: values[r.fieldName] !== undefined ? values[r.fieldName] : r.value,
+        rowStatus: r.rowStatus,
+      }));
+    } else if (sub.templateType === 'sheet') {
+      const cur = sheetState[sub._id] || sub.sheet || { cells: [] };
+      payload.sheet = {
+        cells: (cur.cells || []).filter((c) => c.editable && c.role === 'input')
+                                .map((c) => ({ r: c.r, c: c.c, value: c.value })),
+        scores: ((sheetStatus[sub._id] && Object.entries(sheetStatus[sub._id]).map(([key, v]) => ({
+          key, rowStatus: v.rowStatus, pendingReason: v.pendingReason,
+        }))) || []),
+      };
+    } else {
+      // Task template: tasks[] + addedTasks[].
+      payload.tasks = (sub.tasks || []).map((t) => ({
+        taskId: t._id,
+        status: t.status,
+        pendingReason: t.pendingReason,
+      }));
+      payload.addedTasks = (addedTasks[sub._id] || []).filter((t) => (t.title || '').trim());
+    }
+    return payload;
   };
 
   const load = async () => {
@@ -541,6 +662,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                 {sub.submitted ? <span className="badge-green">Submitted</span> : <span className="badge-amber">Pending</span>}
               </span>}
             >
+              {/* Phase 19: per-card autosave bar.  Renders only for
+                  unsubmitted cards.  Mounts useDraftAutosave for this
+                  submission so a refresh, deployment, or accidental
+                  navigation doesn't lose the in-progress work. */}
+              {!sub.submitted && (
+                <DraftAutosaveBar sub={sub} buildPayload={() => buildDraftPayload(sub)} />
+              )}
               {sub.submitted ? (
                 <SubmittedSummary sub={sub} />
               ) : sub.templateType === 'custom' ? (

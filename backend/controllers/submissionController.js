@@ -1253,8 +1253,224 @@ const bulkReview = asyncHandler(async (req, res) => {
   res.json({ requested: ids.length, succeededCount: succeeded.length, failedCount: failed.length, succeeded, failed });
 });
 
+/* ------------------------------------------------------------------ */
+/* Phase 19: Draft auto-save                                          */
+/* ------------------------------------------------------------------ */
+/**
+ * PUT /api/submissions/:id/draft
+ *
+ * Persists a partial work-in-progress payload onto the existing
+ * unsubmitted Submission document.  Accepts the SAME shape the submit
+ * endpoint accepts (tasks / excelResponses / sheet / customResponses
+ * / productSales / farmerRecords / selfRating / selfNote / idea /
+ * addedTasks) -- the frontend builds one payload and routes it to
+ * either /draft or /submit depending on the user's intent.
+ *
+ * Architectural guarantees (so drafts can't touch business processes):
+ *   - This handler NEVER flips `submitted` to true.
+ *   - It NEVER validates required fields, NEVER evaluates auto
+ *     formulas, NEVER scores work, NEVER touches reviewStatus, NEVER
+ *     creates dependency tasks, NEVER applies attendance, NEVER fires
+ *     notifications.
+ *   - Because every analytics / attendance / salary / pendency /
+ *     leaderboard / review query in the codebase filters on
+ *     `submitted: true` (Phases 4 + 8 + 15), an unsubmitted draft is
+ *     architecturally invisible to all of them.  No extra wiring
+ *     needed to honour the "drafts do not affect KPIs" rule.
+ *   - Auth: only the owning employee may save a draft.  HR / SA edits
+ *     to submitted rows still go through Submission Control's
+ *     freeze-mode editor.
+ *
+ * Idempotent / safe to spam from the autosave loop.
+ */
+const saveDraft = asyncHandler(async (req, res) => {
+  const sub = await Submission.findOne({ _id: req.params.id, employee: req.user._id });
+  if (!sub) { res.status(404); throw new Error('Submission not found'); }
+  if (sub.submitted) {
+    res.status(400);
+    throw new Error('Cannot save a draft on a submission that is already submitted.');
+  }
+
+  const { tasks, addedTasks, excelResponses, sheet, customResponses, productSales, farmerRecords, selfRating, selfNote, idea } = req.body || {};
+
+  /* ---- Tasks ---- */
+  if (Array.isArray(tasks)) {
+    const incoming = new Map(tasks.map((t) => [String(t.taskId || t._id || ''), t]));
+    sub.tasks.forEach((t) => {
+      const upd = incoming.get(String(t._id));
+      if (!upd) return;
+      if (upd.status !== undefined)        t.status = upd.status;
+      if (upd.pendingReason !== undefined) t.pendingReason = upd.pendingReason;
+    });
+    // Employee-added rows on task templates -- carry them as drafts too
+    // so they survive reload without being lost.
+    if (Array.isArray(addedTasks)) {
+      // Drop existing addedByEmployee rows then re-append from the body.
+      sub.tasks = sub.tasks.filter((t) => !t.addedByEmployee);
+      for (const at of addedTasks) {
+        const title = String(at?.title || '').trim();
+        if (!title) continue;
+        sub.tasks.push({
+          title, points: 0, status: at.status || 'pending_submit',
+          pendingReason: at.pendingReason || '', addedByEmployee: true, awardedMarks: 0,
+        });
+      }
+    }
+    sub.markModified('tasks');
+  }
+
+  /* ---- Excel responses ---- */
+  if (Array.isArray(excelResponses)) {
+    const incoming = new Map(excelResponses.map((r) => [String(r.fieldName || ''), r]));
+    sub.excelResponses.forEach((r) => {
+      const inc = incoming.get(r.fieldName);
+      if (!inc) return;
+      if (inc.value     !== undefined) r.value = inc.value;
+      if (inc.rowStatus !== undefined) r.rowStatus = inc.rowStatus;
+    });
+    sub.markModified('excelResponses');
+  }
+
+  /* ---- Sheet (cells + scores) ---- */
+  if (sheet && sub.sheet) {
+    if (Array.isArray(sheet.cells)) {
+      const map = new Map(sub.sheet.cells.map((c) => [`${c.r}:${c.c}`, c]));
+      for (const inc of sheet.cells) {
+        const key = `${Number(inc.r)}:${Number(inc.c)}`;
+        const cell = map.get(key);
+        if (cell && cell.editable && cell.role === 'input' && inc.value !== undefined) {
+          cell.value = inc.value;
+        }
+      }
+    }
+    if (Array.isArray(sheet.scores)) {
+      const byKey = new Map(sheet.scores.map((s) => [String(s.key || ''), s]));
+      sub.sheet.scores.forEach((sc) => {
+        const inc = byKey.get(sc.key);
+        if (!inc) return;
+        if (inc.rowStatus     !== undefined) sc.rowStatus = inc.rowStatus;
+        if (inc.pendingReason !== undefined) sc.pendingReason = inc.pendingReason;
+      });
+    }
+    sub.markModified('sheet');
+  }
+
+  /* ---- Custom responses ----
+     Raw passthrough.  Do NOT run computeAutoFields here -- auto fields
+     are recomputed by the submit handler from the final responses.
+     A draft must store exactly what the employee typed, including
+     blanks. */
+  if (Array.isArray(customResponses)) {
+    // Preserve system-generated values that the daily engine seeded.
+    const tpl = await Template.findById(sub.template).select('customFields');
+    const sysKeys = new Set(
+      (tpl?.customFields || []).filter((f) => f.fieldType === 'readonly').map((f) => f.key),
+    );
+    const seededByKey = new Map((sub.customResponses || []).map((r) => [r.key, r]));
+    const next = customResponses.map((r) => {
+      if (!r || !r.key) return null;
+      if (sysKeys.has(r.key)) {
+        // Carry-forward / readonly: always use the seeded value.
+        const seeded = seededByKey.get(r.key);
+        return seeded ? { key: r.key, value: seeded.value, status: seeded.status || '', remark: seeded.remark || '' } : null;
+      }
+      return {
+        key:    r.key,
+        value:  r.value,
+        status: r.status || '',
+        remark: typeof r.remark === 'string' ? r.remark : '',
+      };
+    }).filter(Boolean);
+    sub.customResponses = next;
+    sub.markModified('customResponses');
+  }
+
+  /* ---- Product Sales ---- */
+  if (Array.isArray(productSales)) {
+    const Product  = require('../models/Product');
+    const Quantity = require('../models/Quantity');
+    const cleaned = [];
+    for (const row of productSales) {
+      if (!row || !row.productId) continue;
+      const prod = await Product.findById(row.productId).lean();
+      if (!prod) continue;
+      let qval = Number(row.quantity);
+      let qty = null;
+      if (!Number.isFinite(qval) || qval <= 0) {
+        if (row.quantityId) qty = await Quantity.findById(row.quantityId).lean();
+        qval = Number(qty?.value) || 0;
+      }
+      const price  = Number(prod.pricePerUnit) || 0;
+      const nbvPct = Math.max(0, Math.min(Number(prod.nbvPercentage) || 0, 100));
+      const sales  = qval > 0 ? Math.round(price * qval * 100) / 100 : 0;
+      const nbv    = qval > 0 ? Math.round(sales * nbvPct) / 100 : 0;
+      cleaned.push({
+        productId: prod._id, productName: prod.name, productUnit: prod.unit,
+        productPrice: price, productNbvPercentage: nbvPct,
+        quantityId: qty?._id, quantityLabel: qty?.label || '',
+        quantityValue: qty ? (Number(qty.value) || 0) : qval,
+        quantity: qval, salesValue: sales, nbvValue: nbv,
+      });
+    }
+    sub.productSales = cleaned;
+    sub.markModified('productSales');
+  }
+
+  /* ---- Farmer Records ---- */
+  if (Array.isArray(farmerRecords)) {
+    const Product = require('../models/Product');
+    const Dealer  = require('../models/Dealer');
+    const cleaned = [];
+    for (const row of farmerRecords) {
+      if (!row || !(row.name || '').trim()) continue;
+      let dealer = null;
+      if (row.dealerId) dealer = await Dealer.findById(row.dealerId).lean();
+      const rawProducts = Array.isArray(row.products) ? row.products : [];
+      const cleanedProducts = [];
+      for (const pr of rawProducts) {
+        if (!pr || !pr.productId) continue;
+        const prod = await Product.findById(pr.productId).lean();
+        if (!prod) continue;
+        const q = Number(pr.quantity);
+        cleanedProducts.push({
+          productId: prod._id, productName: prod.name, productUnit: prod.unit,
+          quantity: Number.isFinite(q) && q > 0 ? q : 0,
+        });
+      }
+      const first = cleanedProducts[0];
+      cleaned.push({
+        name: row.name.trim(),
+        mobile:  String(row.mobile || '').trim(),
+        village: String(row.village || '').trim(),
+        dealerLocation: String(row.dealerLocation || '').trim(),
+        dealerId: dealer?._id,
+        dealerNameSnapshot:  dealer?.firmName || dealer?.name || '',
+        dealerPlaceSnapshot: dealer?.place || '',
+        dealerFirmSnapshot:  dealer?.firmName || dealer?.name || '',
+        dealerPersonSnapshot:dealer?.dealerName || '',
+        productId: first?.productId, productName: first?.productName || '',
+        products: cleanedProducts,
+      });
+    }
+    sub.farmerRecords = cleaned;
+    sub.markModified('farmerRecords');
+  }
+
+  /* ---- Self observation + idea (kept for back-compat, even though
+         Phase 5 moved daily reflection to its own collection) ---- */
+  if (selfRating !== undefined) sub.selfRating = selfRating === '' ? undefined : Number(selfRating);
+  if (selfNote   !== undefined) sub.selfNote   = String(selfNote || '');
+  if (idea       !== undefined) sub.idea       = String(idea || '');
+
+  sub.lastDraftSavedAt = new Date();
+  await sub.save();
+
+  res.json({ ok: true, _id: sub._id, lastDraftSavedAt: sub.lastDraftSavedAt });
+});
+
 module.exports = {
   getToday, submitOne, completeBacklogTask, history,
   listForReview, reviewSubmission, bulkReview,
   listForHodReview, hodReviewSubmission,
+  saveDraft,
 };

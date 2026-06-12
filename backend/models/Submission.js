@@ -329,6 +329,11 @@ const submissionSchema = new mongoose.Schema(
 
     submitted: { type: Boolean, default: false },
     submittedAt: { type: Date },
+    /* Phase 19: server-persisted draft auto-save.  The draft endpoint
+       stamps `lastDraftSavedAt` every time it writes the unsubmitted
+       submission.  Drives the frontend "Saved at HH:MM" pill and the
+       per-card "you left work here" indicator.  Cleared on submit. */
+    lastDraftSavedAt: { type: Date },
 
     // Self-observation (informational only)
     selfRating: { type: Number, min: 0, max: 10 },

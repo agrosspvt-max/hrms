@@ -27,31 +27,60 @@ export default function Notifications() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter]);
 
+  /**
+   * Optimistic mark-as-read: flip the local state FIRST so the card
+   * updates instantly + the unread count drops to N-1 without any
+   * page refresh, fire the API in the background, and roll back if
+   * it fails.  No `load()` -- no spinner, no scroll-jump, no flicker.
+   * Dispatches `hrms:notifications-changed` so the sidebar badge
+   * re-fetches its count, matching every other state-changing path.
+   */
   const markRead = async (id) => {
+    let prevItem;
+    const stamp = new Date().toISOString();
+    setItems((cur) => cur.map((n) => {
+      if (n._id !== id) return n;
+      prevItem = n;
+      return { ...n, read: true, readAt: n.readAt || stamp };
+    }));
+    window.dispatchEvent(new Event('hrms:notifications-changed'));
     try {
       await api.patch(`/notifications/${id}/read`);
-      load();
-      // tell the sidebar to refresh its unread badge
+    } catch (err) {
+      // Roll the local state back so the user sees an honest UI.
+      setItems((cur) => cur.map((n) => (n._id === id && prevItem ? prevItem : n)));
       window.dispatchEvent(new Event('hrms:notifications-changed'));
-    } catch (err) { toast.error(errMsg(err)); }
+      toast.error(errMsg(err));
+    }
   };
 
   const markAllRead = async () => {
+    const prevItems = items;
+    const stamp = new Date().toISOString();
+    setItems((cur) => cur.map((n) => (n.read ? n : { ...n, read: true, readAt: stamp })));
+    window.dispatchEvent(new Event('hrms:notifications-changed'));
     try {
       const { data } = await api.patch('/notifications/read-all');
       toast.success(`${data.updated} marked as read`);
-      load();
+    } catch (err) {
+      setItems(prevItems);
       window.dispatchEvent(new Event('hrms:notifications-changed'));
-    } catch (err) { toast.error(errMsg(err)); }
+      toast.error(errMsg(err));
+    }
   };
 
   const remove = async (id) => {
     if (!confirm('Delete this notification?')) return;
+    const prevItems = items;
+    setItems((cur) => cur.filter((n) => n._id !== id));
+    window.dispatchEvent(new Event('hrms:notifications-changed'));
     try {
       await api.delete(`/notifications/${id}`);
-      load();
+    } catch (err) {
+      setItems(prevItems);
       window.dispatchEvent(new Event('hrms:notifications-changed'));
-    } catch (err) { toast.error(errMsg(err)); }
+      toast.error(errMsg(err));
+    }
   };
 
   const unread = items.filter((i) => !i.read).length;

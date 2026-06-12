@@ -13,6 +13,11 @@ router.get('/hod/reviews', requireReviewer, c.listForHodReview);
 router.post('/:id/hod-review', requireReviewer, c.hodReviewSubmission);
 
 router.post('/:id/submit', c.submitOne);
+// Phase 19: persist a draft of an unsubmitted submission.  Same body
+// shape as /submit so the frontend builds one payload for both
+// contexts -- this endpoint just stores it without validating,
+// without running auto-formulas, and without flipping `submitted`.
+router.put('/:id/draft', c.saveDraft);
 router.post('/backlog/complete', c.completeBacklogTask);
 
 // HR review panel
