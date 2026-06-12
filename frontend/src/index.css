@@ -40,9 +40,40 @@ html.dark .text-black     { color: #f1f5f9 !important; }
 html.dark .bg-white       { background-color: #0f172a !important; } /* slate-900 */
 html.dark .bg-slate-50    { background-color: #1e293b !important; } /* slate-800 */
 html.dark .bg-slate-100   { background-color: #1e293b !important; }
+/* Phase 17: catch the same surface used as a Tailwind gray utility
+   even though the codebase prefers slate -- defensive against any
+   third-party content or future drift. */
+html.dark .bg-gray-50     { background-color: #1e293b !important; }
+html.dark .bg-gray-100    { background-color: #1e293b !important; }
+html.dark .bg-gray-200    { background-color: #334155 !important; }
 /* Some transluscent versions widely used as section panels. */
 html.dark [class*="bg-slate-50/"],
+html.dark [class*="bg-slate-100/"],
 html.dark [class*="bg-white/"] { background-color: rgba(15, 23, 42, 0.6) !important; }
+
+/* ----------------------------------------------------------------------
+ * Phase 17: hover-state safety net.
+ *
+ * The base safety net above only intercepts the resting (non-hover)
+ * `bg-white` / `bg-slate-50` / `bg-slate-100` utility classes.  Tailwind
+ * compiles hover variants to a SEPARATE class name with the `:hover`
+ * pseudo-state (`.hover\:bg-white:hover`), which the base rules don't
+ * touch -- so a row with `hover:bg-slate-50` flashed full slate-50
+ * (almost white) on hover before snapping back to the page's dark
+ * background, producing the flicker the user reported.
+ *
+ * These rules darken the hover destination to a slate that still
+ * reads as "elevated" against the dark page surface, without ever
+ * showing the underlying light tone.
+ * ---------------------------------------------------------------------- */
+html.dark .hover\:bg-white:hover     { background-color: #1e293b !important; } /* slate-800 */
+html.dark .hover\:bg-slate-50:hover  { background-color: #1e293b !important; }
+html.dark .hover\:bg-slate-100:hover { background-color: #334155 !important; } /* slate-700 */
+html.dark .hover\:bg-gray-50:hover   { background-color: #1e293b !important; }
+html.dark .hover\:bg-gray-100:hover  { background-color: #334155 !important; }
+/* Tailwind table-row hovers compile to slightly different selectors when
+   used inside `tr:hover td`; the existing `.table tr:hover td` rule in
+   the component layer already handles those. */
 
 /* ---- Borders: lift up so they're visible on slate-900 ---- */
 html.dark .border-slate-100,
@@ -52,25 +83,89 @@ html.dark .divide-slate-200 > * + * { border-color: #334155 !important; }
 
 /* ---- Soft tinted panels (success/warn/info backgrounds) ---- */
 /* Tailwind's bg-green-50 etc. become tinted overlays in dark mode. */
-html.dark .bg-green-50  { background-color: rgba(34, 197, 94, 0.10) !important; }
-html.dark .bg-red-50    { background-color: rgba(239, 68, 68, 0.10) !important; }
-html.dark .bg-amber-50  { background-color: rgba(245, 158, 11, 0.10) !important; }
-html.dark .bg-blue-50   { background-color: rgba(59, 130, 246, 0.10) !important; }
-html.dark .bg-purple-50 { background-color: rgba(168, 85, 247, 0.10) !important; }
-html.dark .bg-indigo-50 { background-color: rgba(99, 102, 241, 0.10) !important; }
+html.dark .bg-green-50,   html.dark .bg-green-100   { background-color: rgba(34, 197, 94, 0.10) !important; }
+html.dark .bg-red-50,     html.dark .bg-red-100     { background-color: rgba(239, 68, 68, 0.10) !important; }
+html.dark .bg-amber-50,   html.dark .bg-amber-100   { background-color: rgba(245, 158, 11, 0.10) !important; }
+html.dark .bg-blue-50,    html.dark .bg-blue-100    { background-color: rgba(59, 130, 246, 0.10) !important; }
+html.dark .bg-purple-50,  html.dark .bg-purple-100  { background-color: rgba(168, 85, 247, 0.10) !important; }
+html.dark .bg-indigo-50,  html.dark .bg-indigo-100  { background-color: rgba(99, 102, 241, 0.10) !important; }
+html.dark .bg-emerald-50, html.dark .bg-emerald-100 { background-color: rgba(16, 185, 129, 0.10) !important; }
+html.dark .bg-orange-50,  html.dark .bg-orange-100  { background-color: rgba(249, 115, 22, 0.10) !important; }
+html.dark .bg-pink-50,    html.dark .bg-pink-100    { background-color: rgba(236, 72, 153, 0.10) !important; }
+
+/* ----------------------------------------------------------------------
+ * Phase 17: translucent tinted panels (`bg-indigo-50/60`, `bg-emerald-50/40`,
+ * etc.).
+ *
+ * The Review & Supervision block in Add/Edit Employee, the Leave Balance
+ * card, salary CTC summary panels, calling/product/farmer sub-tables on
+ * the employee form and many sections elsewhere use the
+ *   `bg-<color>-<50|100>/<opacity>`
+ * pattern.  Tailwind compiles that to a class like `bg-indigo-50/60`
+ * with a built-in `--tw-bg-opacity` modifier.  The non-translucent
+ * overrides above only match the bare `bg-indigo-50` class, not the
+ * `/N`-suffixed variant.  Result: in dark mode the panel kept the full
+ * light tone with a slight transparency -- still bright white-ish over
+ * the dark surface.
+ *
+ * Catch every common palette/opacity combo via attribute substring
+ * selector.  Same RGBA target as the non-translucent versions so the
+ * panel still reads as that color family, just at the elevated alpha
+ * that works against the slate-950 page background.
+ * ---------------------------------------------------------------------- */
+html.dark [class*="bg-indigo-50/"],
+html.dark [class*="bg-indigo-100/"]  { background-color: rgba(99, 102, 241, 0.10) !important; }
+html.dark [class*="bg-blue-50/"],
+html.dark [class*="bg-blue-100/"]    { background-color: rgba(59, 130, 246, 0.10) !important; }
+html.dark [class*="bg-green-50/"],
+html.dark [class*="bg-green-100/"]   { background-color: rgba(34, 197, 94, 0.10) !important; }
+html.dark [class*="bg-emerald-50/"],
+html.dark [class*="bg-emerald-100/"] { background-color: rgba(16, 185, 129, 0.10) !important; }
+html.dark [class*="bg-amber-50/"],
+html.dark [class*="bg-amber-100/"]   { background-color: rgba(245, 158, 11, 0.10) !important; }
+html.dark [class*="bg-red-50/"],
+html.dark [class*="bg-red-100/"]     { background-color: rgba(239, 68, 68, 0.10) !important; }
+html.dark [class*="bg-purple-50/"],
+html.dark [class*="bg-purple-100/"]  { background-color: rgba(168, 85, 247, 0.10) !important; }
+html.dark [class*="bg-orange-50/"],
+html.dark [class*="bg-orange-100/"]  { background-color: rgba(249, 115, 22, 0.10) !important; }
+html.dark [class*="bg-pink-50/"],
+html.dark [class*="bg-pink-100/"]    { background-color: rgba(236, 72, 153, 0.10) !important; }
+
+/* Hover-state coverage for the same palette, so tinted-row hovers don't
+   flash light against the dark surface. */
+html.dark .hover\:bg-indigo-50:hover,  html.dark .hover\:bg-indigo-100:hover  { background-color: rgba(99, 102, 241, 0.18) !important; }
+html.dark .hover\:bg-blue-50:hover,    html.dark .hover\:bg-blue-100:hover    { background-color: rgba(59, 130, 246, 0.18) !important; }
+html.dark .hover\:bg-green-50:hover,   html.dark .hover\:bg-green-100:hover   { background-color: rgba(34, 197, 94, 0.18) !important; }
+html.dark .hover\:bg-amber-50:hover,   html.dark .hover\:bg-amber-100:hover   { background-color: rgba(245, 158, 11, 0.18) !important; }
+html.dark .hover\:bg-red-50:hover,     html.dark .hover\:bg-red-100:hover     { background-color: rgba(239, 68, 68, 0.18) !important; }
+html.dark .hover\:bg-purple-50:hover,  html.dark .hover\:bg-purple-100:hover  { background-color: rgba(168, 85, 247, 0.18) !important; }
+
 html.dark .border-green-200, html.dark .border-green-100   { border-color: rgba(34, 197, 94, 0.30) !important; }
 html.dark .border-red-200, html.dark .border-red-100       { border-color: rgba(239, 68, 68, 0.30) !important; }
 html.dark .border-amber-200, html.dark .border-amber-100   { border-color: rgba(245, 158, 11, 0.30) !important; }
 html.dark .border-blue-200, html.dark .border-blue-100     { border-color: rgba(59, 130, 246, 0.30) !important; }
 html.dark .border-purple-200, html.dark .border-purple-100 { border-color: rgba(168, 85, 247, 0.30) !important; }
+html.dark .border-indigo-200, html.dark .border-indigo-100   { border-color: rgba(99, 102, 241, 0.30) !important; }
+html.dark .border-emerald-200, html.dark .border-emerald-100 { border-color: rgba(16, 185, 129, 0.30) !important; }
+html.dark .border-orange-200, html.dark .border-orange-100   { border-color: rgba(249, 115, 22, 0.30) !important; }
+html.dark .border-pink-200, html.dark .border-pink-100       { border-color: rgba(236, 72, 153, 0.30) !important; }
+html.dark .border-gray-200, html.dark .border-gray-100       { border-color: #334155 !important; }
 
 /* Light text on tinted panels: brighten so they're readable. */
-html.dark .text-green-800,  html.dark .text-green-700   { color: #86efac !important; }   /* green-300 */
-html.dark .text-red-800,    html.dark .text-red-700     { color: #fca5a5 !important; }   /* red-300 */
-html.dark .text-amber-900,  html.dark .text-amber-800, html.dark .text-amber-700 { color: #fcd34d !important; } /* amber-300 */
-html.dark .text-blue-800,   html.dark .text-blue-700    { color: #93c5fd !important; }   /* blue-300 */
-html.dark .text-purple-800, html.dark .text-purple-700  { color: #d8b4fe !important; }   /* purple-300 */
-html.dark .text-indigo-800, html.dark .text-indigo-700  { color: #a5b4fc !important; }   /* indigo-300 */
+html.dark .text-green-800,  html.dark .text-green-700,  html.dark .text-green-900  { color: #86efac !important; }   /* green-300 */
+html.dark .text-red-800,    html.dark .text-red-700,    html.dark .text-red-900    { color: #fca5a5 !important; }   /* red-300 */
+html.dark .text-amber-900,  html.dark .text-amber-800,  html.dark .text-amber-700  { color: #fcd34d !important; } /* amber-300 */
+html.dark .text-blue-800,   html.dark .text-blue-700,   html.dark .text-blue-900   { color: #93c5fd !important; }   /* blue-300 */
+html.dark .text-purple-800, html.dark .text-purple-700, html.dark .text-purple-900 { color: #d8b4fe !important; }   /* purple-300 */
+html.dark .text-indigo-800, html.dark .text-indigo-700, html.dark .text-indigo-900 { color: #a5b4fc !important; }   /* indigo-300 */
+html.dark .text-emerald-800, html.dark .text-emerald-700, html.dark .text-emerald-900 { color: #6ee7b7 !important; } /* emerald-300 */
+html.dark .text-orange-800, html.dark .text-orange-700, html.dark .text-orange-900 { color: #fdba74 !important; }   /* orange-300 */
+html.dark .text-pink-800,   html.dark .text-pink-700,   html.dark .text-pink-900   { color: #f9a8d4 !important; }   /* pink-300 */
+/* Defensive gray-* coverage in case any third-party class uses it. */
+html.dark .text-gray-900,   html.dark .text-gray-800    { color: #f1f5f9 !important; }
+html.dark .text-gray-700,   html.dark .text-gray-600    { color: #e2e8f0 !important; }
+html.dark .text-gray-500,   html.dark .text-gray-400    { color: #94a3b8 !important; }
 
 /* ---- Form controls ---- */
 html.dark input::placeholder,
