@@ -1185,42 +1185,65 @@ function CustomTemplateForm({
           </div>
         </div>
 
-        {/* Value + status + remark side by side when room, stacked when narrow */}
-        <div className="grid md:grid-cols-12 gap-2">
-          <div className={`md:col-span-${f.supportsStatus || f.supportsRemark ? '5' : '12'}`}>
+        {/* Value (+ optional status + optional remark).
+            Phase 20 fix: when the field has neither Status nor Remark
+            (Calling Report / Agri-Advisor DR -- every field is a pure
+            number or auto-calc), skip the inner 12-col grid entirely
+            so the value input fills the whole card width.  The earlier
+            renderer always wrapped the value in `md:col-span-${expr}`
+            with template-literal interpolation; Tailwind's JIT can't
+            generate dynamic class names, so md:col-span-12 was never
+            present in the compiled CSS and the input collapsed to 1/12
+            width.  Auto fields read as plain text and looked fine, but
+            editable number inputs clipped their values -- the exact
+            symptom HR reported.  Literal conditional class strings
+            below replace the template literals so the col-spans Tailwind
+            DOES need are reliably generated. */}
+        {!f.supportsStatus && !f.supportsRemark ? (
+          <div>
             <div className="label text-[10px] uppercase">Value</div>
             {valueControl}
           </div>
-          {f.supportsStatus && (
-            <div className="md:col-span-3">
-              <div className="label text-[10px] uppercase">Status</div>
-              <select
-                className="input"
-                value={m.status || ''}
-                onChange={(e) => onMeta(f.key, { status: e.target.value })}
-              >
-                <option value="">—</option>
-                <option value="done">Done</option>
-                <option value="pending">Pending</option>
-                <option value="work_not_available">Work N/A</option>
-              </select>
+        ) : (
+          <div className="grid md:grid-cols-12 gap-2">
+            <div className={f.supportsRemark
+              ? 'md:col-span-5'
+              : 'md:col-span-9' /* status-only: give the value more room */
+            }>
+              <div className="label text-[10px] uppercase">Value</div>
+              {valueControl}
             </div>
-          )}
-          {f.supportsRemark && (
-            <div className={`md:col-span-${f.supportsStatus ? '4' : '7'}`}>
-              <div className="label text-[10px] uppercase">
-                Remark
-                {pendingNeedsRemark && <span className="text-red-500"> *</span>}
+            {f.supportsStatus && (
+              <div className="md:col-span-3">
+                <div className="label text-[10px] uppercase">Status</div>
+                <select
+                  className="input"
+                  value={m.status || ''}
+                  onChange={(e) => onMeta(f.key, { status: e.target.value })}
+                >
+                  <option value="">—</option>
+                  <option value="done">Done</option>
+                  <option value="pending">Pending</option>
+                  <option value="work_not_available">Work N/A</option>
+                </select>
               </div>
-              <input
-                className={`input ${pendingNeedsRemark && !(m.remark || '').trim() ? 'border-red-400' : ''}`}
-                placeholder={pendingNeedsRemark ? 'Reason required for Pending' : 'Optional'}
-                value={m.remark || ''}
-                onChange={(e) => onMeta(f.key, { remark: e.target.value })}
-              />
-            </div>
-          )}
-        </div>
+            )}
+            {f.supportsRemark && (
+              <div className={f.supportsStatus ? 'md:col-span-4' : 'md:col-span-7'}>
+                <div className="label text-[10px] uppercase">
+                  Remark
+                  {pendingNeedsRemark && <span className="text-red-500"> *</span>}
+                </div>
+                <input
+                  className={`input ${pendingNeedsRemark && !(m.remark || '').trim() ? 'border-red-400' : ''}`}
+                  placeholder={pendingNeedsRemark ? 'Reason required for Pending' : 'Optional'}
+                  value={m.remark || ''}
+                  onChange={(e) => onMeta(f.key, { remark: e.target.value })}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
     );
   };
