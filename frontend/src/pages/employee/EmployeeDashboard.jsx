@@ -230,20 +230,78 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       api.get('/submissions/today'),
       api.get('/dashboard/employee/summary'),
     ]);
-    // Seed editable working copies for unsubmitted sheet reports.
+    // Seed editable working copies for unsubmitted reports.
+    //
+    // Phase 19 fix: BEFORE this fix the loop only seeded `customValues`
+    // (scalar custom-field values) and `sheetState`.  It did NOT seed
+    // `productSales[sub._id]` / `farmerRecords[sub._id]` / `customMeta`.
+    // Result: Save Draft persisted product / farmer rows correctly on
+    // the server (the saveDraft endpoint writes them onto the
+    // submission document), but on page reload the local state for
+    // those two sub-tables stayed empty -- so the form rendered as if
+    // the employee had never added anything.  Calling Report worked
+    // because it only uses `customResponses` (scalar fields), which
+    // WAS being seeded.
+    //
+    // We now seed productSales / farmerRecords / customMeta with the
+    // SAME shape the form components expect (the ProductSalesSection
+    // and FarmerRecordsSection row shapes).  Spread order keeps any
+    // in-flight user edits in `prev` from being clobbered by a later
+    // re-fetch.
     const seed = {};
     const customSeed = {};
+    const customMetaSeed = {};
+    const productSalesSeed = {};
+    const farmerRecordsSeed = {};
     (a.data.submissions || []).forEach((s) => {
       if (s.templateType === 'sheet' && !s.submitted && s.sheet) {
         seed[s._id] = JSON.parse(JSON.stringify(s.sheet));
       }
       if (s.templateType === 'custom' && !s.submitted) {
         const ctx = {};
-        (s.customResponses || []).forEach((r) => { ctx[r.key] = r.value; });
+        const metaCtx = {};
+        (s.customResponses || []).forEach((r) => {
+          ctx[r.key] = r.value;
+          // Phase 14 status + remark survive reload too.
+          if ((r.status && r.status !== '') || (r.remark && r.remark !== '')) {
+            metaCtx[r.key] = { status: r.status || '', remark: r.remark || '' };
+          }
+        });
         customSeed[s._id] = ctx;
+        if (Object.keys(metaCtx).length > 0) customMetaSeed[s._id] = metaCtx;
+        if (Array.isArray(s.productSales) && s.productSales.length > 0) {
+          productSalesSeed[s._id] = s.productSales.map((r) => ({
+            productId: r.productId ? String(r.productId) : '',
+            // Prefer the raw `quantity` field (Phase 2 canonical input);
+            // fall back to `quantityValue` for rows saved under the
+            // legacy Quantity Master path.
+            quantity:  r.quantity != null && r.quantity !== '' ? r.quantity
+                     : r.quantityValue != null && r.quantityValue !== '' ? r.quantityValue : '',
+            quantityId: r.quantityId ? String(r.quantityId) : '',
+          }));
+        }
+        if (Array.isArray(s.farmerRecords) && s.farmerRecords.length > 0) {
+          farmerRecordsSeed[s._id] = s.farmerRecords.map((r) => ({
+            name:    r.name || '',
+            mobile:  r.mobile || '',
+            village: r.village || '',
+            dealerLocation: r.dealerLocation || '',
+            dealerId:    r.dealerId ? String(r.dealerId) : '',
+            // Restore Place from the snapshot so it shows even if the
+            // dealer was deactivated after the draft was saved.
+            dealerPlace: r.dealerPlaceSnapshot || '',
+            products: (r.products || []).map((p) => ({
+              productId: p.productId ? String(p.productId) : '',
+              quantity:  p.quantity != null && p.quantity !== '' ? p.quantity : '',
+            })),
+          }));
+        }
       }
     });
-    setCustomValues((prev) => ({ ...customSeed, ...prev }));
+    setCustomValues((prev) => ({ ...customSeed,        ...prev }));
+    setCustomMeta((prev) =>   ({ ...customMetaSeed,    ...prev }));
+    setProductSales((prev) => ({ ...productSalesSeed,  ...prev }));
+    setFarmerRecords((prev) =>({ ...farmerRecordsSeed, ...prev }));
     setSheetState(seed);
     setData(a.data);
     setSummary(b.data);
