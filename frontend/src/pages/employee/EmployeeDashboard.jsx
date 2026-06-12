@@ -1232,10 +1232,26 @@ function CustomTemplateForm({
           {g.name !== 'General' && (
             <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">{g.name}</div>
           )}
-          <div className="space-y-2">
-            {g.items.map((f) => (
-              <div key={f.key}>{renderField(f)}</div>
-            ))}
+          {/* Phase 20: responsive grid inside every section.  Replaces the
+              previous vertical stack so a section like "Today" packs three
+              small inputs (Assigned / Yesterday / Today) into one row on
+              desktop, two on tablet, and one on mobile.  All renderField
+              behaviour stays identical -- this is a layout-only change.
+
+              Long-form types (textarea / long_text) span full row at every
+              breakpoint so a multi-line note doesn't get squashed into a
+              third of the width.  Every other field type -- including auto-
+              calculated, currency, percentage, dropdown, date, time,
+              yes/no -- participates in the grid as a single cell. */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+            {g.items.map((f) => {
+              const wide = f.fieldType === 'textarea' || f.fieldType === 'long_text';
+              return (
+                <div key={f.key} className={wide ? 'md:col-span-2 xl:col-span-3' : ''}>
+                  {renderField(f)}
+                </div>
+              );
+            })}
           </div>
         </div>
       ))}
