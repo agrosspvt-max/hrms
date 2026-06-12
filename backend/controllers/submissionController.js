@@ -50,14 +50,17 @@ const stampDependency = (unit, payload, { kind, sourceTaskId, originalTaskName, 
 const HALFDAY_CUTOFF_HOUR = Number(process.env.ATTENDANCE_HALFDAY_CUTOFF_HOUR) || 17;
 
 /**
- * Apply the automatic half-day attendance rule for `employee` on `day`,
- * driven by SERVER TIME of submission.  Behaviour matrix:
+ * Apply the automatic attendance rule for `employee` on `day`.
  *
- *   Submit time     | Approved half-day leave?  | Result
- *   ----------------|---------------------------|------------------------
- *   before 5 PM     | no                        | half_unpaid (record)
- *   before 5 PM     | yes                       | half_paid (record)
- *   5 PM or later   | n/a                       | no record (derive=Present)
+ * Phase 16: the previous "submitted before 5 PM = half_unpaid" rule is
+ * GONE.  Submitting any valid assignment now always means Present.
+ * deriveAttendance() resolves the absence of an explicit Attendance
+ * record to 'present' the moment a submission lands for the day.
+ *
+ * What this helper still does: when an approved HALF-DAY LEAVE covers
+ * the day and the employee submits the worked half, stamp the
+ * half_paid record so payroll knows to pay both halves (worked +
+ * paid leave).  Every other path is a no-op.
  *
  * Guards: NEVER create / overwrite a record when the day is already
  * owned by something else --
@@ -66,9 +69,6 @@ const HALFDAY_CUTOFF_HOUR = Number(process.env.ATTENDANCE_HALFDAY_CUTOFF_HOUR) |
  *   - approved full-day leave covering the day
  *   - employee weekly off
  *   - holiday
- *
- * Those days stay exactly as they are.  Auto-marking only ever runs on
- * normal working days.
  */
 const applyAutoHalfDay = async (employee, day) => {
   const existing = await Attendance.findOne({ employee: employee._id, date: day });
@@ -95,12 +95,10 @@ const applyAutoHalfDay = async (employee, day) => {
   });
   if (fullDayLeave) return;
 
-  // SERVER TIME determines the cutoff -- never the client.
-  const beforeCutoff = new Date().getHours() < HALFDAY_CUTOFF_HOUR;
-  if (!beforeCutoff) return; // 5 PM or later -> Present (derived)
-
-  // Half-day at submit time.  If there's an approved half-day leave for
-  // the same date, the day is paid; otherwise unpaid.
+  // Phase 16: the only auto-record we still stamp is `half_paid` for
+  // the worked half on a half-day leave.  No half_unpaid, no time-of-
+  // day cutoff -- any submission = Present unless half-day leave is
+  // overlaying it.
   const halfLeave = await Leave.findOne({
     employee: employee._id,
     status: 'approved',
@@ -108,11 +106,11 @@ const applyAutoHalfDay = async (employee, day) => {
     fromDate: { $lte: day },
     toDate:   { $gte: day },
   });
-  const status = halfLeave ? 'half_paid' : 'half_unpaid';
+  if (!halfLeave) return; // no half-day leave -> employee is fully Present
 
   await Attendance.findOneAndUpdate(
     { employee: employee._id, date: day },
-    { employee: employee._id, date: day, status, source: 'auto', setBy: employee._id },
+    { employee: employee._id, date: day, status: 'half_paid', source: 'auto', setBy: employee._id },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
 };

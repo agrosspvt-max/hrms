@@ -354,8 +354,12 @@ const deriveAttendance = async (employee, from, to) => {
   let weeklyOffDays = 0;
   let holidayDays = 0;
 
-  // "Today" boundary - anything strictly after this is considered
-  // "future" and exempt from being marked absent.
+  // "Today" boundary.  Phase 16: today is no longer marked absent until
+  // the day has fully ended.  A working day with no submission yet
+  // resolves to 'ongoing' (work in progress) when day === todayMidnight,
+  // 'future' when day > todayMidnight, and 'absent' only when
+  // day < todayMidnight.  Submitting any assignment immediately flips
+  // the day to 'present'.
   const todayMidnight = startOfDay(new Date());
 
   const submissionsInRange = await Submission.find({
@@ -417,6 +421,7 @@ const deriveAttendance = async (employee, from, to) => {
         if (lv) status = lv.paid ? 'full_paid' : 'full_unpaid';
         else if (submittedDays.has(iso)) status = 'present';
         else if (day > todayMidnight) status = 'future';
+        else if (day.getTime() === todayMidnight.getTime()) status = 'ongoing';
         else status = 'absent';
       }
     }
@@ -439,7 +444,10 @@ const deriveAttendance = async (employee, from, to) => {
       case 'absent': absentDays += 1; break;
       case 'weekly_off': weeklyOffDays += 1; break;
       case 'holiday': holidayDays += 1; break;
-      default: break; // future
+      default: break; // 'future' / 'ongoing' -- not counted in any bucket.
+                      // Salary counts payableDays only after the day
+                      // resolves to present / leave / half_paid; an
+                      // unresolved day cannot pay.
     }
   }
 

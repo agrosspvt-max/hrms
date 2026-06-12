@@ -24,6 +24,8 @@ const STATUS_STYLE = {
   weekly_off: 'bg-slate-300',
   holiday: 'bg-indigo-400',
   future: 'bg-slate-100 border border-slate-200',
+  // Phase 16: today, no submission yet -- work in progress.
+  ongoing: 'bg-amber-400',
 };
 
 const STATUS_LABEL = {
@@ -36,6 +38,7 @@ const STATUS_LABEL = {
   weekly_off: 'Weekly Off',
   holiday: 'Holiday',
   future: 'Upcoming',
+  ongoing: 'Ongoing',
 };
 
 // Statuses HR can assign through the manual override modal.

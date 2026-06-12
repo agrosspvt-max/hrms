@@ -109,6 +109,20 @@ function EmployeeDayCard({ card, open, onToggle, onReload }) {
   const { employee, date, submissions, reflection, review } = card;
   const reviewed = review && review.reviewStatus === 'reviewed';
   const types = submissions.map((s) => (s.template?.customKind || s.templateType));
+  // Phase 16: roll-up HOD state for the day.  Awaiting beats Returned
+  // beats Approved so HR's attention is drawn to anything still waiting
+  // on the HOD layer.
+  const hodRollup = (() => {
+    const states = submissions.map((s) => hodReviewState(s)).filter(Boolean);
+    if (states.length === 0) return null;
+    if (states.some((x) => x.label === 'Awaiting HOD Review')) {
+      return { label: 'Awaiting HOD', dot: '🟡', cls: 'bg-amber-50 text-amber-700 border-amber-200' };
+    }
+    if (states.some((x) => x.label === 'HOD Returned for Changes')) {
+      return { label: 'HOD Returned', dot: '🔵', cls: 'bg-blue-50 text-blue-700 border-blue-200' };
+    }
+    return { label: 'HOD Approved', dot: '🟢', cls: 'bg-green-50 text-green-700 border-green-200' };
+  })();
 
   return (
     <div className={`card overflow-hidden ${reviewed ? '' : 'ring-1 ring-amber-200'}`}>
@@ -123,9 +137,14 @@ function EmployeeDayCard({ card, open, onToggle, onReload }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {hodRollup && (
+            <span className={`badge text-[11px] border ${hodRollup.cls}`} title={`Day-level HOD status: ${hodRollup.label}`}>
+              <span className="mr-1">{hodRollup.dot}</span>{hodRollup.label}
+            </span>
+          )}
           {reviewed
-            ? <span className="badge-green">Reviewed</span>
-            : <span className="badge-amber">Pending</span>}
+            ? <span className="badge-green">HR Reviewed</span>
+            : <span className="badge-amber">HR Pending</span>}
           <span className="text-slate-400">{open ? '▾' : '▸'}</span>
         </div>
       </button>
@@ -190,8 +209,8 @@ function SubmissionPanel({ sub, onReload }) {
 
   return (
     <div className="rounded-lg border border-slate-200">
-      <div className="px-4 py-2 border-b border-slate-100 flex items-center justify-between bg-white">
-        <div>
+      <div className="px-4 py-2 border-b border-slate-100 flex items-center justify-between bg-white gap-2 flex-wrap">
+        <div className="min-w-0">
           <div className="font-medium text-slate-800">
             {sub.template?.title || '(template gone)'}
           </div>
@@ -200,10 +219,15 @@ function SubmissionPanel({ sub, onReload }) {
             {sub.totalPoints > 0 && <> · work score <b>{sub.earnedPoints}/{sub.totalPoints}</b></>}
           </div>
         </div>
-        <Link className="text-xs text-brand-600 hover:underline" to={`/submission-control?focus=${sub._id}`}>
-          Open in Submission Control →
-        </Link>
+        <div className="flex items-center gap-2">
+          <HodReviewBadge sub={sub} />
+          <Link className="text-xs text-brand-600 hover:underline" to={`/submission-control?focus=${sub._id}`}>
+            Open in Submission Control →
+          </Link>
+        </div>
       </div>
+      {/* Phase 16: HOD review details (reviewer + time + remarks) when present. */}
+      <HodReviewDetails sub={sub} />
       <div className="p-4 space-y-3">
         {isCalling && <CallingReportPanel sub={sub} />}
         {isProductFarmer && <ProductFarmerPanel sub={sub} />}
@@ -589,6 +613,75 @@ function DailyReviewPanel({ employeeId, date, review, onSaved }) {
           {busy ? 'Saving…' : (reviewed ? 'Update Daily Review' : 'Finalise Day')}
         </button>
       </div>
+    </div>
+  );
+}
+
+/* ===================================================================== */
+/* HOD review status (Phase 16)                                           */
+/* ===================================================================== */
+/**
+ * Derive the HOD-stage status from currentReviewStage + hodReview.
+ *
+ *   currentReviewStage      hodReview.recommend     → label / colour
+ *   ----------------------  ---------------------   --------------------------
+ *   under_hod               (any)                   🟡 Awaiting HOD Review
+ *   submitted               (any) -- HOD route      🟡 Awaiting HOD Review
+ *   hod_reviewed            'approve'               🟢 HOD Approved
+ *   hod_reviewed            'needs_changes'         🔵 HOD Returned for Changes
+ *   under_hr / finalized    'approve'               🟢 HOD Approved
+ *   under_hr / finalized    'needs_changes'         🔵 HOD Returned for Changes
+ *   direct_hr (no HOD)      —                       (nothing rendered)
+ *
+ * Returns { label, dot, cls } for the badge, or null when the
+ * submission bypasses HOD entirely (employee's reviewFlow=direct_hr).
+ */
+const hodReviewState = (sub) => {
+  const reviewedByHod = !!sub.hodReview?.reviewedAt;
+  const recommend = sub.hodReview?.recommend || '';
+  const stage = sub.currentReviewStage || '';
+  // Bypass: never routed through HOD AND nobody reviewed at HOD layer.
+  if (!reviewedByHod && stage !== 'under_hod' && stage !== 'hod_reviewed') return null;
+  if (reviewedByHod) {
+    if (recommend === 'approve') {
+      return { label: 'HOD Approved', dot: '🟢', cls: 'bg-green-50 text-green-700 border-green-200' };
+    }
+    if (recommend === 'needs_changes') {
+      return { label: 'HOD Returned for Changes', dot: '🔵', cls: 'bg-blue-50 text-blue-700 border-blue-200' };
+    }
+    // Reviewed but no explicit recommend value.
+    return { label: 'HOD Reviewed', dot: '🟢', cls: 'bg-green-50 text-green-700 border-green-200' };
+  }
+  return { label: 'Awaiting HOD Review', dot: '🟡', cls: 'bg-amber-50 text-amber-700 border-amber-200' };
+};
+
+function HodReviewBadge({ sub }) {
+  const s = hodReviewState(sub);
+  if (!s) return null;
+  return (
+    <span className={`badge text-[11px] whitespace-nowrap border ${s.cls}`} title={s.label}>
+      <span className="mr-1">{s.dot}</span>{s.label}
+    </span>
+  );
+}
+
+function HodReviewDetails({ sub }) {
+  const s = hodReviewState(sub);
+  if (!s) return null;
+  const h = sub.hodReview || {};
+  // Awaiting state has no reviewer / timestamp yet -- skip the detail row.
+  if (!h.reviewedAt) return null;
+  return (
+    <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 text-[12px] text-slate-700">
+      <span className="font-semibold">{s.label}</span>
+      <span className="text-slate-500"> · </span>
+      Reviewed by <b>{h.reviewedBy?.name || '—'}</b>
+      <span className="text-slate-500"> · {new Date(h.reviewedAt).toLocaleString()}</span>
+      {h.remarks && (
+        <div className="mt-1 text-[12px] text-slate-700">
+          <span className="font-semibold">HOD remarks:</span> {h.remarks}
+        </div>
+      )}
     </div>
   );
 }

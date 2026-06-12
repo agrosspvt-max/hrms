@@ -90,6 +90,9 @@ const listGrouped = asyncHandler(async (req, res) => {
   const subs = await Submission.find(subWhere)
     .populate('template', 'title templateType customKind customSections customFields')
     .populate('assignment', 'frequency scheduleLabel')
+    // Phase 16: surface the HOD reviewer's identity so HR sees who
+    // approved / returned each submission without an extra round-trip.
+    .populate('hodReview.reviewedBy', 'name role')
     .sort({ employee: 1, submittedAt: 1, _id: 1 })
     .lean();
 
@@ -152,6 +155,7 @@ const getDay = asyncHandler(async (req, res) => {
     Submission.find({ employee: employee._id, date: day, ...liveSubmissionFilter({}) })
       .populate('template', 'title templateType customKind customSections customFields')
       .populate('assignment', 'frequency scheduleLabel')
+      .populate('hodReview.reviewedBy', 'name role')
       .sort({ submittedAt: 1, _id: 1 }).lean(),
     DailyReflection.findOne({ employee: employee._id, date: day }).lean(),
     DailyReview.findOne({ employee: employee._id, date: day }).populate('reviewedBy', 'name role').lean(),
