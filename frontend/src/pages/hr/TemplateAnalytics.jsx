@@ -9,7 +9,7 @@ import StatCard from '../../components/StatCard.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { errMsg } from '../../utils/helpers';
+import { errMsg, fmtCurrency, fmtPct, fmtAvg, fmtInt } from '../../utils/helpers';
 
 /**
  * Dynamic Analytics page (Phase 11).
@@ -189,15 +189,15 @@ function SubTemplatesSection({ subTemplates }) {
             <div className="p-3 space-y-3">
               {/* Phase 13: assigned / submitted / rates strip. */}
               <div className="grid grid-cols-2 gap-2">
-                <StatCard label="Assigned"        value={s.overview.assignedCount ?? 0}     accent="brand" />
-                <StatCard label="Submitted"       value={s.overview.submittedCount ?? 0}    accent="blue" />
-                <StatCard label="Completion %"    value={`${s.overview.completionRate ?? 0}%`} accent={(s.overview.completionRate ?? 0) >= 80 ? 'green' : 'amber'} />
-                <StatCard label="Submission %"    value={`${s.overview.submissionRate ?? 0}%`} accent={(s.overview.submissionRate ?? 0) >= 80 ? 'green' : 'amber'} />
+                <StatCard label="Assigned"        value={fmtInt(s.overview.assignedCount ?? 0)}  accent="brand" />
+                <StatCard label="Submitted"       value={fmtInt(s.overview.submittedCount ?? 0)} accent="blue" />
+                <StatCard label="Completion %"    value={fmtPct(s.overview.completionRate ?? 0)} accent={(s.overview.completionRate ?? 0) >= 80 ? 'green' : 'amber'} />
+                <StatCard label="Submission %"    value={fmtPct(s.overview.submissionRate ?? 0)} accent={(s.overview.submissionRate ?? 0) >= 80 ? 'green' : 'amber'} />
               </div>
               <div className="grid grid-cols-3 gap-2">
-                <StatCard label="Done %"    value={`${s.overview.donePct ?? 0}%`}    accent="green" />
-                <StatCard label="Pending %" value={`${s.overview.pendingPct ?? 0}%`} accent="red" />
-                <StatCard label="W/N A %"   value={`${s.overview.wnaPct ?? 0}%`}     accent="amber" />
+                <StatCard label="Done %"    value={fmtPct(s.overview.donePct ?? 0)}    accent="green" />
+                <StatCard label="Pending %" value={fmtPct(s.overview.pendingPct ?? 0)} accent="red" />
+                <StatCard label="W/N A %"   value={fmtPct(s.overview.wnaPct ?? 0)}     accent="amber" />
               </div>
               {s.fields && s.fields.length > 0 && (
                 <table className="w-full text-xs">
@@ -208,9 +208,9 @@ function SubTemplatesSection({ subTemplates }) {
                     {s.fields.map((f) => (
                       <tr key={f.key} className="border-t border-slate-100">
                         <td className="py-0.5 text-slate-700">{f.label}</td>
-                        <td className="py-0.5 text-right font-medium">{f.total}</td>
-                        <td className="py-0.5 text-right">{f.avg}</td>
-                        <td className="py-0.5 text-right">{f.max}</td>
+                        <td className="py-0.5 text-right font-medium">{fmtAvg(f.total)}</td>
+                        <td className="py-0.5 text-right">{fmtAvg(f.avg)}</td>
+                        <td className="py-0.5 text-right">{fmtAvg(f.max)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -309,10 +309,10 @@ function FieldCard({ field }) {
       </div>
       <div className="p-5 space-y-4">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <StatCard label="Total"   value={f.total} accent="brand" />
-          <StatCard label="Average" value={f.avg}   accent="blue" />
-          <StatCard label="Lowest"  value={f.min}   accent="amber" />
-          <StatCard label="Highest" value={f.max}   accent="green" />
+          <StatCard label="Total"   value={f.fieldType === 'currency' ? fmtCurrency(f.total) : f.fieldType === 'percentage' ? fmtPct(f.total) : fmtAvg(f.total)} accent="brand" />
+          <StatCard label="Average" value={f.fieldType === 'currency' ? fmtCurrency(f.avg)   : f.fieldType === 'percentage' ? fmtPct(f.avg)   : fmtAvg(f.avg)}   accent="blue" />
+          <StatCard label="Lowest"  value={f.fieldType === 'currency' ? fmtCurrency(f.min)   : f.fieldType === 'percentage' ? fmtPct(f.min)   : fmtAvg(f.min)}   accent="amber" />
+          <StatCard label="Highest" value={f.fieldType === 'currency' ? fmtCurrency(f.max)   : f.fieldType === 'percentage' ? fmtPct(f.max)   : fmtAvg(f.max)}   accent="green" />
         </div>
         <div className="grid md:grid-cols-2 gap-4">
           <div>

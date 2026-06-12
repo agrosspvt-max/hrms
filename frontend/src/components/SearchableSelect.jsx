@@ -240,8 +240,18 @@ export default function SearchableSelect({
                     aria-selected={isSelected}
                     className={[
                       'px-3 py-1.5 cursor-pointer',
-                      isActive ? 'bg-brand-50' : '',
-                      isSelected ? 'font-semibold text-brand-700' : 'text-slate-800',
+                      // Phase 21 (Issue 3): dark-mode variants so the
+                      // keyboard-active highlight and the selected-row
+                      // text don't render as a bright/illegible stripe
+                      // against the dark dropdown panel.  bg-brand-50 is
+                      // light indigo (#eef2ff) -- swapped for a dim
+                      // brand tint at 20% alpha in dark.  text-brand-700
+                      // is a deep indigo that disappears against dark
+                      // slate-900 -- swapped for brand-300 in dark.
+                      isActive ? 'bg-brand-50 dark:bg-brand-500/20' : '',
+                      isSelected
+                        ? 'font-semibold text-brand-700 dark:text-brand-300'
+                        : 'text-slate-800 dark:text-slate-200',
                     ].filter(Boolean).join(' ')}
                     onMouseEnter={() => setActiveIdx(i)}
                     onMouseDown={(e) => { e.preventDefault(); pick(o); }}

@@ -10,6 +10,7 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { ClickableCard, DrillDownModal } from '../../components/AnalyticsDrillDown.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { fmtCurrency, fmtPct, fmtAvg, fmtInt } from '../../utils/helpers';
 
 const RED = '#ef4444'; const ORANGE = '#f97316'; const AMBER = '#f59e0b';
 const GREEN = '#22c55e'; const BLUE = '#3b82f6'; const VIOLET = '#8b5cf6'; const SLATE = '#94a3b8';
@@ -522,7 +523,7 @@ function CallingMode({ data }) {
         <StatCard label="Total Calls Completed"    value={k.totalCallsCompleted  ?? 0} accent="green" />
         <StatCard label="Total Dialed Calls"       value={k.totalDialedCalls     ?? 0} accent="blue"
                   sub={k.totalAssignedCalls > 0 ? `vs ${k.totalAssignedCalls} assigned` : ''} />
-        <StatCard label="Avg Dialed / Employee"    value={k.averageDialedPerEmployee ?? 0} accent="blue" />
+        <StatCard label="Avg Dialed / Employee"    value={fmtAvg(k.averageDialedPerEmployee ?? 0)} accent="blue" />
         <StatCard label="Total Attended Calls"     value={k.totalAttendedCalls   ?? 0} accent="blue" />
         <StatCard label="Total Unattended Calls"   value={k.totalUnattendedCalls ?? 0} accent="amber" />
         <StatCard label="Total Conversions"        value={k.totalConversions     ?? 0} accent="green" />
@@ -533,10 +534,10 @@ function CallingMode({ data }) {
 
       {/* Rate strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Connection Rate"      value={`${k.connectionRate     ?? 0}%`} accent={(k.connectionRate     || 0) >= 60 ? 'green' : 'amber'} />
-        <StatCard label="Conversion Rate"      value={`${k.conversionRate     ?? 0}%`} accent={(k.conversionRate     || 0) >= 20 ? 'green' : 'amber'} />
-        <StatCard label="Pending Rate"         value={`${k.pendingRate        ?? 0}%`} accent={(k.pendingRate        || 0) <= 20 ? 'green' : 'red'} />
-        <StatCard label="Call Completion Rate" value={`${k.callCompletionRate ?? 0}%`} accent={(k.callCompletionRate || 0) >= 80 ? 'green' : 'amber'} />
+        <StatCard label="Connection Rate"      value={fmtPct(k.connectionRate     ?? 0)} accent={(k.connectionRate     || 0) >= 60 ? 'green' : 'amber'} />
+        <StatCard label="Conversion Rate"      value={fmtPct(k.conversionRate     ?? 0)} accent={(k.conversionRate     || 0) >= 20 ? 'green' : 'amber'} />
+        <StatCard label="Pending Rate"         value={fmtPct(k.pendingRate        ?? 0)} accent={(k.pendingRate        || 0) <= 20 ? 'green' : 'red'} />
+        <StatCard label="Call Completion Rate" value={fmtPct(k.callCompletionRate ?? 0)} accent={(k.callCompletionRate || 0) >= 80 ? 'green' : 'amber'} />
       </div>
 
       {/* Daily trend chart -- assigned vs dialed vs completed/attended/conv/pending */}
@@ -596,13 +597,13 @@ function CallingMode({ data }) {
           {/* Product / Farmer headline KPIs */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <StatCard label="Total Products Sold"  value={pk.totalProductsSold ?? 0} accent="brand" />
-            <StatCard label="Total Quantity Sold"  value={pk.totalQuantitySold ?? 0} accent="blue" sub="L / KG (canonical)" />
-            <StatCard label="Total Sales Value"    value={`₹${pk.totalSalesValue ?? 0}`} accent="green" />
-            <StatCard label="Total NBV Value"      value={`₹${pk.totalNbvValue ?? 0}`} accent="green" />
+            <StatCard label="Total Quantity Sold"  value={fmtAvg(pk.totalQuantitySold ?? 0)} accent="blue" sub="L / KG (canonical)" />
+            <StatCard label="Total Sales Value"    value={fmtCurrency(pk.totalSalesValue ?? 0)} accent="green" />
+            <StatCard label="Total NBV Value"      value={fmtCurrency(pk.totalNbvValue ?? 0)} accent="green" />
             <StatCard label="Total Farmers Added"  value={fk.totalFarmersAdded ?? 0} accent="amber" />
-            <StatCard label="Revenue / Call"       value={`₹${cm.revenuePerCall ?? 0}`} accent="blue" />
-            <StatCard label="NBV / Call"           value={`₹${cm.nbvPerCall ?? 0}`} accent="blue" />
-            <StatCard label="Farmers / Employee"   value={cm.farmersPerEmployee ?? 0} accent="amber" />
+            <StatCard label="Revenue / Call"       value={fmtCurrency(cm.revenuePerCall ?? 0)} accent="blue" />
+            <StatCard label="NBV / Call"           value={fmtCurrency(cm.nbvPerCall ?? 0)} accent="blue" />
+            <StatCard label="Farmers / Employee"   value={fmtAvg(cm.farmersPerEmployee ?? 0)} accent="amber" />
           </div>
 
           {/* Product & Farmer leaderboards (always rendered, empty list
@@ -666,7 +667,7 @@ function CallingMode({ data }) {
               <StatCard label="Total Active Dealers"  value={dk.totalActiveDealers ?? 0} accent="brand" />
               <StatCard label="Dealers Covered"       value={dk.dealersCovered ?? 0}     accent="blue" sub="have at least 1 farmer in range" />
               <StatCard label="Dealers With Sales"    value={dk.dealersWithSales ?? 0}   accent="green" />
-              <StatCard label="Avg Sales / Dealer"    value={`₹${dk.avgSalesPerDealer ?? 0}`} accent="amber" />
+              <StatCard label="Avg Sales / Dealer"    value={fmtCurrency(dk.avgSalesPerDealer ?? 0)} accent="amber" />
             </div>
 
             <div>
@@ -759,9 +760,9 @@ function CallingMode({ data }) {
                     <tr key={e._id}>
                       <td className="font-medium text-slate-800">{e.name}<div className="text-[11px] text-slate-500">{e.employeeId}</div></td>
                       <td>{e.department}</td>
-                      <td className="text-right font-semibold text-green-700">{e.salesValue}</td>
-                      <td className="text-right">{e.nbvValue}</td>
-                      <td className="text-right">{e.quantitySold}</td>
+                      <td className="text-right font-semibold text-green-700">{fmtCurrency(e.salesValue)}</td>
+                      <td className="text-right">{fmtCurrency(e.nbvValue)}</td>
+                      <td className="text-right">{fmtAvg(e.quantitySold)}</td>
                       <td className="text-right">{e.productsSold}</td>
                       <td className="text-right">{e.farmersAdded}</td>
                     </tr>
@@ -807,9 +808,9 @@ function CallingMode({ data }) {
                     <td className="text-right">{r.attendedCalls}</td>
                     <td className="text-right">{r.totalConversions}</td>
                     <td className={`text-right ${(r.totalPending || 0) > 0 ? 'text-red-600 font-semibold' : 'text-slate-400'}`}>{r.totalPending}</td>
-                    <td className="text-right">{r.connectionRate}%</td>
-                    <td className="text-right">{r.conversionRate}%</td>
-                    <td className="text-right">{r.pendingRate}%</td>
+                    <td className="text-right">{fmtPct(r.connectionRate)}</td>
+                    <td className="text-right">{fmtPct(r.conversionRate)}</td>
+                    <td className="text-right">{fmtPct(r.pendingRate)}</td>
                   </tr>
                 ))}
               </tbody>

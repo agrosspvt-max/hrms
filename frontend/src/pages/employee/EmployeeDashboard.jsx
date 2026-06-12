@@ -434,6 +434,23 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
             return;
           }
         }
+        // Phase 21 (Issue 2): Agri-Advisor DR / Calling Report rule --
+        // totalCallsCompleted must never exceed assignedCalls.  Pre-submit
+        // client-side guard mirrors what HR enforces during review.  Run
+        // customCompute against the live employee inputs so the formula
+        // field (totalCallsCompleted = yesterday + today) reflects what's
+        // actually about to be persisted.  Autosave / Save Draft / formula
+        // logic untouched -- this only runs at submit time.
+        if (sub.template?.customKind === 'calling') {
+          const computedView = customCompute(sub.template?.customFields || [], raw);
+          const assigned = Number(computedView.assignedCalls) || 0;
+          const totalDone = Number(computedView.totalCallsCompleted) || 0;
+          if (totalDone > assigned) {
+            toast.error(`Total Calls Completed (${totalDone}) cannot exceed Assigned Calls (${assigned}).`);
+            setBusy(false);
+            return;
+          }
+        }
         const payload = Object.entries(raw).map(([key, value]) => {
           const m = metaForSub[key] || {};
           return { key, value, status: m.status || '', remark: m.remark || '' };

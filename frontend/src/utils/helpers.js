@@ -7,6 +7,50 @@ export const fmtDate = (d) => {
 export const fmtMoney = (n) =>
   new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(n || 0);
 
+/* ------------------------------------------------------------------
+ * Phase 21 number formatters for analytics surfaces.
+ *
+ * The backend rounds via Math.round(x * 100) / 100, but JS floating-
+ * point arithmetic still leaves ugly tails like 6944.039999999999.
+ * These helpers force exactly 2 decimal places + Indian-locale
+ * thousand separators for currency / percentages / ratios / averages
+ * / KPIs.  Use fmtInt for fields that are conceptually whole numbers
+ * (counts, submissions, products sold, farmers added).
+ *
+ * Purely presentational -- never re-route to a calculation, never
+ * mutate state, safe to wrap any displayed value.
+ * ---------------------------------------------------------------- */
+
+/** ₹1,234.56 -- always 2 decimal places, Indian thousand separators. */
+export const fmtCurrency = (n) => {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '₹0.00';
+  return `₹${new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(x)}`;
+};
+
+/** 53.45% -- always 2 decimal places. */
+export const fmtPct = (n) => {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '0.00%';
+  return `${new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(x)}%`;
+};
+
+/** 61.32 -- always 2 decimal places, with thousand separators.  For
+ *  ratios / averages / KPIs / per-call metrics that aren't currency.  */
+export const fmtAvg = (n) => {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '0.00';
+  return new Intl.NumberFormat('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(x);
+};
+
+/** 1,234 -- whole numbers only, with thousand separators.  For counts
+ *  (calls completed, products sold, farmers added, submissions, etc.). */
+export const fmtInt = (n) => {
+  const x = Number(n);
+  if (!Number.isFinite(x)) return '0';
+  return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(Math.round(x));
+};
+
 export const delayBadgeClass = (days) => {
   if (days === 0) return 'badge-gray';
   if (days === 1) return 'badge-amber';
