@@ -273,9 +273,36 @@ const updateEmployee = asyncHandler(async (req, res) => {
     hodPermissions: patch.hodPermissions,
   });
 
+  // Phase 23.9 — when HR / SA deletes a birthday from Events & Holidays
+  // the frontend PATCHes dateOfBirth to null on the linked user.  If the
+  // user previously had a DoB, that birthday's reminders / notifications
+  // were keyed by `birthday:${userId}:...` (see eventController.processDue
+  // and fireOnce).  Clearing the field stops birthdaysForRange from
+  // emitting any future occurrences, but already-queued same-day
+  // notifications can still sit in the recipient's inbox -- so we
+  // proactively remove them too.  Only fires on the set→unset transition
+  // so editing a DoB never wipes legitimate reminders.
+  const dobBeingCleared = 'dateOfBirth' in patch
+    && (patch.dateOfBirth === null || patch.dateOfBirth === undefined || patch.dateOfBirth === '')
+    && target.dateOfBirth != null;
+
   const user = await User.findByIdAndUpdate(req.params.id, patch, { new: true, runValidators: true })
     .populate('department', 'name')
     .populate('designation', 'title');
+
+  if (dobBeingCleared) {
+    try {
+      const Notification = require('../models/Notification');
+      // birthday eventKeys are shaped `birthday:${userId}:...` — wipe
+      // every notification whose key references this user's birthday.
+      await Notification.deleteMany({
+        type: { $in: ['birthday_today'] },
+        eventKey: { $regex: `^birthday:${String(target._id)}:` },
+      });
+    } catch (err) {
+      console.warn('[BIRTHDAY-DELETE] notification cleanup failed:', err.message);
+    }
+  }
 
   // Keep Department.hodEmployeeId in sync when HOD assignment changed.
   if ('isHOD' in patch || 'hodDepartment' in patch) {

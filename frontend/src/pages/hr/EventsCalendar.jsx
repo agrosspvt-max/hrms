@@ -126,6 +126,35 @@ export default function EventsCalendar() {
     catch (err) { toast.error(errMsg(err)); }
   };
 
+  /**
+   * Phase 23.9 — Delete a birthday entry.
+   *
+   * Birthdays are auto-derived from User.dateOfBirth (no Event document
+   * exists for them), so "delete" means PATCH the linked user to clear
+   * their dateOfBirth.  Once cleared, eventController.birthdaysForRange
+   * stops emitting occurrences and the entry disappears from the
+   * calendar + upcoming widget on the next load.  The backend's
+   * updateEmployee handler also wipes any same-day birthday
+   * notifications already in the recipient inboxes so reminders stop
+   * triggering immediately (Phase 23.9 backend addition).
+   *
+   * Confirmation matches the brief.  HR / SA only by way of the gating
+   * on the Delete button itself (canManage check inside EventDrawer).
+   */
+  const delBirthday = async (ev) => {
+    if (!ev?.linkedEmployee) {
+      toast.error('This birthday is not linked to an employee account.');
+      return;
+    }
+    if (!confirm('Are you sure you want to delete this birthday entry?')) return;
+    try {
+      await api.put(`/employees/${ev.linkedEmployee}`, { dateOfBirth: null });
+      toast.success('Birthday deleted');
+      setDrawer(null);
+      load();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex items-end justify-between flex-wrap gap-3">
@@ -238,7 +267,11 @@ export default function EventsCalendar() {
             setModal({ mode: 'edit', data: { ...drawer, startDate: ymd(drawer.occStart), endDate: drawer.occEnd ? ymd(drawer.occEnd) : '' } });
             setDrawer(null);
           }}
-          onDelete={() => delEvent(drawer._id)} />
+          // Phase 23.9: birthdays route to delBirthday (clears the linked
+          // user's dateOfBirth); all other events use the Event delete API.
+          onDelete={() => String(drawer._id).startsWith('birthday:')
+            ? delBirthday(drawer)
+            : delEvent(drawer._id)} />
       )}
       {modal && modal.mode === 'edit-birthday' && (
         <BirthdayEditModal modal={modal} onCancel={() => setModal(null)}
@@ -264,11 +297,13 @@ function EventDrawer({ ev, onClose, canManage, onEdit, onDelete }) {
   return (
     <Modal open onClose={onClose} size="lg" title={ev.title}
       footer={<div className="flex justify-end gap-2 w-full">
-        {/* Phase 23.1: HR / SA can edit birthdays the same way as other
-            events.  The Edit button still hides for holiday occurrences
-            (those live in the legacy Holiday module). */}
+        {/* Phase 23.1 + 23.9: HR / SA can edit AND delete birthdays the
+            same way as other events.  Delete on a birthday clears the
+            linked user's dateOfBirth (handled by onDelete routing in the
+            parent).  Holiday occurrences keep their existing behaviour
+            (managed by the legacy Holiday module). */}
         {canManage && !isHoliday && <>
-          {!isBirthday && <button className="btn-ghost text-red-600" onClick={onDelete}>Delete</button>}
+          <button className="btn-ghost text-red-600" onClick={onDelete}>Delete</button>
           <button className="btn-secondary" onClick={onEdit}>Edit</button>
         </>}
         <button className="btn-primary" onClick={onClose}>Close</button>
