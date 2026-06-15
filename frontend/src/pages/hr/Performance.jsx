@@ -80,14 +80,26 @@ export default function Performance() {
   const [drill, setDrill] = useState(null); // { metricId, title }
 
   useEffect(() => {
+    // Phase 23.2: the /employees endpoint is HR-only (authorize('hr')),
+    // so a HOD account previously got a 403 here and the Employee
+    // SearchableSelect stayed empty -- "0 matches" no matter what the
+    // user typed.  HOD has its own department-scoped endpoint at
+    // /employees/team that returns { department, members[] }.  We route
+    // HOD users to that endpoint and keep the HR/SA path on /employees.
+    const empPromise = isHOD
+      ? api.get('/employees/team').then((r) => (r.data?.members || []).map((m) => ({
+          _id: m._id, name: m.name, employeeId: m.employeeId, email: m.email,
+        }))).catch(() => [])
+      : api.get('/employees', { params: { status: 'active', role: 'employee' } }).then((r) => r.data).catch(() => []);
+
     Promise.all([
       api.get('/departments').then((r) => r.data).catch(() => []),
       api.get('/designations').then((r) => r.data).catch(() => []),
-      api.get('/employees', { params: { status: 'active', role: 'employee' } }).then((r) => r.data).catch(() => []),
+      empPromise,
     ]).then(([departments, designations, employees]) => setOpts({
       departments: departments || [], designations: designations || [], employees: employees || [],
     }));
-  }, []);
+  }, [isHOD]);
 
   useEffect(() => {
     const params = {};
@@ -270,14 +282,47 @@ function PendencyMode({ data, onDrill }) {
         </ChartCard>
       </div>
 
-      {/* Dependency analytics */}
+      {/* Dependency analytics
+          Phase 23.4: all four cards are clickable and open a drill-down
+          modal with the related dependency records (Task / Shared By /
+          Assigned To / Transfer Date / Resolved Date / Status).
+          The "Longest Chain" card was replaced with "Dependent Work"
+          (totalTransferred / totalResolved / resolution %). */}
       <div className="card card-body">
         <h2 className="text-sm font-semibold text-slate-800 mb-3">Dependency Analytics</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="rounded-xl p-3 border bg-indigo-50 border-indigo-100"><div className="text-[10px] font-bold text-indigo-700">AVG RESOLUTION TIME</div><div className="text-2xl font-bold mt-1">{dep.avgResolutionHours}h</div></div>
-          <div className="rounded-xl p-3 border bg-green-50 border-green-100"><div className="text-[10px] font-bold text-green-700">COLLABORATIVE COMPLETION</div><div className="text-2xl font-bold mt-1">{dep.collaborativeCompletionPct}%</div></div>
-          <div className="rounded-xl p-3 border bg-orange-50 border-orange-100"><div className="text-[10px] font-bold text-orange-700">LONGEST CHAIN</div><div className="text-2xl font-bold mt-1">{dep.longestChain?.length || 0} hops</div></div>
-          <div className="rounded-xl p-3 border bg-red-50 border-red-100"><div className="text-[10px] font-bold text-red-700">OPEN DEPENDENCIES</div><div className="text-2xl font-bold mt-1">{dep.openDependencies}</div></div>
+          <ClickableCard onClick={() => onDrill('avgResolutionTime', 'Average Resolution Time')}>
+            <div className="rounded-xl p-3 border bg-indigo-50 border-indigo-100 dark:bg-indigo-500/15 dark:border-indigo-500/30">
+              <div className="text-[10px] font-bold text-indigo-700 dark:text-indigo-300">AVG RESOLUTION TIME</div>
+              <div className="text-2xl font-bold mt-1">{dep.avgResolutionHours}h</div>
+            </div>
+          </ClickableCard>
+          <ClickableCard onClick={() => onDrill('collaborativeCompletion', 'Collaborative Completion')}>
+            <div className="rounded-xl p-3 border bg-green-50 border-green-100 dark:bg-green-500/15 dark:border-green-500/30">
+              <div className="text-[10px] font-bold text-green-700 dark:text-green-300">COLLABORATIVE COMPLETION</div>
+              <div className="text-2xl font-bold mt-1">{dep.collaborativeCompletionPct}%</div>
+            </div>
+          </ClickableCard>
+          <ClickableCard onClick={() => onDrill('dependentWork', 'Dependent Work')}>
+            <div className="rounded-xl p-3 border bg-orange-50 border-orange-100 dark:bg-orange-500/15 dark:border-orange-500/30">
+              <div className="text-[10px] font-bold text-orange-700 dark:text-orange-300">DEPENDENT WORK</div>
+              <div className="text-xl font-bold mt-1 leading-tight">
+                {dep.dependentWork?.totalTransferred ?? dep.totalDependencies ?? 0}
+                <span className="text-sm font-medium text-slate-500"> transferred</span>
+              </div>
+              <div className="text-[11px] text-slate-600 dark:text-slate-300">
+                {dep.dependentWork?.totalResolved ?? dep.resolvedDependencies ?? 0} resolved
+                <span className="text-slate-400"> · </span>
+                {dep.dependentWork?.resolutionPct ?? dep.collaborativeCompletionPct ?? 0}% resolution
+              </div>
+            </div>
+          </ClickableCard>
+          <ClickableCard onClick={() => onDrill('openDependencies', 'Open Dependencies')}>
+            <div className="rounded-xl p-3 border bg-red-50 border-red-100 dark:bg-red-500/15 dark:border-red-500/30">
+              <div className="text-[10px] font-bold text-red-700 dark:text-red-300">OPEN DEPENDENCIES</div>
+              <div className="text-2xl font-bold mt-1">{dep.openDependencies}</div>
+            </div>
+          </ClickableCard>
         </div>
       </div>
 
@@ -430,6 +475,96 @@ function Breakdown({ metricId, mode, data, navigate, onClose }) {
               {list.map((e) => <tr key={e.name}><td className="font-medium">{e.name}</td><td>{e.avgHours != null ? `${e.avgHours}h` : e.openCount}</td></tr>)}
             </tbody>
           </table>
+        </div>
+      </div>
+    );
+  }
+
+  // Phase 23.4 -- Dependency Analytics drill-downs.
+  // Every card uses the same per-record table below; the only thing
+  // that changes is the row filter and the small metric summary above.
+  if (metricId === 'dependentWork' || metricId === 'avgResolutionTime'
+      || metricId === 'collaborativeCompletion' || metricId === 'openDependencies') {
+    const dep = data.dependency || {};
+    const records = dep.dependentWork?.records || [];
+    const filtered = metricId === 'openDependencies'
+      ? records.filter((r) => r.status !== 'resolved')
+      : metricId === 'avgResolutionTime' || metricId === 'collaborativeCompletion'
+        ? records.filter((r) => r.status === 'resolved')
+        : records;
+    const fmt = (d) => d ? new Date(d).toLocaleString() : '—';
+    const STATUS_PILL = {
+      open:        { label: 'Pending',     cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+      in_progress: { label: 'In Progress', cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+      resolved:    { label: 'Resolved',    cls: 'bg-green-50 text-green-700 border-green-200' },
+    };
+    return (
+      <div className="space-y-3">
+        {/* Headline summary -- different per card */}
+        {metricId === 'dependentWork' && (
+          <div className="grid grid-cols-3 gap-2 text-sm">
+            <div className="rounded border border-slate-200 px-3 py-2">
+              <div className="text-[10px] uppercase text-slate-500">Total Transferred</div>
+              <div className="text-xl font-bold">{dep.dependentWork?.totalTransferred ?? 0}</div>
+            </div>
+            <div className="rounded border border-slate-200 px-3 py-2">
+              <div className="text-[10px] uppercase text-slate-500">Total Resolved</div>
+              <div className="text-xl font-bold">{dep.dependentWork?.totalResolved ?? 0}</div>
+            </div>
+            <div className="rounded border border-slate-200 px-3 py-2">
+              <div className="text-[10px] uppercase text-slate-500">Resolution %</div>
+              <div className="text-xl font-bold">{dep.dependentWork?.resolutionPct ?? 0}%</div>
+            </div>
+          </div>
+        )}
+        {metricId === 'avgResolutionTime' && (
+          <div className="text-sm text-slate-600">
+            Average wall-clock turnaround across <b>{dep.resolvedDependencies ?? 0}</b> resolved hand-offs:
+            {' '}<b>{dep.avgResolutionHours ?? 0}h</b>.
+          </div>
+        )}
+        {metricId === 'collaborativeCompletion' && (
+          <div className="text-sm text-slate-600">
+            <b>{dep.resolvedDependencies ?? 0}</b> of <b>{dep.totalDependencies ?? 0}</b> transferred tasks closed
+            ({dep.collaborativeCompletionPct ?? 0}%).
+          </div>
+        )}
+        {metricId === 'openDependencies' && (
+          <div className="text-sm text-slate-600">
+            <b>{dep.openDependencies ?? 0}</b> dependent tasks currently open or in progress.
+          </div>
+        )}
+        {/* Per-record table */}
+        <div className="overflow-x-auto max-h-96">
+          {filtered.length === 0 ? (
+            <div className="text-sm text-slate-400 italic">No dependency records in this view.</div>
+          ) : (
+            <table className="table">
+              <thead><tr>
+                <th>Task</th>
+                <th>Shared By</th>
+                <th>Assigned To</th>
+                <th>Transfer Date</th>
+                <th>Resolved Date</th>
+                <th>Status</th>
+              </tr></thead>
+              <tbody>
+                {filtered.map((r) => {
+                  const pill = STATUS_PILL[r.status] || { label: r.status, cls: 'bg-slate-50 text-slate-700 border-slate-200' };
+                  return (
+                    <tr key={r._id}>
+                      <td className="font-medium text-slate-800">{r.taskName || '—'}{r.templateTitle ? <div className="text-[11px] text-slate-500">{r.templateTitle}</div> : null}</td>
+                      <td>{r.sharedBy || '—'}{r.sharedById ? <span className="text-[11px] text-slate-500"> · {r.sharedById}</span> : null}</td>
+                      <td>{r.assignedTo || '—'}{r.assignedToId ? <span className="text-[11px] text-slate-500"> · {r.assignedToId}</span> : null}</td>
+                      <td>{fmt(r.transferDate)}</td>
+                      <td>{fmt(r.resolvedDate)}</td>
+                      <td><span className={`badge border ${pill.cls}`}>{pill.label}</span></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       </div>
     );

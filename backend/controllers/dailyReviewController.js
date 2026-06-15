@@ -29,10 +29,54 @@ const Submission     = require('../models/Submission');
 const User           = require('../models/User');
 const DailyReflection= require('../models/DailyReflection');
 const DailyReview    = require('../models/DailyReview');
+const DependencyTask = require('../models/DependencyTask');
 const { startOfDay } = require('../utils/dateHelpers');
 const { liveSubmissionFilter } = require('../utils/submissionFilter');
 const { logAudit }   = require('../utils/audit');
 const notify         = require('../services/notifyEvents');
+
+/**
+ * Phase 23.3 — Attach dependent-task hand-offs to each submission so the
+ * Submission Reviews UI can render "transferred to / on / status" inline
+ * under the relevant task section.  Mirrors submissionController
+ * .attachDependencies but keeps the keys the grouped review UI expects
+ * (sourceTaskId, originalTaskName, assignedToName, transferredAt,
+ * resolvedAt, currentStatus).  Read-only enrichment — never touches
+ * scoring or the review pipeline.
+ */
+const _attachDependencies = async (submissions) => {
+  if (!submissions.length) return;
+  const subIds = submissions.map((s) => s._id);
+  const deps = await DependencyTask.find({ sourceSubmissionId: { $in: subIds } })
+    .populate('assignedTo', 'name employeeId')
+    .populate('assignedBy', 'name employeeId')
+    .sort({ createdAt: 1 })
+    .lean();
+  const bySub = new Map();
+  for (const d of deps) {
+    const k = String(d.sourceSubmissionId);
+    if (!bySub.has(k)) bySub.set(k, []);
+    bySub.get(k).push({
+      _id: d._id,
+      sourceTaskId: d.sourceTaskId,
+      sourceKind: d.sourceKind,
+      originalTaskName: d.originalTaskName || '',
+      assignedToName: d.assignedTo?.name || d.assignedToName || '',
+      assignedToEmployeeId: d.assignedTo?.employeeId || '',
+      assignedByName: d.assignedBy?.name || d.assignedByName || '',
+      assignedByEmployeeId: d.assignedBy?.employeeId || '',
+      currentStatus: d.currentStatus,
+      remark: d.remark || '',
+      transferredAt: d.createdAt,
+      resolvedAt: d.resolvedAt || null,
+      resolutionHours: d.resolvedAt
+        ? Math.round((new Date(d.resolvedAt) - new Date(d.waitingSince || d.createdAt)) / 36e5 * 10) / 10
+        : null,
+      chainId: d.chainId,
+    });
+  }
+  submissions.forEach((s) => { s.dependencies = bySub.get(String(s._id)) || []; });
+};
 
 const _resolveDay = (raw) => startOfDay(raw ? new Date(raw) : new Date());
 
@@ -95,6 +139,9 @@ const listGrouped = asyncHandler(async (req, res) => {
     .populate('hodReview.reviewedBy', 'name role')
     .sort({ employee: 1, submittedAt: 1, _id: 1 })
     .lean();
+
+  // Phase 23.3: enrich each submission with its dependent-task hand-offs.
+  await _attachDependencies(subs);
 
   // Pre-fetch reflections + reviews for the day for the scoped employees.
   const empIds = [...new Set(subs.map((s) => String(s.employee)))];
@@ -160,6 +207,9 @@ const getDay = asyncHandler(async (req, res) => {
     DailyReflection.findOne({ employee: employee._id, date: day }).lean(),
     DailyReview.findOne({ employee: employee._id, date: day }).populate('reviewedBy', 'name role').lean(),
   ]);
+
+  // Phase 23.3: enrich submissions with dependent-task hand-offs.
+  await _attachDependencies(submissions);
 
   res.json({ employee, date: day, submissions, reflection: reflection || null, review: review || null });
 });
@@ -439,4 +489,244 @@ const editTaskStatus = asyncHandler(async (req, res) => {
   res.json({ ok: true, submission: sub });
 });
 
-module.exports = { listGrouped, getDay, saveReflection, finalizeDay, editTaskStatus };
+/* ------------------------------------------------------------------ */
+/* Phase 23.7 — Extra work scoring                                      */
+/*                                                                      */
+/* Lets HR / SA / HOD assign / edit `awardedMarks` on an employee-added */
+/* task row.  Mirrors editTaskStatus's role gates + audit logging.  The */
+/* points flow through the same scoring pipeline:                       */
+/*   - employee-added rows: total += awardedMarks; earned += awardedMarks*/
+/*   - HR-defined rows are untouched (this endpoint refuses to touch    */
+/*     `points` on system-generated rows).                              */
+/*                                                                      */
+/* Body shape:                                                          */
+/*   { submissionId, taskId, awardedMarks }                              */
+/* ------------------------------------------------------------------ */
+const editTaskMarks = asyncHandler(async (req, res) => {
+  const { submissionId, taskId, awardedMarks } = req.body || {};
+  if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+    res.status(400); throw new Error('Valid submissionId is required.');
+  }
+  if (!mongoose.Types.ObjectId.isValid(taskId)) {
+    res.status(400); throw new Error('Valid taskId is required.');
+  }
+  const marksNum = Number(awardedMarks);
+  if (!Number.isFinite(marksNum) || marksNum < 0) {
+    res.status(400); throw new Error('awardedMarks must be a number >= 0.');
+  }
+
+  const sub = await Submission.findById(submissionId);
+  if (!sub) { res.status(404); throw new Error('Submission not found.'); }
+  if (sub.templateType !== 'task') {
+    res.status(400); throw new Error('Marks edit currently supports task-template submissions only.');
+  }
+
+  const role = req.user.role;
+  const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  if (role !== 'hr' && role !== 'super_admin' && !isHOD) {
+    res.status(403); throw new Error('Only HR / Super Admin / HOD may edit task marks.');
+  }
+  if (String(sub.employee) === String(req.user._id)) {
+    res.status(403); throw new Error('You cannot edit your own submission.');
+  }
+  const owner = await User.findById(sub.employee).select('role department').lean();
+  if (!owner) { res.status(404); throw new Error('Submission owner not found.'); }
+  if (role === 'hr' && (owner.role === 'hr' || owner.role === 'super_admin')) {
+    res.status(403); throw new Error('Only Super Admin can edit HR submissions.');
+  }
+  if (isHOD && role !== 'hr' && role !== 'super_admin') {
+    if (String(owner.department) !== String(req.user.hodDepartment)) {
+      res.status(403); throw new Error('Department clamp: not your department.');
+    }
+  }
+
+  const task = (sub.tasks || []).id(taskId);
+  if (!task) { res.status(404); throw new Error('Task row not found on this submission.'); }
+  if (!task.addedByEmployee) {
+    res.status(400); throw new Error('Marks can only be edited on employee-added extra work rows.');
+  }
+
+  const oldMarks = Number(task.awardedMarks) || 0;
+  task.awardedMarks = marksNum;
+  sub.markModified('tasks');
+
+  // Recompute work scoring -- same formula reviewSubmission / editTaskStatus uses.
+  let earned = 0, total = 0;
+  for (const t of sub.tasks) {
+    if (t.addedByEmployee) {
+      const awarded = Number(t.awardedMarks) || 0;
+      earned += awarded;
+      total  += awarded;
+    } else {
+      if (t.status === 'done' || t.status === 'ongoing') earned += Number(t.points) || 0;
+      if (t.status === 'done' || t.status === 'ongoing' || t.status === 'pending') {
+        total += Number(t.points) || 0;
+      }
+    }
+  }
+  sub.workEarnedPoints = earned;
+  sub.workTotalPoints  = total;
+  sub.earnedPoints = earned;
+  sub.totalPoints  = total;
+  sub.completionPercentage = total > 0 ? (earned / total) * 100 : 0;
+
+  sub.editHistory = sub.editHistory || [];
+  sub.editHistory.push({
+    editedBy: req.user._id,
+    editorName: req.user.name,
+    role,
+    fields: [`tasks.${taskId}.awardedMarks`],
+    note: `extra-work marks ${oldMarks} → ${marksNum}`,
+    timestamp: new Date(),
+  });
+
+  await sub.save();
+
+  logAudit(req, {
+    action: 'submission.task-marks-edit',
+    targetType: 'Submission',
+    targetId: sub._id,
+    targetLabel: `${owner._id} · ${String(sub.date).slice(0, 10)}`,
+    meta: { taskId: String(taskId), from: oldMarks, to: marksNum, title: task.title || '' },
+  });
+
+  res.json({ ok: true, submission: sub });
+});
+
+/* ------------------------------------------------------------------ */
+/* Phase 23.6 — Bulk discipline + innovation scoring                   */
+/*                                                                     */
+/* Lets HR / SA / HOD apply the SAME discipline + idea marks to a set  */
+/* of (employee, date) pairs in one round-trip.  Internally just loops */
+/* the per-day finalise pipeline -- nothing about the business rules,  */
+/* role gates, audit logging, scoring formula or notification flow     */
+/* changes.  Items that fail validation (forbidden / missing) are      */
+/* skipped and reported back to the UI; successful items finalise.    */
+/*                                                                     */
+/* Body shape:                                                         */
+/*   {                                                                 */
+/*     items: [{ employeeId, date }, ...],                              */
+/*     disciplineMarks, maxDisciplineMarks?,                            */
+/*     ideaMarks,       maxIdeaMarks?,                                  */
+/*     disciplineNote?, ideaFeedback?,                                  */
+/*   }                                                                  */
+/* ------------------------------------------------------------------ */
+const bulkFinalize = asyncHandler(async (req, res) => {
+  const role = req.user.role;
+  const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  if (role !== 'hr' && role !== 'super_admin' && !isHOD) {
+    res.status(403); throw new Error('Only HR / Super Admin / HOD may finalise daily reviews.');
+  }
+
+  const items = Array.isArray(req.body.items) ? req.body.items : [];
+  if (items.length === 0) {
+    res.status(400); throw new Error('items[] is required.');
+  }
+
+  const maxDisc = Number(req.body.maxDisciplineMarks ?? 3);
+  const maxIdea = Number(req.body.maxIdeaMarks ?? 2);
+  const disc    = Math.max(0, Math.min(Number(req.body.disciplineMarks) || 0, maxDisc));
+  const idea    = Math.max(0, Math.min(Number(req.body.ideaMarks)       || 0, maxIdea));
+  const discNote     = String(req.body.disciplineNote || '').trim();
+  const ideaFeedback = String(req.body.ideaFeedback   || '').trim();
+
+  const out = { ok: 0, failed: [], reviews: [] };
+
+  for (const it of items) {
+    const employeeId = it.employeeId;
+    const dayRaw = it.date;
+    try {
+      if (!mongoose.Types.ObjectId.isValid(employeeId)) {
+        out.failed.push({ employeeId, date: dayRaw, error: 'Invalid employeeId' });
+        continue;
+      }
+      const day = _resolveDay(dayRaw);
+      if (String(employeeId) === String(req.user._id)) {
+        out.failed.push({ employeeId, date: dayRaw, error: 'Cannot finalise your own review.' });
+        continue;
+      }
+      const employee = await User.findById(employeeId).select('department role').lean();
+      if (!employee) {
+        out.failed.push({ employeeId, date: dayRaw, error: 'Employee not found.' });
+        continue;
+      }
+      if (isHOD && role !== 'hr' && role !== 'super_admin') {
+        if (String(employee.department) !== String(req.user.hodDepartment)) {
+          out.failed.push({ employeeId, date: dayRaw, error: 'Department clamp: not your department.' });
+          continue;
+        }
+      }
+      if (role === 'hr' && employee.role === 'hr') {
+        out.failed.push({ employeeId, date: dayRaw, error: 'Only a Super Admin can finalise HR reviews.' });
+        continue;
+      }
+      if (employee.role === 'super_admin') {
+        out.failed.push({ employeeId, date: dayRaw, error: 'Super Admin submissions are auto-finalised.' });
+        continue;
+      }
+      const subs = await Submission.find({
+        employee: employee._id, date: day, submitted: true, ...liveSubmissionFilter({}),
+      }).sort({ submittedAt: 1, _id: 1 });
+      if (subs.length === 0) {
+        out.failed.push({ employeeId, date: dayRaw, error: 'No submissions for that day.' });
+        continue;
+      }
+      const primary = subs[0];
+
+      const review = await DailyReview.findOneAndUpdate(
+        { employee: employee._id, date: day },
+        {
+          $set: {
+            disciplineMarks: disc, maxDisciplineMarks: maxDisc, disciplineNote: discNote,
+            ideaMarks: idea,       maxIdeaMarks: maxIdea,       ideaFeedback,
+            reviewedBy: req.user._id, reviewedAt: new Date(),
+            reviewStatus: 'reviewed',
+            primarySubmissionId: primary._id,
+          },
+          $setOnInsert: { employee: employee._id, date: day },
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+
+      for (const s of subs) {
+        s.reviewStatus = 'reviewed';
+        s.currentReviewStage = 'finalized';
+        s.reviewedBy = req.user._id;
+        s.reviewedAt = new Date();
+        s.earnedPoints = Number(s.workEarnedPoints) || 0;
+        s.totalPoints  = Number(s.workTotalPoints)  || 0;
+        s.completionPercentage = s.totalPoints > 0 ? (s.earnedPoints / s.totalPoints) * 100 : 0;
+        s.reviewHistory = s.reviewHistory || [];
+        s.reviewHistory.push({
+          reviewedBy: req.user._id, reviewerName: req.user.name, role,
+          stage: 'finalized', action: 'daily_finalize_bulk',
+          marks: disc + idea, remarks: discNote || '',
+          timestamp: new Date(),
+        });
+        await s.save();
+      }
+
+      try {
+        notify.notifySubmissionReviewed({
+          employeeId: employee._id, submission: { date: day }, reviewedBy: req.user,
+        });
+      } catch (_) { /* notify never blocks */ }
+
+      logAudit(req, {
+        action: 'daily-review.bulk-finalize',
+        targetType: 'DailyReview',
+        targetId: review._id,
+        targetLabel: `${employee._id} · ${day.toISOString().slice(0, 10)}`,
+        meta: { disciplineMarks: disc, ideaMarks: idea, submissionCount: subs.length, bulk: true },
+      });
+      out.ok += 1;
+      out.reviews.push({ employeeId: String(employee._id), date: day, reviewId: review._id });
+    } catch (err) {
+      out.failed.push({ employeeId, date: dayRaw, error: err.message || 'Unknown error' });
+    }
+  }
+
+  res.json(out);
+});
+
+module.exports = { listGrouped, getDay, saveReflection, finalizeDay, bulkFinalize, editTaskStatus, editTaskMarks };

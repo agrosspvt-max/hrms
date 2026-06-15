@@ -201,7 +201,12 @@ const pendency = asyncHandler(async (req, res) => {
   }
 
   // ---- Dependency analytics ----
-  const depAll = await DependencyTask.find({}).populate('assignedTo', 'name employeeId').lean();
+  // Phase 23.4: also populate assignedBy so the "Dependent Work" drill-
+  // down can show Shared By → Assigned To per row without a second hop.
+  const depAll = await DependencyTask.find({})
+    .populate('assignedTo', 'name employeeId')
+    .populate('assignedBy', 'name employeeId')
+    .lean();
   const depInRange = depAll.filter((d) => new Date(d.createdAt) >= from && new Date(d.createdAt) < to);
 
   const openDeps = depAll.filter((d) => d.currentStatus !== 'resolved');
@@ -291,6 +296,35 @@ const pendency = asyncHandler(async (req, res) => {
       totalDependencies: depAll.length,
       openDependencies: openDeps.length,
       resolvedDependencies: resolvedDeps.length,
+      // Phase 23.4: "Dependent Work" replaces the "Longest Chain" card.
+      // Surface totals for total transferred, total resolved and the
+      // org-wide resolution percentage, plus a per-record list so the
+      // detail drill-down can render Task / Shared By / Assigned To /
+      // Transfer Date / Resolved Date / Status without another fetch.
+      dependentWork: {
+        totalTransferred: depAll.length,
+        totalResolved: resolvedDeps.length,
+        resolutionPct: depAll.length
+          ? Math.round((resolvedDeps.length / depAll.length) * 1000) / 10
+          : 0,
+        records: depAll
+          .slice()
+          .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+          .map((d) => ({
+            _id: d._id,
+            taskName: d.originalTaskName || '',
+            sharedBy: d.assignedBy?.name || d.assignedByName || '',
+            sharedById: d.assignedBy?.employeeId || '',
+            assignedTo: d.assignedTo?.name || d.assignedToName || '',
+            assignedToId: d.assignedTo?.employeeId || '',
+            transferDate: d.createdAt,
+            resolvedDate: d.resolvedAt || null,
+            status: d.currentStatus,
+            remark: d.remark || '',
+            templateTitle: d.templateTitle || '',
+            departmentName: d.departmentName || '',
+          })),
+      },
     },
     employeeRows: employeeRows.sort((a, b) => b.pending - a.pending),
   });

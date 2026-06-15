@@ -224,10 +224,32 @@ export default function EventsCalendar() {
 
       {drawer && (
         <EventDrawer ev={drawer} onClose={() => setDrawer(null)} canManage={canManage}
-          onEdit={() => { if (String(drawer._id).startsWith('birthday:') || String(drawer._id).startsWith('holiday:')) return; setModal({ mode: 'edit', data: { ...drawer, startDate: ymd(drawer.occStart), endDate: drawer.occEnd ? ymd(drawer.occEnd) : '' } }); setDrawer(null); }}
+          onEdit={() => {
+            // Phase 23.1: birthdays are auto-derived from User.dateOfBirth
+            // so "edit" routes to a dedicated BirthdayEditModal that
+            // patches the linked user, NOT the Event collection.  Holidays
+            // remain managed by the legacy /holidays page (kept silent).
+            if (String(drawer._id).startsWith('holiday:')) return;
+            if (String(drawer._id).startsWith('birthday:')) {
+              setModal({ mode: 'edit-birthday', data: { ...drawer } });
+              setDrawer(null);
+              return;
+            }
+            setModal({ mode: 'edit', data: { ...drawer, startDate: ymd(drawer.occStart), endDate: drawer.occEnd ? ymd(drawer.occEnd) : '' } });
+            setDrawer(null);
+          }}
           onDelete={() => delEvent(drawer._id)} />
       )}
-      {modal && (
+      {modal && modal.mode === 'edit-birthday' && (
+        <BirthdayEditModal modal={modal} onCancel={() => setModal(null)}
+          onSave={async (form) => {
+            try {
+              await api.put(`/employees/${form.linkedEmployee}`, { dateOfBirth: form.dateOfBirth || null });
+              toast.success('Birthday updated'); setModal(null); load();
+            } catch (err) { toast.error(errMsg(err)); }
+          }} />
+      )}
+      {modal && modal.mode !== 'edit-birthday' && (
         <EventModal modal={modal} employees={employees} departments={departments} designations={designations}
           onCancel={() => setModal(null)} onSave={saveEvent} />
       )}
@@ -242,8 +264,11 @@ function EventDrawer({ ev, onClose, canManage, onEdit, onDelete }) {
   return (
     <Modal open onClose={onClose} size="lg" title={ev.title}
       footer={<div className="flex justify-end gap-2 w-full">
-        {canManage && !isBirthday && !isHoliday && <>
-          <button className="btn-ghost text-red-600" onClick={onDelete}>Delete</button>
+        {/* Phase 23.1: HR / SA can edit birthdays the same way as other
+            events.  The Edit button still hides for holiday occurrences
+            (those live in the legacy Holiday module). */}
+        {canManage && !isHoliday && <>
+          {!isBirthday && <button className="btn-ghost text-red-600" onClick={onDelete}>Delete</button>}
           <button className="btn-secondary" onClick={onEdit}>Edit</button>
         </>}
         <button className="btn-primary" onClick={onClose}>Close</button>
@@ -265,6 +290,54 @@ function EventDrawer({ ev, onClose, canManage, onEdit, onDelete }) {
         </div>
         {isBirthday && <div className="text-[11px] text-slate-500 italic">Birthdays never stop work generation.</div>}
         {isHoliday && <div className="text-[11px] text-slate-500 italic">Managed in the legacy Holiday module.</div>}
+      </div>
+    </Modal>
+  );
+}
+
+/* ----------------------------------------------------------------------
+ * Phase 23.1 — Birthday edit modal
+ *
+ * Birthdays are auto-derived from User.dateOfBirth (see eventController
+ * .birthdaysForRange).  Editing a birthday from the Events & Holidays
+ * page therefore means PATCHing the linked user's dateOfBirth via
+ * PUT /api/employees/:id.  No Event document exists for these rows.
+ *
+ * The drawer payload carries linkedEmployee (User._id), linkedEmployeeName
+ * and occStart (the occurrence date for the year being viewed).  We seed
+ * the date-of-birth input from occStart so HR doesn't see a year-1900
+ * placeholder if dateOfBirth wasn't on the drawer.
+ * -------------------------------------------------------------------- */
+function BirthdayEditModal({ modal, onCancel, onSave }) {
+  const ev = modal.data || {};
+  const [dob, setDob] = useState(() => ev.occStart ? ymd(ev.occStart) : '');
+  const [busy, setBusy] = useState(false);
+  return (
+    <Modal open onClose={onCancel} size="md" title={`Edit Birthday — ${ev.linkedEmployeeName || ev.title || ''}`}
+      footer={<>
+        <button className="btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button className="btn-primary" disabled={!dob || busy}
+          onClick={async () => { setBusy(true); await onSave({ linkedEmployee: ev.linkedEmployee, dateOfBirth: dob }); setBusy(false); }}>
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      </>}>
+      <div className="space-y-3 text-sm">
+        <div className="text-slate-600">
+          Update the employee's date of birth.  The change reflects everywhere
+          birthdays are displayed (calendar, upcoming widget, notifications).
+        </div>
+        <div>
+          <label className="label">Date of birth</label>
+          <input className="input" type="date" value={dob} onChange={(e) => setDob(e.target.value)} />
+          <div className="text-[11px] text-slate-500 mt-1">
+            Only the month and day matter for recurring birthday display.  The year is stored on the employee profile.
+          </div>
+        </div>
+        {!ev.linkedEmployee && (
+          <div className="text-[11px] text-red-600">
+            Cannot edit — this birthday entry is missing its employee link.  Update the date-of-birth directly on the Employee profile instead.
+          </div>
+        )}
       </div>
     </Modal>
   );

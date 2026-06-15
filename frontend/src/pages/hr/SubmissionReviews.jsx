@@ -33,9 +33,19 @@ export default function SubmissionReviews() {
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate]     = useState(today);
   const [status, setStatus] = useState('');         // '' | pending | reviewed
+  // Phase 23.5: HOD review-status filter, client-side because the
+  // grouped feed already returns hodReview + currentReviewStage on
+  // every submission.  Possible values:
+  //   '' (all) | awaiting | reviewed | returned | direct
+  const [hodStatus, setHodStatus] = useState('');
   const [cards, setCards]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
+  // Phase 23.6 -- multi-select for bulk Discipline + Innovation scoring.
+  // selected is a Set of (employeeId|date) keys taken from the filtered
+  // card list.  bulkOpen toggles the bulk-action panel.
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkOpen, setBulkOpen] = useState(false);
   const toast = useToast();
 
   const load = async () => {
@@ -49,8 +59,55 @@ export default function SubmissionReviews() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [date, status]);
 
-  const pending  = cards.filter((c) => !c.review || c.review.reviewStatus !== 'reviewed').length;
-  const reviewed = cards.filter((c) =>  c.review && c.review.reviewStatus === 'reviewed').length;
+  // Phase 23.5: derive a card's HOD bucket from its submissions.  A
+  // card may hold multiple submissions on the same day -- the rule is:
+  //   awaiting beats returned beats reviewed beats direct
+  // (so HR's attention is drawn to anything still waiting on the HOD
+  // layer).  Bucket values match the filter options below.
+  const hodBucket = (c) => {
+    const states = (c.submissions || []).map((s) => {
+      const stage = s.currentReviewStage || '';
+      const recommend = s.hodReview?.recommend || '';
+      const reviewedByHod = !!s.hodReview?.reviewedAt;
+      if (stage === 'under_hod') return 'awaiting';
+      if (reviewedByHod && recommend === 'needs_changes') return 'returned';
+      if (reviewedByHod) return 'reviewed';
+      // Submission never routed through HOD AND nobody at HOD layer
+      // touched it -- HR-direct review.
+      if (stage !== 'hod_reviewed' && !reviewedByHod) return 'direct';
+      return 'reviewed';
+    });
+    if (states.includes('awaiting')) return 'awaiting';
+    if (states.includes('returned')) return 'returned';
+    if (states.includes('reviewed')) return 'reviewed';
+    return 'direct';
+  };
+  const filteredCards = hodStatus
+    ? cards.filter((c) => hodBucket(c) === hodStatus)
+    : cards;
+
+  const pending  = filteredCards.filter((c) => !c.review || c.review.reviewStatus !== 'reviewed').length;
+  const reviewed = filteredCards.filter((c) =>  c.review && c.review.reviewStatus === 'reviewed').length;
+
+  // Phase 23.6 -- selection helpers.  The key is stable: the grouped
+  // feed already keys each card by (employeeId, date).
+  const cardKey = (c) => `${String(c.employee._id)}|${new Date(c.date).toISOString().slice(0, 10)}`;
+  const toggleSelected = (c) => setSelected((cur) => {
+    const k = cardKey(c);
+    const n = new Set(cur);
+    if (n.has(k)) n.delete(k); else n.add(k);
+    return n;
+  });
+  const allSelected = filteredCards.length > 0 && filteredCards.every((c) => selected.has(cardKey(c)));
+  const someSelected = filteredCards.some((c) => selected.has(cardKey(c)));
+  const toggleSelectAll = () => setSelected((cur) => {
+    if (allSelected) return new Set();
+    const n = new Set(cur);
+    filteredCards.forEach((c) => n.add(cardKey(c)));
+    return n;
+  });
+  const clearSelection = () => setSelected(new Set());
+  const selectedCards = filteredCards.filter((c) => selected.has(cardKey(c)));
 
   return (
     <div className="space-y-4">
@@ -81,22 +138,69 @@ export default function SubmissionReviews() {
             <option value="reviewed">Reviewed</option>
           </select>
         </div>
+        {/* Phase 23.5 -- HOD review status filter */}
+        <div>
+          <label className="label">HOD Review Status</label>
+          <select className="input max-w-[200px]" value={hodStatus} onChange={(e) => setHodStatus(e.target.value)}>
+            <option value="">All</option>
+            <option value="awaiting">Awaiting HOD</option>
+            <option value="reviewed">Reviewed by HOD</option>
+            <option value="returned">Returned by HOD</option>
+            <option value="direct">Direct HR Review</option>
+          </select>
+        </div>
       </div>
 
-      {loading ? <Loader /> : cards.length === 0 ? (
-        <EmptyState title="No submissions to review on this day" />
+      {/* Phase 23.6 -- bulk-action toolbar.  Only renders when at least
+          one card matches the current filters; checkbox state is purely
+          client-side and clears on a refresh or successful save. */}
+      {!loading && filteredCards.length > 0 && (
+        <div className="flex items-center justify-between gap-2 flex-wrap text-xs text-slate-600">
+          <label className="flex items-center gap-2 select-none cursor-pointer">
+            <input type="checkbox" checked={allSelected}
+              ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+              onChange={toggleSelectAll} />
+            {selected.size > 0
+              ? <>{selected.size} selected</>
+              : <>Select all on this page</>}
+          </label>
+          <div className="flex items-center gap-2">
+            {selected.size > 0 && (
+              <>
+                <button className="btn-secondary !py-1 !text-xs" onClick={clearSelection}>Clear</button>
+                <button className="btn-primary !py-1 !text-xs" onClick={() => setBulkOpen(true)}>
+                  Bulk Assign Scores ({selected.size})
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {loading ? <Loader /> : filteredCards.length === 0 ? (
+        <EmptyState title={cards.length === 0 ? 'No submissions to review on this day' : 'No submissions match the current filters'} />
       ) : (
         <div className="space-y-3">
-          {cards.map((c) => (
+          {filteredCards.map((c) => (
             <EmployeeDayCard
               key={String(c.employee._id) + String(c.date)}
               card={c}
               open={openId === String(c.employee._id)}
               onToggle={() => setOpenId((cur) => cur === String(c.employee._id) ? null : String(c.employee._id))}
               onReload={load}
+              selected={selected.has(cardKey(c))}
+              onSelectToggle={() => toggleSelected(c)}
             />
           ))}
         </div>
+      )}
+
+      {bulkOpen && (
+        <BulkScoreModal
+          cards={selectedCards}
+          onClose={() => setBulkOpen(false)}
+          onDone={() => { setBulkOpen(false); clearSelection(); load(); }}
+        />
       )}
     </div>
   );
@@ -105,7 +209,7 @@ export default function SubmissionReviews() {
 /* ===================================================================== */
 /* Per-employee-per-day card                                              */
 /* ===================================================================== */
-function EmployeeDayCard({ card, open, onToggle, onReload }) {
+function EmployeeDayCard({ card, open, onToggle, onReload, selected = false, onSelectToggle }) {
   const { employee, date, submissions, reflection, review } = card;
   const reviewed = review && review.reviewStatus === 'reviewed';
   const types = submissions.map((s) => (s.template?.customKind || s.templateType));
@@ -125,29 +229,49 @@ function EmployeeDayCard({ card, open, onToggle, onReload }) {
   })();
 
   return (
-    <div className={`card overflow-hidden ${reviewed ? '' : 'ring-1 ring-amber-200'}`}>
-      <button className="w-full flex items-center justify-between px-5 py-3 bg-slate-50 hover:bg-slate-100" onClick={onToggle}>
-        <div className="text-left">
-          <div className="font-semibold text-slate-800">
-            {employee.name} <span className="text-slate-400 font-normal">({employee.employeeId})</span>
+    <div className={`card overflow-hidden ${reviewed ? '' : 'ring-1 ring-amber-200'} ${selected ? 'ring-2 ring-brand-400' : ''}`}>
+      <div className="w-full flex items-center justify-between px-5 py-3 bg-slate-50 hover:bg-slate-100 gap-3">
+        {/* Phase 23.6 -- selection checkbox.  Click is isolated so it
+            doesn't also toggle the card's open state.  We render it as a
+            non-button label so the parent expand/collapse still works
+            when the user clicks anywhere else on the header. */}
+        {onSelectToggle && (
+          <label
+            className="flex items-center cursor-pointer select-none"
+            onClick={(e) => e.stopPropagation()}
+            title={selected ? 'Deselect this card' : 'Select for bulk scoring'}
+          >
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={onSelectToggle}
+              onClick={(e) => e.stopPropagation()}
+            />
+          </label>
+        )}
+        <button className="flex-1 text-left flex items-center justify-between gap-2" onClick={onToggle}>
+          <div className="text-left">
+            <div className="font-semibold text-slate-800">
+              {employee.name} <span className="text-slate-400 font-normal">({employee.employeeId})</span>
+            </div>
+            <div className="text-[12px] text-slate-500">
+              {employee.department || '—'} · {fmtDate(date)} · {submissions.length} submission(s)
+              {types.length > 0 && <> · <span className="text-slate-600">{types.join(' · ')}</span></>}
+            </div>
           </div>
-          <div className="text-[12px] text-slate-500">
-            {employee.department || '—'} · {fmtDate(date)} · {submissions.length} submission(s)
-            {types.length > 0 && <> · <span className="text-slate-600">{types.join(' · ')}</span></>}
+          <div className="flex items-center gap-2">
+            {hodRollup && (
+              <span className={`badge text-[11px] border ${hodRollup.cls}`} title={`Day-level HOD status: ${hodRollup.label}`}>
+                <span className="mr-1">{hodRollup.dot}</span>{hodRollup.label}
+              </span>
+            )}
+            {reviewed
+              ? <span className="badge-green">HR Reviewed</span>
+              : <span className="badge-amber">HR Pending</span>}
+            <span className="text-slate-400">{open ? '▾' : '▸'}</span>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {hodRollup && (
-            <span className={`badge text-[11px] border ${hodRollup.cls}`} title={`Day-level HOD status: ${hodRollup.label}`}>
-              <span className="mr-1">{hodRollup.dot}</span>{hodRollup.label}
-            </span>
-          )}
-          {reviewed
-            ? <span className="badge-green">HR Reviewed</span>
-            : <span className="badge-amber">HR Pending</span>}
-          <span className="text-slate-400">{open ? '▾' : '▸'}</span>
-        </div>
-      </button>
+        </button>
+      </div>
 
       {open && (
         <div className="p-5 space-y-4">
@@ -240,6 +364,16 @@ function SubmissionPanel({ sub, onReload }) {
         {(sub.templateType === 'excel' || sub.templateType === 'sheet') && (
           <div className="text-xs text-slate-500 italic">
             {sub.templateType === 'excel' ? 'Excel report' : 'Spreadsheet report'} — open in Submission Control to score per-row work.
+          </div>
+        )}
+        {/* Phase 23.3: dependency hand-offs for non-task submissions
+            (task templates render them inline beside the task row above). */}
+        {sub.templateType !== 'task' && Array.isArray(sub.dependencies) && sub.dependencies.length > 0 && (
+          <div className="space-y-1.5">
+            <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">
+              Dependent Tasks ({sub.dependencies.length})
+            </div>
+            {sub.dependencies.map((d) => <DependencyTransferCard key={d._id} dep={d} />)}
           </div>
         )}
       </div>
@@ -421,6 +555,17 @@ function TaskListPanel({ sub, onReload }) {
   const pending = tasks.filter((t) => t.status === 'pending').length;
   const wna     = tasks.filter((t) => t.status === 'work_not_available').length;
 
+  // Phase 23.3: index dependent-task hand-offs by source task id so the
+  // per-row editor can render Original / Transferred-to / Date / Status
+  // inline under the task it came from.  Server-attached on the grouped
+  // review feed by dailyReviewController._attachDependencies.
+  const depsByTask = new Map();
+  const unmatchedDeps = [];
+  for (const d of sub.dependencies || []) {
+    if (d.sourceTaskId) depsByTask.set(String(d.sourceTaskId), [...(depsByTask.get(String(d.sourceTaskId)) || []), d]);
+    else unmatchedDeps.push(d);
+  }
+
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-4 gap-2">
@@ -431,9 +576,21 @@ function TaskListPanel({ sub, onReload }) {
       </div>
       <div className="space-y-1.5">
         {tasks.map((t) => (
-          <TaskRowEditor key={t._id} submissionId={sub._id} task={t} onReload={onReload} />
+          <TaskRowEditor
+            key={t._id}
+            submissionId={sub._id}
+            task={t}
+            dependencies={depsByTask.get(String(t._id)) || depsByTask.get(String(t.taskId)) || []}
+            onReload={onReload}
+          />
         ))}
       </div>
+      {unmatchedDeps.length > 0 && (
+        <div className="space-y-1.5">
+          <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold">Dependent Tasks (other)</div>
+          {unmatchedDeps.map((d) => <DependencyTransferCard key={d._id} dep={d} />)}
+        </div>
+      )}
     </div>
   );
 }
@@ -446,11 +603,17 @@ const STATUS_META = {
   pending_submit:     { label: 'Not filled', symbol: '·', cls: 'text-slate-500 bg-slate-50 border-slate-200' },
 };
 
-function TaskRowEditor({ submissionId, task, onReload }) {
+function TaskRowEditor({ submissionId, task, dependencies = [], onReload }) {
   const [status, setStatus] = useState(task.status);
   const [reason, setReason] = useState(task.pendingReason || '');
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Phase 23.7 -- marks editor for employee-added extra work rows.
+  // System-generated rows show task.points read-only as before; only
+  // rows where `addedByEmployee=true` expose this editor.
+  const [marks, setMarks] = useState(String(task.awardedMarks ?? 0));
+  const [marksEditing, setMarksEditing] = useState(false);
+  const [marksBusy, setMarksBusy] = useState(false);
   const toast = useToast();
 
   const meta = STATUS_META[task.status] || STATUS_META.pending_submit;
@@ -482,19 +645,48 @@ function TaskRowEditor({ submissionId, task, onReload }) {
     setEditing(false);
   };
 
+  // Phase 23.7 -- save handler for the marks editor.
+  const saveMarks = async () => {
+    const n = Number(marks);
+    if (!Number.isFinite(n) || n < 0) {
+      toast.error('Marks must be a number >= 0.');
+      return;
+    }
+    setMarksBusy(true);
+    try {
+      await api.post('/daily-review/task-marks', {
+        submissionId, taskId: task._id, awardedMarks: n,
+      });
+      toast.success('Marks updated');
+      setMarksEditing(false);
+      onReload?.();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setMarksBusy(false); }
+  };
+
   return (
     <div className={`rounded border ${meta.cls} px-3 py-1.5`}>
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
           <span className="text-base">{meta.symbol}</span>
           <div className="min-w-0">
-            <div className="font-medium text-slate-800 truncate">{task.title}</div>
-            {task.points > 0 && (
-              <div className="text-[11px] text-slate-500">{task.points} pts{task.addedByEmployee ? ' · employee-added' : ''}</div>
+            <div className="font-medium text-slate-800 truncate">
+              {task.title}
+              {task.addedByEmployee && <span className="ml-2 badge text-[10px] bg-indigo-50 text-indigo-700 border border-indigo-200">Extra work</span>}
+            </div>
+            {/* System rows show their template points; employee-added
+                rows show "Awarded: N pts" (read-only label, edited via
+                the inline editor on the right). */}
+            {task.addedByEmployee ? (
+              <div className="text-[11px] text-slate-500">Awarded: {Number(task.awardedMarks) || 0} pts · employee-added</div>
+            ) : (
+              task.points > 0 && (
+                <div className="text-[11px] text-slate-500">{task.points} pts</div>
+              )
             )}
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {!editing ? (
             <>
               <span className="text-[11px] font-medium uppercase tracking-wide opacity-80">{meta.label}</span>
@@ -518,6 +710,34 @@ function TaskRowEditor({ submissionId, task, onReload }) {
               <button className="btn-ghost !py-0.5 !text-xs" onClick={cancel}>Cancel</button>
             </>
           )}
+          {/* Phase 23.7 -- extra-work marks editor.  Only employee-added
+              rows show the "Marks" control; HR-defined rows continue to
+              earn from their template `points` exactly as before. */}
+          {task.addedByEmployee && (
+            !marksEditing ? (
+              <button className="btn-ghost !py-0.5 !text-xs"
+                onClick={() => { setMarks(String(task.awardedMarks ?? 0)); setMarksEditing(true); }}>
+                {Number(task.awardedMarks) > 0 ? 'Edit marks' : 'Assign marks'}
+              </button>
+            ) : (
+              <div className="flex items-center gap-1">
+                <input
+                  type="number"
+                  min="0"
+                  className="input !py-1 !text-xs max-w-[80px]"
+                  value={marks}
+                  onChange={(e) => setMarks(e.target.value)}
+                  placeholder="pts"
+                />
+                <button className="btn-primary !py-0.5 !text-xs" disabled={marksBusy} onClick={saveMarks}>
+                  {marksBusy ? 'Saving…' : 'Save'}
+                </button>
+                <button className="btn-ghost !py-0.5 !text-xs" onClick={() => { setMarksEditing(false); setMarks(String(task.awardedMarks ?? 0)); }}>
+                  Cancel
+                </button>
+              </div>
+            )
+          )}
         </div>
       </div>
       {/* Pending reason -- shown when employee or reviewer set status=pending */}
@@ -535,6 +755,161 @@ function TaskRowEditor({ submissionId, task, onReload }) {
           <b>Reason:</b> {task.pendingReason}
         </div>
       ) : null}
+      {/* Phase 23.3: dependent-task transfer cards for this row */}
+      {dependencies.length > 0 && (
+        <div className="mt-2 space-y-1">
+          {dependencies.map((d) => <DependencyTransferCard key={d._id} dep={d} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===================================================================== */
+/* Phase 23.3 — Dependent task transfer card                              */
+/*                                                                       */
+/* Renders one DependencyTask hand-off attached to a submission:         */
+/*   Original task name (if no per-row context already shows it)         */
+/*   Shared By → Assigned To                                              */
+/*   Transferred on  +  (Resolved on / current status)                    */
+/*   Remark (if any)                                                      */
+/*                                                                       */
+/* Read-only.  No buttons -- HR / HOD already manage these from the      */
+/* Dependencies page; this card just makes the trail visible inside the   */
+/* day's review so the reviewer doesn't have to context-switch.           */
+/* ===================================================================== */
+function DependencyTransferCard({ dep }) {
+  const status = dep.currentStatus || 'open';
+  const meta = {
+    open:        { label: 'Pending',     cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    in_progress: { label: 'In Progress', cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+    resolved:    { label: 'Resolved',    cls: 'bg-green-50 text-green-700 border-green-200' },
+  }[status] || { label: status, cls: 'bg-slate-50 text-slate-700 border-slate-200' };
+  const fmt = (d) => d ? new Date(d).toLocaleString() : '';
+  return (
+    <div className="rounded border border-dashed border-indigo-200 bg-indigo-50/40 dark:bg-brand-500/10 dark:border-brand-500/30 px-2.5 py-1.5 text-[12px]">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="font-semibold text-slate-800 dark:text-slate-100 truncate">
+          {dep.originalTaskName || '(dependent task)'}
+        </div>
+        <span className={`badge text-[10px] border whitespace-nowrap ${meta.cls}`}>{meta.label}</span>
+      </div>
+      <div className="text-slate-700 dark:text-slate-300 mt-0.5">
+        Shared by <b>{dep.assignedByName || '—'}</b>
+        {dep.assignedByEmployeeId ? <span className="text-slate-500"> ({dep.assignedByEmployeeId})</span> : null}
+        <span className="text-slate-500"> → </span>
+        Assigned to <b>{dep.assignedToName || '—'}</b>
+        {dep.assignedToEmployeeId ? <span className="text-slate-500"> ({dep.assignedToEmployeeId})</span> : null}
+      </div>
+      <div className="text-slate-600 dark:text-slate-400 mt-0.5">
+        Transferred {fmt(dep.transferredAt)}
+        {dep.resolvedAt && <> · Resolved {fmt(dep.resolvedAt)}</>}
+        {dep.resolutionHours != null && <> · {dep.resolutionHours}h turnaround</>}
+      </div>
+      {dep.remark && (
+        <div className="text-slate-600 dark:text-slate-400 mt-0.5">
+          <span className="font-semibold">Remark:</span> {dep.remark}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ===================================================================== */
+/* Phase 23.6 — Bulk Discipline + Innovation entry                        */
+/*                                                                       */
+/* Modal launched from the toolbar above the card list.  Calls           */
+/* POST /api/daily-review/bulk-finalize ONCE with every (employee, date) */
+/* pair the user selected; the backend loops the existing per-day        */
+/* pipeline so review history / audit / notifications all fire exactly  */
+/* the same as a single finalise (just N times in a row).                */
+/* ===================================================================== */
+function BulkScoreModal({ cards, onClose, onDone }) {
+  const [d, setD]     = useState('');
+  const [maxD, setMaxD] = useState('3');
+  const [i, setI]     = useState('');
+  const [maxI, setMaxI] = useState('2');
+  const [dn, setDn]   = useState('');
+  const [iFb, setIFb] = useState('');
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const submit = async () => {
+    if (cards.length === 0) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post('/daily-review/bulk-finalize', {
+        items: cards.map((c) => ({
+          employeeId: String(c.employee._id),
+          date: new Date(c.date).toISOString().slice(0, 10),
+        })),
+        disciplineMarks: Number(d) || 0,
+        maxDisciplineMarks: Number(maxD) || 3,
+        ideaMarks: Number(i) || 0,
+        maxIdeaMarks: Number(maxI) || 2,
+        disciplineNote: dn,
+        ideaFeedback: iFb,
+      });
+      const okCount = data.ok || 0;
+      const failed = (data.failed || []).length;
+      if (failed === 0) toast.success(`Bulk-finalised ${okCount} day${okCount === 1 ? '' : 's'}`);
+      else if (okCount === 0) toast.error(`All ${failed} item(s) failed: ${data.failed[0]?.error || ''}`);
+      else toast.error(`Saved ${okCount}, ${failed} failed: ${data.failed[0]?.error || ''}`);
+      onDone();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="bg-white dark:bg-slate-900 rounded-lg shadow-xl max-w-xl w-full m-4 p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Bulk Assign Scores</h2>
+          <p className="text-sm text-slate-500">Applying the same Discipline + Innovation marks to <b>{cards.length}</b> selected day-card(s).</p>
+        </div>
+        <div className="max-h-40 overflow-y-auto rounded border border-slate-200 dark:border-slate-700 text-[12px]">
+          {cards.map((c, idx) => (
+            <div key={idx} className="px-3 py-1.5 border-b border-slate-100 dark:border-slate-700 last:border-b-0 flex items-center justify-between">
+              <span className="font-medium text-slate-800 dark:text-slate-100 truncate">
+                {c.employee.name} <span className="text-slate-400 font-normal">({c.employee.employeeId})</span>
+              </span>
+              <span className="text-slate-500">{fmtDate(c.date)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div>
+            <label className="label">Discipline</label>
+            <div className="flex items-center gap-2">
+              <input className="input" type="number" min="0" value={d} onChange={(e) => setD(e.target.value)} />
+              <span className="text-slate-400">/</span>
+              <input className="input max-w-[70px]" type="number" min="0" value={maxD} onChange={(e) => setMaxD(e.target.value)} />
+            </div>
+          </div>
+          <div>
+            <label className="label">Innovation</label>
+            <div className="flex items-center gap-2">
+              <input className="input" type="number" min="0" value={i} onChange={(e) => setI(e.target.value)} />
+              <span className="text-slate-400">/</span>
+              <input className="input max-w-[70px]" type="number" min="0" value={maxI} onChange={(e) => setMaxI(e.target.value)} />
+            </div>
+          </div>
+          <div className="md:col-span-2">
+            <label className="label">Discipline Note (optional)</label>
+            <input className="input" value={dn} onChange={(e) => setDn(e.target.value)} />
+          </div>
+          <div className="md:col-span-4">
+            <label className="label">Idea Feedback (optional)</label>
+            <textarea className="input" rows={2} value={iFb} onChange={(e) => setIFb(e.target.value)} />
+          </div>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn-primary" onClick={submit} disabled={busy || cards.length === 0}>
+            {busy ? 'Applying…' : `Apply to ${cards.length} day${cards.length === 1 ? '' : 's'}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
