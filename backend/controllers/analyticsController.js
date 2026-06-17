@@ -1196,7 +1196,7 @@ const myCallingAnalytics = asyncHandler(async (req, res) => {
 });
 
 /* ====================================================================
- * Phase 24 (+ 24.1) — Calling Analytics export
+ * Phase 24 (+ 24.1, 24.2) — Calling Analytics export
  *
  * Reuses the EXACT same dataset that powers Performance → Calling
  * Analytics so the exported numbers always match the on-screen view.
@@ -1213,22 +1213,31 @@ const myCallingAnalytics = asyncHandler(async (req, res) => {
  *       for the section-by-section export.  Filters mirror the analytics
  *       handler exactly (same date range, same liveSubmissionFilter,
  *       same templateType='custom' productSales selector).
+ *   3.  Render the worksheet with exceljs so we can apply professional
+ *       styling (fills, borders, currency / percentage formats, bold
+ *       banners, frozen rows).  SheetJS community can't write cell
+ *       styles to xlsx, so anything beyond column widths / merges /
+ *       freeze had no effect there.
  *
- * Output (single worksheet, "Calling Analytics"):
+ * Output layout (single worksheet, "Calling Analytics"):
  *
- *   Row 1: "Calling Analytics Report"            (merged across cols)
- *   Row 2: "01-Jun-2026 to 30-Jun-2026"          (merged)
- *   Row 3: blank
- *   then for each employee:
+ *   Row 1   : CALLING ANALYTICS REPORT             (title banner, merged)
+ *   Row 2   : Date Range: 01-Jun-2026 to 30-Jun-2026 (sub-title, merged)
+ *   Row 3   : (blank)
+ *   Row 4   : OVERALL SUMMARY                       (section banner)
+ *   Row 5-N : org-wide totals (label | value)
+ *   blank
+ *   per employee:
+ *     EMPLOYEE NAME                                  (employee banner)
+ *     employee summary (label | value)
  *     blank
- *     <Employee Name>                            (merged banner)
- *     summary header row + summary value row
- *     blank
- *     "Product Breakdown"                        (merged banner)
- *     product header row + N product rows
+ *     PRODUCT DETAILS                                (section banner)
+ *     Product Name | Quantity | Sales Value | NBV    (header row, fill)
+ *     <product rows> with currency formatting + borders
  *
- * Columns chosen from the spec's "Expected columns" list, narrowed by
- * the 24.1 update which removes Employee ID / Phone Number / Department.
+ * The columns used to lay everything out are A (label) / B (value or
+ * quantity) / C (sales) / D (NBV) -- 4 columns wide.  Summary rows use
+ * A:B, product rows use A:D.
  * ================================================================== */
 const exportCallingAnalytics = asyncHandler(async (req, res) => {
   // ---- 1. Capture the analytics result via a fake res ----------------
@@ -1250,24 +1259,21 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
 
   const employees   = captured.employees   || [];
   const employeesPF = captured.employeesPF || [];
+  const kpis        = captured.kpis        || {};
+  const productKpis = captured.productKpis || {};
   const range       = captured.range       || { from: req.query.from, to: req.query.to };
-  // Index Product & Farmer rows by employee for the per-employee
-  // summary section (sales / NBV / avg value).
   const pfByEmp = new Map(employeesPF.map((r) => [String(r._id), r]));
 
   // ---- 2. Per-(employee, product) breakdown -------------------------
-  // The captured payload exposes per-employee totals (employeesPF) and
-  // org-wide per-product totals (productsTable) but NOT the cross-
-  // product we need for the section-based layout.  Run a tightly scoped
-  // query that mirrors the analytics handler's `pfSubs` filter -- same
-  // employee universe, same date range, same liveSubmissionFilter,
-  // same productSales selector.  This is read-only enrichment; it
+  // Same filter as callingAnalytics' `pfSubs` query -- read-only,
   // doesn't change any analytics calculation.
   const empUniverse = new Set([
     ...employees.map((e) => String(e._id)),
     ...employeesPF.map((e) => String(e._id)),
   ]);
   const empProductRows = new Map(); // empId -> Map(productName -> { qty, sales, nbv })
+  let totalProductsSold_export = 0;
+  let totalQuantitySold_export = 0;
   if (empUniverse.size) {
     const empObjectIds = [...empUniverse];
     const pfSubs = await Submission.find({
@@ -1289,12 +1295,35 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
         p.qty   += Number(row.quantityValue) || 0;
         p.sales += Number(row.salesValue)    || 0;
         p.nbv   += Number(row.nbvValue)      || 0;
+        totalProductsSold_export += 1;
+        totalQuantitySold_export += Number(row.quantityValue) || 0;
       }
     }
   }
+  // Prefer the captured payload's product totals so the Overall Summary
+  // exactly mirrors what the on-screen Calling Analytics shows; fall
+  // back to our just-computed numbers if the payload didn't carry them
+  // (older deploys / empty range).
+  const overallProductsSold = (productKpis.totalProductsSold != null)
+    ? productKpis.totalProductsSold : totalProductsSold_export;
+  const overallQuantitySold = (productKpis.totalQuantitySold != null)
+    ? productKpis.totalQuantitySold : totalQuantitySold_export;
+  const overallSales = productKpis.totalSalesValue || 0;
+  const overallNbv   = productKpis.totalNbvValue   || 0;
 
-  // ---- 3. Build the worksheet ---------------------------------------
-  const XLSX = require('xlsx');
+  // ---- 3. Set up ExcelJS workbook + worksheet ----------------------
+  // We use ExcelJS (rather than SheetJS) here because the spec calls for
+  // bold banners, fills, borders, currency / percentage formats and a
+  // frozen row -- none of which the SheetJS community edition writes to
+  // disk reliably.  ExcelJS supports all of them natively.
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'HRMS';
+  wb.created = new Date();
+  const ws = wb.addWorksheet('Calling Analytics', {
+    views: [{ state: 'frozen', ySplit: 3, topLeftCell: 'A4', activeCell: 'A4' }],
+    pageSetup: { fitToPage: true, fitToWidth: 1, fitToHeight: 0, orientation: 'landscape' },
+  });
 
   // dd-MMM-yyyy format to match the spec example ("01-Jun-2026").
   const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -1302,43 +1331,112 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
     const x = new Date(d);
     return `${String(x.getUTCDate()).padStart(2, '0')}-${MONTHS[x.getUTCMonth()]}-${x.getUTCFullYear()}`;
   };
-  // `to` returned by callingAnalytics is exclusive (the day after) per
-  // resolveRange; rewind by 1 day so the title shows the inclusive end
-  // date the user actually selected.
   const inclusiveTo = new Date(new Date(range.to).getTime() - 86400000);
   const titleDate = `${fmtRangeDate(range.from)} to ${fmtRangeDate(inclusiveTo)}`;
-
-  // The summary block is 12 columns wide, the product block is 4.  We
-  // pick 12 as the worksheet width so the summary header / values fit
-  // naturally and the product table sits at the left.
-  const SUMMARY_HEADERS = [
-    'Assigned Calls', 'Dialed Calls', 'Attended Calls', 'Unattended Calls',
-    'Old Conversions', 'New Conversions', 'Total Conversions',
-    'Connection Rate (%)', 'Conversion Rate (%)',
-    'Sales Value', 'NBV Value', 'Average Value',
-  ];
-  const PRODUCT_HEADERS = ['Product Name', 'Quantity Sold', 'Sales Value', 'NBV Value'];
-  const TOTAL_COLS = SUMMARY_HEADERS.length; // 12
-
-  // Round-2 helper so per-product sums don't drift on long ranges.
   const round2 = (n) => Math.round(n * 100) / 100;
 
-  const aoa = [];
-  const merges = [];
+  // ---- shared style fragments ---------------------------------------
+  const TOTAL_COLS = 4; // A=Label, B=Value/Qty, C=Sales, D=NBV
+  const COL_LETTERS = ['A', 'B', 'C', 'D'];
+  const TITLE_FILL    = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F2937' } };  // slate-800
+  const SECTION_FILL  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4338CA' } };  // brand-700
+  const EMP_FILL      = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF6366F1' } };  // brand-500
+  const SUBSEC_FILL   = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE0E7FF' } };  // brand-100
+  const TBL_HEAD_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEEF2FF' } };  // brand-50
+  const ALT_ROW_FILL  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFC' } };  // slate-50
+  const WHITE_FONT    = { bold: true, color: { argb: 'FFFFFFFF' } };
+  const thinBorder = {
+    top:    { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    left:   { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } },
+    right:  { style: 'thin', color: { argb: 'FFCBD5E1' } },
+  };
+  const CURRENCY_FMT = '"₹"#,##0.00';
+  const PCT_FMT      = '0.00"%"';
 
-  // Title + date range banners (always rows 1-3).
-  aoa.push(['Calling Analytics Report']);
-  merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: TOTAL_COLS - 1 } });
-  aoa.push([titleDate]);
-  merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: TOTAL_COLS - 1 } });
-  aoa.push([]);
+  // Helper -- set a contiguous range of cells with the same style.
+  const styleRange = (rowNum, startCol, endCol, opts) => {
+    for (let c = startCol; c <= endCol; c += 1) {
+      const cell = ws.getCell(rowNum, c);
+      if (opts.font)      cell.font = opts.font;
+      if (opts.fill)      cell.fill = opts.fill;
+      if (opts.alignment) cell.alignment = opts.alignment;
+      if (opts.border)    cell.border = opts.border;
+      if (opts.numFmt)    cell.numFmt = opts.numFmt;
+    }
+  };
 
-  // ---- 4. One block per employee -----------------------------------
-  // Sorted by Calls Completed (same as captured.employees ordering set
-  // inside callingAnalytics' res.json).  If an employee has zero calling
-  // metrics but DID have product sales (rare but possible) they'd live
-  // in employeesPF only -- we surface them at the end of the loop so
-  // the export still shows their product breakdown.
+  // ---- 4. Title + date range ---------------------------------------
+  ws.mergeCells('A1', 'D1');
+  const titleCell = ws.getCell('A1');
+  titleCell.value = 'CALLING ANALYTICS REPORT';
+  titleCell.font = { bold: true, size: 18, color: { argb: 'FFFFFFFF' } };
+  titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  titleCell.fill = TITLE_FILL;
+  ws.getRow(1).height = 30;
+
+  ws.mergeCells('A2', 'D2');
+  const dateCell = ws.getCell('A2');
+  dateCell.value = `Date Range: ${titleDate}`;
+  dateCell.font = { italic: true, size: 12, color: { argb: 'FF334155' } };
+  dateCell.alignment = { horizontal: 'center', vertical: 'middle' };
+  dateCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+  ws.getRow(2).height = 22;
+
+  // Row 3: spacer
+  ws.getRow(3).height = 8;
+
+  let r = 4;
+
+  // ---- 5. OVERALL SUMMARY -------------------------------------------
+  ws.mergeCells(r, 1, r, TOTAL_COLS);
+  const overallBanner = ws.getCell(r, 1);
+  overallBanner.value = 'OVERALL SUMMARY';
+  overallBanner.font = { ...WHITE_FONT, size: 13 };
+  overallBanner.alignment = { horizontal: 'center', vertical: 'middle' };
+  overallBanner.fill = SECTION_FILL;
+  ws.getRow(r).height = 22;
+  r += 1;
+
+  // Overall metric rows -- label in col A (bold), value in col B.  C/D
+  // stay blank for the summary block.
+  const overallRows = [
+    ['Total Assigned Calls',     kpis.totalAssignedCalls   || 0, null],
+    ['Total Dialed Calls',       kpis.totalDialedCalls     || 0, null],
+    ['Total Attended Calls',     kpis.totalAttendedCalls   || 0, null],
+    ['Total Unattended Calls',   kpis.totalUnattendedCalls || 0, null],
+    ['Total Old Conversions',    kpis.oldConversions       || 0, null],
+    ['Total New Conversions',    kpis.newConversions       || 0, null],
+    ['Total Conversions',        kpis.totalConversions     || 0, null],
+    ['Overall Connection Rate',  kpis.connectionRate       || 0, PCT_FMT],
+    ['Overall Conversion Rate',  kpis.conversionRate       || 0, PCT_FMT],
+    ['Total Sales Value',        round2(overallSales),           CURRENCY_FMT],
+    ['Total NBV Value',          round2(overallNbv),             CURRENCY_FMT],
+    ['Total Products Sold',      overallProductsSold,            null],
+    ['Total Quantity Sold',      round2(overallQuantitySold),    null],
+  ];
+  for (let i = 0; i < overallRows.length; i += 1) {
+    const [label, value, numFmt] = overallRows[i];
+    const row = ws.getRow(r);
+    row.getCell(1).value = label;
+    row.getCell(2).value = value;
+    row.getCell(1).font = { bold: true, color: { argb: 'FF334155' } };
+    row.getCell(1).alignment = { vertical: 'middle', indent: 1 };
+    row.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
+    if (numFmt) row.getCell(2).numFmt = numFmt;
+    // Zebra row fill on alternate rows
+    if (i % 2 === 1) {
+      row.getCell(1).fill = ALT_ROW_FILL;
+      row.getCell(2).fill = ALT_ROW_FILL;
+    }
+    // Borders A:B
+    row.getCell(1).border = thinBorder;
+    row.getCell(2).border = thinBorder;
+    r += 1;
+  }
+  r += 1; // spacer
+
+  // ---- 6. Per-employee blocks ---------------------------------------
   const seenEmpIds = new Set();
   const blocks = [];
   for (const e of employees) {
@@ -1350,132 +1448,169 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
     blocks.push({ id: String(e._id), name: e.name, callRow: null });
   }
 
+  if (blocks.length === 0) {
+    ws.mergeCells(r, 1, r, TOTAL_COLS);
+    const empty = ws.getCell(r, 1);
+    empty.value = 'No employees with submissions in this range.';
+    empty.alignment = { horizontal: 'center' };
+    empty.font = { italic: true, color: { argb: 'FF94A3B8' } };
+    r += 1;
+  }
+
   for (const block of blocks) {
     const e = block.callRow;
     const pf = pfByEmp.get(block.id);
     const sales = round2(pf?.salesValue || 0);
     const nbv   = round2(pf?.nbvValue   || 0);
-    // Average Value = Sales ÷ Total Conversions  (matches the reference
-    // sheet's "Avg. Value" definition: per-conversion revenue).  Falls
-    // back to 0 when conversions are 0 -- no dummy / approximation.
     const totalConv = e?.totalConversions || 0;
-    const avgValue = totalConv > 0 ? Math.round(sales / totalConv) : 0;
-
-    // ---- block.4.a: blank spacer + banner row -----------------------
-    aoa.push([]); // spacer
-    const bannerRowIdx = aoa.length; // 0-based row index of upcoming push
-    aoa.push([block.name]);
-    merges.push({ s: { r: bannerRowIdx, c: 0 }, e: { r: bannerRowIdx, c: TOTAL_COLS - 1 } });
-
-    // ---- block.4.b: summary header + values --------------------------
-    aoa.push(SUMMARY_HEADERS);
-    aoa.push([
-      e?.assignedCalls    || 0,
-      e?.dialedCalls      || 0,
-      e?.attendedCalls    || 0,
-      e?.unattendedCalls  || 0,
-      e?.oldConversions   || 0,
-      e?.newConversions   || 0,
-      e?.totalConversions || 0,
-      e?.connectionRate   || 0,
-      e?.conversionRate   || 0,
-      sales,
-      nbv,
-      avgValue,
-    ]);
-
-    // ---- block.4.c: product breakdown sub-section --------------------
-    aoa.push([]); // spacer
-    const productBannerRowIdx = aoa.length;
-    aoa.push(['Product Breakdown']);
-    merges.push({ s: { r: productBannerRowIdx, c: 0 }, e: { r: productBannerRowIdx, c: TOTAL_COLS - 1 } });
-    aoa.push(PRODUCT_HEADERS);
-
+    const avgValue = totalConv > 0 ? round2(sales / totalConv) : 0;
     const productMap = empProductRows.get(block.id);
     const productRows = productMap
       ? [...productMap.entries()]
           .map(([name, v]) => [name, round2(v.qty), round2(v.sales), round2(v.nbv)])
           .sort((a, b) => (b[2] || 0) - (a[2] || 0))
       : [];
+    const empProductsSold = productRows.length;
+    const empQuantitySold = round2(productRows.reduce((s, x) => s + (Number(x[1]) || 0), 0));
+
+    // 6.a Employee banner --------------------------------------------
+    ws.mergeCells(r, 1, r, TOTAL_COLS);
+    const banner = ws.getCell(r, 1);
+    banner.value = block.name;
+    banner.font = { ...WHITE_FONT, size: 14 };
+    banner.alignment = { horizontal: 'center', vertical: 'middle' };
+    banner.fill = EMP_FILL;
+    ws.getRow(r).height = 24;
+    r += 1;
+
+    // 6.b Employee summary rows (label | value) ----------------------
+    const empRows = [
+      ['Assigned Calls',      e?.assignedCalls    || 0, null],
+      ['Dialed Calls',        e?.dialedCalls      || 0, null],
+      ['Attended Calls',      e?.attendedCalls    || 0, null],
+      ['Unattended Calls',    e?.unattendedCalls  || 0, null],
+      ['Old Conversions',     e?.oldConversions   || 0, null],
+      ['New Conversions',     e?.newConversions   || 0, null],
+      ['Total Conversions',   e?.totalConversions || 0, null],
+      ['Connection Rate',     e?.connectionRate   || 0, PCT_FMT],
+      ['Conversion Rate',     e?.conversionRate   || 0, PCT_FMT],
+      ['Total Sales Value',   sales,                    CURRENCY_FMT],
+      ['Total NBV Value',     nbv,                      CURRENCY_FMT],
+      ['Average Value',       avgValue,                 CURRENCY_FMT],
+      ['Products Sold',       empProductsSold,          null],
+      ['Quantity Sold',       empQuantitySold,          null],
+    ];
+    for (let i = 0; i < empRows.length; i += 1) {
+      const [label, value, numFmt] = empRows[i];
+      const row = ws.getRow(r);
+      row.getCell(1).value = label;
+      row.getCell(2).value = value;
+      row.getCell(1).font = { bold: true, color: { argb: 'FF334155' } };
+      row.getCell(1).alignment = { vertical: 'middle', indent: 1 };
+      row.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
+      if (numFmt) row.getCell(2).numFmt = numFmt;
+      if (i % 2 === 1) {
+        row.getCell(1).fill = ALT_ROW_FILL;
+        row.getCell(2).fill = ALT_ROW_FILL;
+      }
+      row.getCell(1).border = thinBorder;
+      row.getCell(2).border = thinBorder;
+      r += 1;
+    }
+
+    // 6.c Product Details sub-banner ---------------------------------
+    ws.mergeCells(r, 1, r, TOTAL_COLS);
+    const sub = ws.getCell(r, 1);
+    sub.value = 'PRODUCT DETAILS';
+    sub.font = { bold: true, size: 12, color: { argb: 'FF1E1B4B' } };
+    sub.alignment = { horizontal: 'center', vertical: 'middle' };
+    sub.fill = SUBSEC_FILL;
+    ws.getRow(r).height = 20;
+    r += 1;
+
+    // 6.d Product table header --------------------------------------
+    const header = ws.getRow(r);
+    ['Product Name', 'Quantity Sold', 'Sales Value', 'NBV Value'].forEach((h, i) => {
+      const cell = header.getCell(i + 1);
+      cell.value = h;
+      cell.font = { bold: true, color: { argb: 'FF1F2937' } };
+      cell.fill = TBL_HEAD_FILL;
+      cell.alignment = { horizontal: 'center', vertical: 'middle' };
+      cell.border = thinBorder;
+    });
+    r += 1;
+
+    // 6.e Product data rows ------------------------------------------
     if (productRows.length === 0) {
-      // Explicit "no products" row matches the on-screen empty-state UX
-      // and avoids ambiguity about whether the data was queried.
-      aoa.push(['No product sales in this range', '', '', '']);
+      ws.mergeCells(r, 1, r, TOTAL_COLS);
+      const cell = ws.getCell(r, 1);
+      cell.value = 'No product sales in this range';
+      cell.font = { italic: true, color: { argb: 'FF94A3B8' } };
+      cell.alignment = { horizontal: 'center' };
+      cell.border = thinBorder;
+      r += 1;
     } else {
-      for (const r of productRows) aoa.push(r);
+      for (let i = 0; i < productRows.length; i += 1) {
+        const [pname, qty, psales, pnbv] = productRows[i];
+        const row = ws.getRow(r);
+        row.getCell(1).value = pname;
+        row.getCell(2).value = qty;
+        row.getCell(3).value = psales;
+        row.getCell(4).value = pnbv;
+        row.getCell(3).numFmt = CURRENCY_FMT;
+        row.getCell(4).numFmt = CURRENCY_FMT;
+        row.getCell(1).alignment = { vertical: 'middle', indent: 1 };
+        row.getCell(2).alignment = { vertical: 'middle', horizontal: 'right' };
+        row.getCell(3).alignment = { vertical: 'middle', horizontal: 'right' };
+        row.getCell(4).alignment = { vertical: 'middle', horizontal: 'right' };
+        if (i % 2 === 1) {
+          for (let c = 1; c <= 4; c += 1) row.getCell(c).fill = ALT_ROW_FILL;
+        }
+        for (let c = 1; c <= 4; c += 1) row.getCell(c).border = thinBorder;
+        r += 1;
+      }
+      // Per-employee product total footer row -------------------------
+      const total = ws.getRow(r);
+      total.getCell(1).value = 'Total';
+      total.getCell(2).value = empQuantitySold;
+      total.getCell(3).value = sales;
+      total.getCell(4).value = nbv;
+      total.getCell(3).numFmt = CURRENCY_FMT;
+      total.getCell(4).numFmt = CURRENCY_FMT;
+      for (let c = 1; c <= 4; c += 1) {
+        total.getCell(c).font = { bold: true };
+        total.getCell(c).fill = TBL_HEAD_FILL;
+        total.getCell(c).border = thinBorder;
+        total.getCell(c).alignment = { vertical: 'middle', horizontal: c === 1 ? 'right' : 'right' };
+      }
+      r += 1;
     }
+
+    r += 1; // blank spacer between employees
   }
 
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!merges'] = merges;
-
-  // Freeze the title + date + spacer rows so they stay visible while the
-  // user scrolls through employees.  topLeftCell = A4.
-  ws['!freeze'] = { xSplit: 0, ySplit: 3 };
-  ws['!views']  = [{ state: 'frozen', xSplit: 0, ySplit: 3, topLeftCell: 'A4', activePane: 'bottomLeft' }];
-
-  // Auto column widths -- iterate every row, pick the longest cell per
-  // column, clamp to a sensible min / max so summary headers stay
-  // readable but a long product name doesn't blow the layout.
-  ws['!cols'] = Array.from({ length: TOTAL_COLS }, (_, c) => {
-    let maxLen = 10;
-    for (const r of aoa) {
-      const v = r[c] == null ? '' : String(r[c]);
-      if (v.length > maxLen) maxLen = v.length;
-    }
-    return { wch: Math.min(38, Math.max(10, maxLen + 2)) };
-  });
-
-  // Mild header / banner styling -- bold title rows and bold every
-  // banner / header row inside each employee block.  SheetJS community
-  // doesn't always serialise these styles to the xlsx file, but they're
-  // harmless when ignored and useful when surfaced by Excel readers
-  // that honour the `s` property.
-  const styleCell = (addr, style) => {
-    if (!ws[addr]) ws[addr] = { t: 's', v: '' };
-    ws[addr].s = { ...(ws[addr].s || {}), ...style };
-  };
-  styleCell('A1', { font: { bold: true, sz: 14 }, alignment: { horizontal: 'center' } });
-  styleCell('A2', { font: { bold: true, sz: 11 }, alignment: { horizontal: 'center' } });
-
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Calling Analytics');
-
-  const rawBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-
-  // ---- 5. Post-process: inject freeze panes --------------------------
-  // SheetJS community edition writes `<sheetView workbookViewId="0"/>`
-  // verbatim and never emits the `<pane>` element regardless of which
-  // `!freeze` / `!views` keys we set on the worksheet object.  To honour
-  // the "Freeze header row" requirement we re-open the generated xlsx
-  // (which is a ZIP archive) with jszip, patch the sheetView XML to
-  // include a frozen pane rooted at A4 (so the title + date stay
-  // visible), then re-zip.
-  const JSZip = require('jszip');
-  const zip = await JSZip.loadAsync(rawBuf);
-  const sheetPath = 'xl/worksheets/sheet1.xml';
-  const sheetXmlEntry = zip.file(sheetPath);
-  let buf = rawBuf;
-  if (sheetXmlEntry) {
-    let xml = await sheetXmlEntry.async('string');
-    const frozenView = '<sheetView workbookViewId="0">'
-      + '<pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/>'
-      + '<selection pane="bottomLeft" activeCell="A4" sqref="A4"/>'
-      + '</sheetView>';
-    if (xml.includes('<sheetView ')) {
-      xml = xml.replace(/<sheetView\b[^>]*\/>/, frozenView)
-               .replace(/<sheetView\b[^>]*>[\s\S]*?<\/sheetView>/, frozenView);
-    } else if (xml.includes('<sheetViews>')) {
-      xml = xml.replace('<sheetViews>', `<sheetViews>${frozenView}`);
-    }
-    zip.file(sheetPath, xml);
-    buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  // ---- 7. Column widths --------------------------------------------
+  // Width is set per ExcelJS column.width (in character units).  We
+  // walk every populated cell to pick a width that fits the longest
+  // value, clamped to a sensible min / max so a single long product
+  // name doesn't blow the layout out of proportion.
+  for (let c = 1; c <= TOTAL_COLS; c += 1) {
+    let maxLen = 12;
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      const v = row.getCell(c).value;
+      if (v == null) return;
+      const len = String(typeof v === 'object' && 'text' in v ? v.text : v).length;
+      if (len > maxLen) maxLen = len;
+    });
+    ws.getColumn(c).width = Math.min(34, Math.max(14, maxLen + 2));
   }
 
+  // ---- 8. Stream the workbook back as xlsx -------------------------
+  const buf = await wb.xlsx.writeBuffer();
   const filename = `calling-analytics_${fmtRangeDate(range.from)}_to_${fmtRangeDate(inclusiveTo)}.xlsx`;
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(buf);
+  res.send(Buffer.from(buf));
 });
 
 module.exports = { pendency, completion, assignmentAnalytics, callingAnalytics, myCallingAnalytics, exportCallingAnalytics };
