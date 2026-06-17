@@ -1195,4 +1195,215 @@ const myCallingAnalytics = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { pendency, completion, assignmentAnalytics, callingAnalytics, myCallingAnalytics };
+/* ====================================================================
+ * Phase 24 — Calling Analytics export
+ *
+ * Reuses the EXACT same dataset that powers Performance → Calling
+ * Analytics so the exported numbers always match the on-screen view.
+ * Implementation strategy: invoke the existing callingAnalytics handler
+ * with a captured fake `res` object instead of duplicating the query +
+ * roll-up logic.  This means:
+ *   - role scoping (HR/SA full, HOD dept-clamped) is automatic,
+ *   - the same liveSubmissionFilter (includeTest / onlyReviewed) and
+ *     date-range parsing are honoured,
+ *   - any future change to the analytics formula automatically flows
+ *     into the export without a parallel maintenance burden.
+ *
+ * Output:
+ *   - One worksheet, single sheet name "Calling Analytics".
+ *   - Row 1: title  "Calling Analytics Report"
+ *   - Row 2: date range  "01-Jun-2026 to 30-Jun-2026"
+ *   - Row 3: blank spacer
+ *   - Row 4: column headers  (frozen)
+ *   - Row 5+: one row per employee in scope
+ *
+ * Columns (in this order) -- chosen from the spec's "Expected columns"
+ * list and limited to fields the analytics dataset actually carries.
+ * Total Minutes / Average Minutes are deliberately omitted (not in the
+ * system).  Sales / NBV / Average Value come from the Product & Farmer
+ * extension already returned by the same endpoint.
+ * ================================================================== */
+const exportCallingAnalytics = asyncHandler(async (req, res) => {
+  // ---- 1. Capture the analytics result via a fake res ----------------
+  let captured = null;
+  let capturedErr = null;
+  const fakeRes = {
+    _status: 200,
+    status(code) { this._status = code; return this; },
+    json(payload) { captured = payload; return this; },
+    set() { return this; },
+    setHeader() { return this; },
+    send() { return this; },
+  };
+  await callingAnalytics(req, fakeRes, (err) => { capturedErr = err; });
+  if (capturedErr) throw capturedErr;
+  if (!captured) {
+    res.status(500); throw new Error('Calling analytics produced no payload to export.');
+  }
+
+  const employees   = captured.employees   || [];
+  const employeesPF = captured.employeesPF || [];
+  const range       = captured.range       || { from: req.query.from, to: req.query.to };
+
+  // ---- 2. Join phone numbers (not on the analytics payload) ----------
+  // Lightweight extra query -- doesn't touch any analytics calculation.
+  const empIds = employees.map((e) => e._id).filter(Boolean);
+  const userPhones = new Map();
+  if (empIds.length) {
+    const us = await User.find({ _id: { $in: empIds } }).select('_id phone').lean();
+    us.forEach((u) => userPhones.set(String(u._id), u.phone || ''));
+  }
+  // Index Product & Farmer rows by employee for the sales / NBV / avg lookup.
+  const pfByEmp = new Map(employeesPF.map((r) => [String(r._id), r]));
+
+  // ---- 3. Build the worksheet ---------------------------------------
+  const XLSX = require('xlsx');
+
+  // dd-MMM-yyyy format to match the spec example ("01-Jun-2026").
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const fmtRangeDate = (d) => {
+    const x = new Date(d);
+    return `${String(x.getUTCDate()).padStart(2, '0')}-${MONTHS[x.getUTCMonth()]}-${x.getUTCFullYear()}`;
+  };
+  // `to` returned by callingAnalytics is exclusive (the day after) per
+  // resolveRange; rewind by 1 day so the title shows the inclusive end
+  // date the user actually selected.
+  const inclusiveTo = new Date(new Date(range.to).getTime() - 86400000);
+  const titleDate = `${fmtRangeDate(range.from)} to ${fmtRangeDate(inclusiveTo)}`;
+
+  const headers = [
+    'Employee Name', 'Employee ID', 'Phone Number', 'Department',
+    'Assigned Calls', 'Dialed Calls', 'Attended Calls', 'Unattended Calls',
+    'Old Customer Conversions', 'New Customer Conversions', 'Total Conversions',
+    'Connection Rate (%)', 'Conversion Rate (%)', 'Call Completion Rate (%)',
+    'Total Pending', 'Yesterday Pending',
+    'Sales Value', 'NBV Value', 'Average Value',
+  ];
+
+  // Sort the per-employee section by Calls Completed (matches the
+  // on-screen "Per-Employee Summary" sort order set by callingAnalytics).
+  const rows = employees.map((e) => {
+    const pf = pfByEmp.get(String(e._id));
+    const sales = pf?.salesValue || 0;
+    const nbv   = pf?.nbvValue   || 0;
+    // Average Value = Sales ÷ Total Conversions (matches the reference
+    // sheet's "Avg. Value" definition: per-conversion revenue).  Falls
+    // back to 0 when conversions are 0 -- no dummy / approximated value.
+    const avgValue = (e.totalConversions || 0) > 0
+      ? Math.round(sales / e.totalConversions)
+      : 0;
+    return [
+      e.name || '',
+      e.employeeId || '',
+      userPhones.get(String(e._id)) || '',
+      e.department || '',
+      e.assignedCalls || 0,
+      e.dialedCalls || 0,
+      e.attendedCalls || 0,
+      e.unattendedCalls || 0,
+      e.oldConversions || 0,
+      e.newConversions || 0,
+      e.totalConversions || 0,
+      e.connectionRate || 0,
+      e.conversionRate || 0,
+      e.callCompletionRate || 0,
+      e.totalPending || 0,
+      // "Yesterday Pending" isn't in the rollup -- it's a per-submission
+      // field on the calling report.  The analytics payload doesn't
+      // expose it, so we leave it blank rather than fake a value.
+      '',
+      sales,
+      nbv,
+      avgValue,
+    ];
+  });
+
+  const aoa = [
+    ['Calling Analytics Report'],
+    [titleDate],
+    [],
+    headers,
+    ...rows,
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Merge the title + date rows across every column for a clean header.
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: headers.length - 1 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: headers.length - 1 } },
+  ];
+
+  // Freeze the header (rows 1-4 stay; data scrolls underneath).
+  ws['!freeze'] = { xSplit: 0, ySplit: 4 };
+  ws['!views']  = [{ state: 'frozen', xSplit: 0, ySplit: 4, topLeftCell: 'A5', activePane: 'bottomLeft' }];
+
+  // Auto column widths -- pick the longest cell value per column with a
+  // sensible min/max so single-digit columns don't collapse.
+  ws['!cols'] = headers.map((h, i) => {
+    let maxLen = String(h).length;
+    for (const r of rows) {
+      const v = r[i] == null ? '' : String(r[i]);
+      if (v.length > maxLen) maxLen = v.length;
+    }
+    return { wch: Math.min(40, Math.max(10, maxLen + 2)) };
+  });
+
+  // Mild header formatting where SheetJS community supports it (bold +
+  // alignment).  Cell styles ride on the property `s` on each cell.
+  const styleCell = (addr, style) => {
+    if (!ws[addr]) ws[addr] = { t: 's', v: '' };
+    ws[addr].s = { ...(ws[addr].s || {}), ...style };
+  };
+  styleCell('A1', { font: { bold: true, sz: 14 }, alignment: { horizontal: 'center' } });
+  styleCell('A2', { font: { bold: true, sz: 11 }, alignment: { horizontal: 'center' } });
+  for (let c = 0; c < headers.length; c += 1) {
+    const addr = XLSX.utils.encode_cell({ r: 3, c });
+    styleCell(addr, { font: { bold: true }, alignment: { horizontal: 'center', wrapText: true } });
+  }
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Calling Analytics');
+
+  const rawBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+  // ---- 4. Post-process: inject freeze panes ---------------------------
+  // SheetJS community edition writes `<sheetView workbookViewId="0"/>`
+  // verbatim and never emits the `<pane>` element regardless of which
+  // `!freeze` / `!views` keys we set on the worksheet object.  To honour
+  // the "Freeze header row" requirement we re-open the generated xlsx
+  // (which is a ZIP archive) with jszip, patch the sheetView XML to
+  // include a frozen pane + selection rooted at A5, then re-zip.
+  // The rest of the file is left untouched -- column widths, merges,
+  // and data all come from SheetJS as-is.
+  const JSZip = require('jszip');
+  const zip = await JSZip.loadAsync(rawBuf);
+  const sheetPath = 'xl/worksheets/sheet1.xml';
+  const sheetXmlEntry = zip.file(sheetPath);
+  let buf = rawBuf;
+  if (sheetXmlEntry) {
+    let xml = await sheetXmlEntry.async('string');
+    const frozenView = '<sheetView workbookViewId="0">'
+      + '<pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/>'
+      + '<selection pane="bottomLeft" activeCell="A5" sqref="A5"/>'
+      + '</sheetView>';
+    if (xml.includes('<sheetView ')) {
+      // Replace whatever SheetJS wrote (usually a self-closing tag) with
+      // the frozen-pane form.  The regex is intentionally non-greedy so
+      // it only matches the single <sheetView .../> opener.
+      xml = xml.replace(/<sheetView\b[^>]*\/>/, frozenView)
+               .replace(/<sheetView\b[^>]*>[\s\S]*?<\/sheetView>/, frozenView);
+    } else if (xml.includes('<sheetViews>')) {
+      // Fallback: inject if the wrapper exists but had no inner view.
+      xml = xml.replace('<sheetViews>', `<sheetViews>${frozenView}`);
+    }
+    zip.file(sheetPath, xml);
+    buf = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  }
+
+  const filename = `calling-analytics_${fmtRangeDate(range.from)}_to_${fmtRangeDate(inclusiveTo)}.xlsx`;
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buf);
+});
+
+module.exports = { pendency, completion, assignmentAnalytics, callingAnalytics, myCallingAnalytics, exportCallingAnalytics };

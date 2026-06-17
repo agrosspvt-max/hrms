@@ -20,6 +20,9 @@ router.get('/hr/summary', authorize('hr'), c.hrSummary);
 // Calling Analytics (HR / SA / HOD; the controller enforces the
 // per-role employee-scope, including the HOD's department clamp).
 router.get('/calling/analytics', requireAnalyticsAccess, analytics.callingAnalytics);
+// Phase 24 -- xlsx export of the same dataset.  Same role gate, same
+// scoping, same calculations as the JSON endpoint above.
+router.get('/calling/analytics/export', requireAnalyticsAccess, analytics.exportCallingAnalytics);
 // Employee self-view of their own calling KPIs.
 router.get('/calling/mine', analytics.myCallingAnalytics);
 

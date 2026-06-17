@@ -10,7 +10,8 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { ClickableCard, DrillDownModal } from '../../components/AnalyticsDrillDown.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { fmtCurrency, fmtPct, fmtAvg, fmtInt } from '../../utils/helpers';
+import { useToast } from '../../context/ToastContext.jsx';
+import { fmtCurrency, fmtPct, fmtAvg, fmtInt, errMsg } from '../../utils/helpers';
 
 const RED = '#ef4444'; const ORANGE = '#f97316'; const AMBER = '#f59e0b';
 const GREEN = '#22c55e'; const BLUE = '#3b82f6'; const VIOLET = '#8b5cf6'; const SLATE = '#94a3b8';
@@ -222,7 +223,27 @@ export default function Performance() {
       {loading || !data ? <Loader /> : (
         mode === 'pendency' ? <PendencyMode data={data} onDrill={openDrill} />
         : mode === 'completion' ? <CompletionMode data={data} onDrill={openDrill} />
-        : <CallingMode data={data} />
+        : <CallingMode
+            data={data}
+            // Phase 24 -- pass the live filters so Export Report calls the
+            // backend with the EXACT same params Calling Analytics used.
+            exportParams={(() => {
+              const p = {};
+              if (range === 'custom') { if (from && to) { p.from = from; p.to = to; } }
+              else p.range = range;
+              if (department) p.department = department;
+              if (designation) p.designation = designation;
+              if (employee) p.employee = employee;
+              if (templateType) p.templateType = templateType;
+              if (recurrence) p.recurrence = recurrence;
+              if (includeTest) p.includeTest = 'true';
+              return p;
+            })()}
+            // Employees never see the Performance page, so any user
+            // who reaches CallingMode is HR / SA / HOD -- exactly the
+            // visibility the spec requires.  Re-gate defensively too.
+            canExport={user?.role !== 'employee'}
+          />
       )}
 
       {drill && (
@@ -623,7 +644,50 @@ function Breakdown({ metricId, mode, data, navigate, onClose }) {
 /*   - Daily trend chart (calls / conversions / pending)                  */
 /*   - Per-employee summary table                                         */
 /* ===================================================================== */
-function CallingMode({ data }) {
+function CallingMode({ data, exportParams = {}, canExport = false }) {
+  const toast = useToast();
+  const [exporting, setExporting] = useState(false);
+  // Phase 24 -- download xlsx of the same on-screen dataset.  Uses an
+  // axios responseType=blob fetch so the browser saves the file
+  // directly without ever rendering the binary to the page.  Filename
+  // is taken from Content-Disposition, with a sensible fallback.
+  const handleExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const resp = await api.get('/dashboard/calling/analytics/export', {
+        params: exportParams,
+        responseType: 'blob',
+      });
+      const cd = resp.headers?.['content-disposition'] || '';
+      const match = /filename="?([^";]+)"?/i.exec(cd);
+      const filename = match ? match[1] : 'calling-analytics.xlsx';
+      const url = window.URL.createObjectURL(new Blob([resp.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Calling Analytics exported');
+    } catch (err) {
+      // Blob 403 / 4xx still wraps the JSON error message but as a Blob
+      // -- decode it before showing the toast so HR sees the real reason.
+      let msg = errMsg(err);
+      try {
+        if (err?.response?.data instanceof Blob) {
+          const text = await err.response.data.text();
+          const parsed = JSON.parse(text);
+          msg = parsed?.message || msg;
+        }
+      } catch (_) { /* keep the generic message */ }
+      toast.error(msg);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const k = data.kpis || {};
   const lb = data.leaderboards || {};
   const trend = data.trend || [];
@@ -652,6 +716,25 @@ function CallingMode({ data }) {
 
   return (
     <div className="space-y-6">
+      {/* Phase 24 -- Export Report button.  Sits above the KPI strip so
+          it's visible the moment Calling Analytics opens.  Hidden for
+          plain employees (defensive -- they don't reach this page) and
+          available to HR / SA / HOD.  The HOD's scope is enforced
+          server-side by the same controller logic the JSON endpoint
+          uses, so no extra access checks are needed here. */}
+      {canExport && (
+        <div className="flex justify-end">
+          <button
+            className="btn-primary"
+            onClick={handleExport}
+            disabled={exporting}
+            title="Download the Calling Analytics dataset for the selected date range as an .xlsx file"
+          >
+            {exporting ? 'Exporting…' : '⬇ Export Report'}
+          </button>
+        </div>
+      )}
+
       {/* KPI cards -- 10 metrics including the new Dialed Calls pair */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
         <StatCard label="Total Assigned Calls"     value={k.totalAssignedCalls   ?? 0} accent="brand" />
