@@ -1196,32 +1196,39 @@ const myCallingAnalytics = asyncHandler(async (req, res) => {
 });
 
 /* ====================================================================
- * Phase 24 — Calling Analytics export
+ * Phase 24 (+ 24.1) — Calling Analytics export
  *
  * Reuses the EXACT same dataset that powers Performance → Calling
  * Analytics so the exported numbers always match the on-screen view.
- * Implementation strategy: invoke the existing callingAnalytics handler
- * with a captured fake `res` object instead of duplicating the query +
- * roll-up logic.  This means:
- *   - role scoping (HR/SA full, HOD dept-clamped) is automatic,
- *   - the same liveSubmissionFilter (includeTest / onlyReviewed) and
- *     date-range parsing are honoured,
- *   - any future change to the analytics formula automatically flows
- *     into the export without a parallel maintenance burden.
  *
- * Output:
- *   - One worksheet, single sheet name "Calling Analytics".
- *   - Row 1: title  "Calling Analytics Report"
- *   - Row 2: date range  "01-Jun-2026 to 30-Jun-2026"
- *   - Row 3: blank spacer
- *   - Row 4: column headers  (frozen)
- *   - Row 5+: one row per employee in scope
+ * Strategy:
+ *   1.  Invoke the existing callingAnalytics handler with a captured
+ *       fake `res` object so role scoping (HR/SA full, HOD dept-clamped)
+ *       and liveSubmissionFilter (includeTest / onlyReviewed) and date-
+ *       range parsing are inherited automatically.  Zero analytics-
+ *       calculation duplication.
+ *   2.  Run one additional query for the per-(employee, product)
+ *       breakdown -- the captured payload only has a per-employee total
+ *       and a per-product org-wide total, not the cross-product we need
+ *       for the section-by-section export.  Filters mirror the analytics
+ *       handler exactly (same date range, same liveSubmissionFilter,
+ *       same templateType='custom' productSales selector).
  *
- * Columns (in this order) -- chosen from the spec's "Expected columns"
- * list and limited to fields the analytics dataset actually carries.
- * Total Minutes / Average Minutes are deliberately omitted (not in the
- * system).  Sales / NBV / Average Value come from the Product & Farmer
- * extension already returned by the same endpoint.
+ * Output (single worksheet, "Calling Analytics"):
+ *
+ *   Row 1: "Calling Analytics Report"            (merged across cols)
+ *   Row 2: "01-Jun-2026 to 30-Jun-2026"          (merged)
+ *   Row 3: blank
+ *   then for each employee:
+ *     blank
+ *     <Employee Name>                            (merged banner)
+ *     summary header row + summary value row
+ *     blank
+ *     "Product Breakdown"                        (merged banner)
+ *     product header row + N product rows
+ *
+ * Columns chosen from the spec's "Expected columns" list, narrowed by
+ * the 24.1 update which removes Employee ID / Phone Number / Department.
  * ================================================================== */
 const exportCallingAnalytics = asyncHandler(async (req, res) => {
   // ---- 1. Capture the analytics result via a fake res ----------------
@@ -1244,17 +1251,47 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
   const employees   = captured.employees   || [];
   const employeesPF = captured.employeesPF || [];
   const range       = captured.range       || { from: req.query.from, to: req.query.to };
-
-  // ---- 2. Join phone numbers (not on the analytics payload) ----------
-  // Lightweight extra query -- doesn't touch any analytics calculation.
-  const empIds = employees.map((e) => e._id).filter(Boolean);
-  const userPhones = new Map();
-  if (empIds.length) {
-    const us = await User.find({ _id: { $in: empIds } }).select('_id phone').lean();
-    us.forEach((u) => userPhones.set(String(u._id), u.phone || ''));
-  }
-  // Index Product & Farmer rows by employee for the sales / NBV / avg lookup.
+  // Index Product & Farmer rows by employee for the per-employee
+  // summary section (sales / NBV / avg value).
   const pfByEmp = new Map(employeesPF.map((r) => [String(r._id), r]));
+
+  // ---- 2. Per-(employee, product) breakdown -------------------------
+  // The captured payload exposes per-employee totals (employeesPF) and
+  // org-wide per-product totals (productsTable) but NOT the cross-
+  // product we need for the section-based layout.  Run a tightly scoped
+  // query that mirrors the analytics handler's `pfSubs` filter -- same
+  // employee universe, same date range, same liveSubmissionFilter,
+  // same productSales selector.  This is read-only enrichment; it
+  // doesn't change any analytics calculation.
+  const empUniverse = new Set([
+    ...employees.map((e) => String(e._id)),
+    ...employeesPF.map((e) => String(e._id)),
+  ]);
+  const empProductRows = new Map(); // empId -> Map(productName -> { qty, sales, nbv })
+  if (empUniverse.size) {
+    const empObjectIds = [...empUniverse];
+    const pfSubs = await Submission.find({
+      submitted: true,
+      employee: { $in: empObjectIds },
+      templateType: 'custom',
+      date: { $gte: new Date(range.from), $lt: new Date(range.to) },
+      'productSales.0': { $exists: true },
+      ...liveSubmissionFilter({ ...readReqFlags(req), onlyReviewed: true }),
+    }).select('employee productSales').lean();
+    for (const sub of pfSubs) {
+      const k = String(sub.employee);
+      if (!empProductRows.has(k)) empProductRows.set(k, new Map());
+      const m = empProductRows.get(k);
+      for (const row of (sub.productSales || [])) {
+        const pname = (row.productName || '—').trim() || '—';
+        if (!m.has(pname)) m.set(pname, { qty: 0, sales: 0, nbv: 0 });
+        const p = m.get(pname);
+        p.qty   += Number(row.quantityValue) || 0;
+        p.sales += Number(row.salesValue)    || 0;
+        p.nbv   += Number(row.nbvValue)      || 0;
+      }
+    }
+  }
 
   // ---- 3. Build the worksheet ---------------------------------------
   const XLSX = require('xlsx');
@@ -1271,110 +1308,149 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
   const inclusiveTo = new Date(new Date(range.to).getTime() - 86400000);
   const titleDate = `${fmtRangeDate(range.from)} to ${fmtRangeDate(inclusiveTo)}`;
 
-  const headers = [
-    'Employee Name', 'Employee ID', 'Phone Number', 'Department',
+  // The summary block is 12 columns wide, the product block is 4.  We
+  // pick 12 as the worksheet width so the summary header / values fit
+  // naturally and the product table sits at the left.
+  const SUMMARY_HEADERS = [
     'Assigned Calls', 'Dialed Calls', 'Attended Calls', 'Unattended Calls',
-    'Old Customer Conversions', 'New Customer Conversions', 'Total Conversions',
-    'Connection Rate (%)', 'Conversion Rate (%)', 'Call Completion Rate (%)',
-    'Total Pending', 'Yesterday Pending',
+    'Old Conversions', 'New Conversions', 'Total Conversions',
+    'Connection Rate (%)', 'Conversion Rate (%)',
     'Sales Value', 'NBV Value', 'Average Value',
   ];
+  const PRODUCT_HEADERS = ['Product Name', 'Quantity Sold', 'Sales Value', 'NBV Value'];
+  const TOTAL_COLS = SUMMARY_HEADERS.length; // 12
 
-  // Sort the per-employee section by Calls Completed (matches the
-  // on-screen "Per-Employee Summary" sort order set by callingAnalytics).
-  const rows = employees.map((e) => {
-    const pf = pfByEmp.get(String(e._id));
-    const sales = pf?.salesValue || 0;
-    const nbv   = pf?.nbvValue   || 0;
-    // Average Value = Sales ÷ Total Conversions (matches the reference
+  // Round-2 helper so per-product sums don't drift on long ranges.
+  const round2 = (n) => Math.round(n * 100) / 100;
+
+  const aoa = [];
+  const merges = [];
+
+  // Title + date range banners (always rows 1-3).
+  aoa.push(['Calling Analytics Report']);
+  merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: TOTAL_COLS - 1 } });
+  aoa.push([titleDate]);
+  merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: TOTAL_COLS - 1 } });
+  aoa.push([]);
+
+  // ---- 4. One block per employee -----------------------------------
+  // Sorted by Calls Completed (same as captured.employees ordering set
+  // inside callingAnalytics' res.json).  If an employee has zero calling
+  // metrics but DID have product sales (rare but possible) they'd live
+  // in employeesPF only -- we surface them at the end of the loop so
+  // the export still shows their product breakdown.
+  const seenEmpIds = new Set();
+  const blocks = [];
+  for (const e of employees) {
+    seenEmpIds.add(String(e._id));
+    blocks.push({ id: String(e._id), name: e.name, callRow: e });
+  }
+  for (const e of employeesPF) {
+    if (seenEmpIds.has(String(e._id))) continue;
+    blocks.push({ id: String(e._id), name: e.name, callRow: null });
+  }
+
+  for (const block of blocks) {
+    const e = block.callRow;
+    const pf = pfByEmp.get(block.id);
+    const sales = round2(pf?.salesValue || 0);
+    const nbv   = round2(pf?.nbvValue   || 0);
+    // Average Value = Sales ÷ Total Conversions  (matches the reference
     // sheet's "Avg. Value" definition: per-conversion revenue).  Falls
-    // back to 0 when conversions are 0 -- no dummy / approximated value.
-    const avgValue = (e.totalConversions || 0) > 0
-      ? Math.round(sales / e.totalConversions)
-      : 0;
-    return [
-      e.name || '',
-      e.employeeId || '',
-      userPhones.get(String(e._id)) || '',
-      e.department || '',
-      e.assignedCalls || 0,
-      e.dialedCalls || 0,
-      e.attendedCalls || 0,
-      e.unattendedCalls || 0,
-      e.oldConversions || 0,
-      e.newConversions || 0,
-      e.totalConversions || 0,
-      e.connectionRate || 0,
-      e.conversionRate || 0,
-      e.callCompletionRate || 0,
-      e.totalPending || 0,
-      // "Yesterday Pending" isn't in the rollup -- it's a per-submission
-      // field on the calling report.  The analytics payload doesn't
-      // expose it, so we leave it blank rather than fake a value.
-      '',
+    // back to 0 when conversions are 0 -- no dummy / approximation.
+    const totalConv = e?.totalConversions || 0;
+    const avgValue = totalConv > 0 ? Math.round(sales / totalConv) : 0;
+
+    // ---- block.4.a: blank spacer + banner row -----------------------
+    aoa.push([]); // spacer
+    const bannerRowIdx = aoa.length; // 0-based row index of upcoming push
+    aoa.push([block.name]);
+    merges.push({ s: { r: bannerRowIdx, c: 0 }, e: { r: bannerRowIdx, c: TOTAL_COLS - 1 } });
+
+    // ---- block.4.b: summary header + values --------------------------
+    aoa.push(SUMMARY_HEADERS);
+    aoa.push([
+      e?.assignedCalls    || 0,
+      e?.dialedCalls      || 0,
+      e?.attendedCalls    || 0,
+      e?.unattendedCalls  || 0,
+      e?.oldConversions   || 0,
+      e?.newConversions   || 0,
+      e?.totalConversions || 0,
+      e?.connectionRate   || 0,
+      e?.conversionRate   || 0,
       sales,
       nbv,
       avgValue,
-    ];
-  });
+    ]);
 
-  const aoa = [
-    ['Calling Analytics Report'],
-    [titleDate],
-    [],
-    headers,
-    ...rows,
-  ];
+    // ---- block.4.c: product breakdown sub-section --------------------
+    aoa.push([]); // spacer
+    const productBannerRowIdx = aoa.length;
+    aoa.push(['Product Breakdown']);
+    merges.push({ s: { r: productBannerRowIdx, c: 0 }, e: { r: productBannerRowIdx, c: TOTAL_COLS - 1 } });
+    aoa.push(PRODUCT_HEADERS);
+
+    const productMap = empProductRows.get(block.id);
+    const productRows = productMap
+      ? [...productMap.entries()]
+          .map(([name, v]) => [name, round2(v.qty), round2(v.sales), round2(v.nbv)])
+          .sort((a, b) => (b[2] || 0) - (a[2] || 0))
+      : [];
+    if (productRows.length === 0) {
+      // Explicit "no products" row matches the on-screen empty-state UX
+      // and avoids ambiguity about whether the data was queried.
+      aoa.push(['No product sales in this range', '', '', '']);
+    } else {
+      for (const r of productRows) aoa.push(r);
+    }
+  }
+
   const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = merges;
 
-  // Merge the title + date rows across every column for a clean header.
-  ws['!merges'] = [
-    { s: { r: 0, c: 0 }, e: { r: 0, c: headers.length - 1 } },
-    { s: { r: 1, c: 0 }, e: { r: 1, c: headers.length - 1 } },
-  ];
+  // Freeze the title + date + spacer rows so they stay visible while the
+  // user scrolls through employees.  topLeftCell = A4.
+  ws['!freeze'] = { xSplit: 0, ySplit: 3 };
+  ws['!views']  = [{ state: 'frozen', xSplit: 0, ySplit: 3, topLeftCell: 'A4', activePane: 'bottomLeft' }];
 
-  // Freeze the header (rows 1-4 stay; data scrolls underneath).
-  ws['!freeze'] = { xSplit: 0, ySplit: 4 };
-  ws['!views']  = [{ state: 'frozen', xSplit: 0, ySplit: 4, topLeftCell: 'A5', activePane: 'bottomLeft' }];
-
-  // Auto column widths -- pick the longest cell value per column with a
-  // sensible min/max so single-digit columns don't collapse.
-  ws['!cols'] = headers.map((h, i) => {
-    let maxLen = String(h).length;
-    for (const r of rows) {
-      const v = r[i] == null ? '' : String(r[i]);
+  // Auto column widths -- iterate every row, pick the longest cell per
+  // column, clamp to a sensible min / max so summary headers stay
+  // readable but a long product name doesn't blow the layout.
+  ws['!cols'] = Array.from({ length: TOTAL_COLS }, (_, c) => {
+    let maxLen = 10;
+    for (const r of aoa) {
+      const v = r[c] == null ? '' : String(r[c]);
       if (v.length > maxLen) maxLen = v.length;
     }
-    return { wch: Math.min(40, Math.max(10, maxLen + 2)) };
+    return { wch: Math.min(38, Math.max(10, maxLen + 2)) };
   });
 
-  // Mild header formatting where SheetJS community supports it (bold +
-  // alignment).  Cell styles ride on the property `s` on each cell.
+  // Mild header / banner styling -- bold title rows and bold every
+  // banner / header row inside each employee block.  SheetJS community
+  // doesn't always serialise these styles to the xlsx file, but they're
+  // harmless when ignored and useful when surfaced by Excel readers
+  // that honour the `s` property.
   const styleCell = (addr, style) => {
     if (!ws[addr]) ws[addr] = { t: 's', v: '' };
     ws[addr].s = { ...(ws[addr].s || {}), ...style };
   };
   styleCell('A1', { font: { bold: true, sz: 14 }, alignment: { horizontal: 'center' } });
   styleCell('A2', { font: { bold: true, sz: 11 }, alignment: { horizontal: 'center' } });
-  for (let c = 0; c < headers.length; c += 1) {
-    const addr = XLSX.utils.encode_cell({ r: 3, c });
-    styleCell(addr, { font: { bold: true }, alignment: { horizontal: 'center', wrapText: true } });
-  }
 
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Calling Analytics');
 
   const rawBuf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
-  // ---- 4. Post-process: inject freeze panes ---------------------------
+  // ---- 5. Post-process: inject freeze panes --------------------------
   // SheetJS community edition writes `<sheetView workbookViewId="0"/>`
   // verbatim and never emits the `<pane>` element regardless of which
   // `!freeze` / `!views` keys we set on the worksheet object.  To honour
   // the "Freeze header row" requirement we re-open the generated xlsx
   // (which is a ZIP archive) with jszip, patch the sheetView XML to
-  // include a frozen pane + selection rooted at A5, then re-zip.
-  // The rest of the file is left untouched -- column widths, merges,
-  // and data all come from SheetJS as-is.
+  // include a frozen pane rooted at A4 (so the title + date stay
+  // visible), then re-zip.
   const JSZip = require('jszip');
   const zip = await JSZip.loadAsync(rawBuf);
   const sheetPath = 'xl/worksheets/sheet1.xml';
@@ -1383,17 +1459,13 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
   if (sheetXmlEntry) {
     let xml = await sheetXmlEntry.async('string');
     const frozenView = '<sheetView workbookViewId="0">'
-      + '<pane ySplit="4" topLeftCell="A5" activePane="bottomLeft" state="frozen"/>'
-      + '<selection pane="bottomLeft" activeCell="A5" sqref="A5"/>'
+      + '<pane ySplit="3" topLeftCell="A4" activePane="bottomLeft" state="frozen"/>'
+      + '<selection pane="bottomLeft" activeCell="A4" sqref="A4"/>'
       + '</sheetView>';
     if (xml.includes('<sheetView ')) {
-      // Replace whatever SheetJS wrote (usually a self-closing tag) with
-      // the frozen-pane form.  The regex is intentionally non-greedy so
-      // it only matches the single <sheetView .../> opener.
       xml = xml.replace(/<sheetView\b[^>]*\/>/, frozenView)
                .replace(/<sheetView\b[^>]*>[\s\S]*?<\/sheetView>/, frozenView);
     } else if (xml.includes('<sheetViews>')) {
-      // Fallback: inject if the wrapper exists but had no inner view.
       xml = xml.replace('<sheetViews>', `<sheetViews>${frozenView}`);
     }
     zip.file(sheetPath, xml);
