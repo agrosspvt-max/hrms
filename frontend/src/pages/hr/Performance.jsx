@@ -239,10 +239,15 @@ export default function Performance() {
               if (includeTest) p.includeTest = 'true';
               return p;
             })()}
-            // Employees never see the Performance page, so any user
-            // who reaches CallingMode is HR / SA / HOD -- exactly the
-            // visibility the spec requires.  Re-gate defensively too.
-            canExport={user?.role !== 'employee'}
+            // Phase 24.3 -- a HOD's stored role is `employee` with
+            // isHOD=true layered on top, so the old `role !== 'employee'`
+            // check incorrectly hid the button for HODs even though the
+            // backend's requireAnalyticsAccess gate accepts them.  Mirror
+            // the backend predicate exactly so frontend visibility and
+            // backend authorization stay in lock-step:
+            //     HR | Super Admin | any isHOD user
+            // Plain employees (no isHOD flag) still don't see the button.
+            canExport={user?.role === 'hr' || user?.role === 'super_admin' || !!user?.isHOD}
           />
       )}
 
