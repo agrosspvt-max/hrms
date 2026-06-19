@@ -39,6 +39,10 @@ export default function SubmissionReviews() {
   //   '' (all) | awaiting | reviewed | returned | direct
   const [hodStatus, setHodStatus] = useState('');
   const [cards, setCards]   = useState([]);
+  // Phase 28 -- when status === 'not_submitted', the backend returns
+  // { cards, summary } with day-level counts (expected / submitted /
+  // not_submitted / on_approved_leave) we display at the top.
+  const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
   // Phase 23.6 -- multi-select for bulk Discipline + Innovation scoring.
@@ -52,7 +56,15 @@ export default function SubmissionReviews() {
     setLoading(true);
     try {
       const { data } = await api.get('/daily-review/grouped', { params: { date, status } });
-      setCards(data);
+      // Phase 28: Not Submitted returns { cards, summary }; all other
+      // statuses still return a plain array.  Normalise here.
+      if (data && Array.isArray(data.cards)) {
+        setCards(data.cards);
+        setSummary(data.summary || null);
+      } else {
+        setCards(Array.isArray(data) ? data : []);
+        setSummary(null);
+      }
     } catch (err) {
       toast.error(errMsg(err));
     } finally { setLoading(false); }
@@ -132,10 +144,12 @@ export default function SubmissionReviews() {
         </div>
         <div>
           <label className="label">Status</label>
-          <select className="input max-w-[160px]" value={status} onChange={(e) => setStatus(e.target.value)}>
+          <select className="input max-w-[180px]" value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All</option>
             <option value="pending">Pending</option>
             <option value="reviewed">Reviewed</option>
+            {/* Phase 28 -- Not Submitted */}
+            <option value="not_submitted">Not Submitted</option>
           </select>
         </div>
         {/* Phase 23.5 -- HOD review status filter */}
@@ -177,20 +191,58 @@ export default function SubmissionReviews() {
         </div>
       )}
 
+      {/* Phase 28 -- summary strip for the Not Submitted view.  Renders
+          only when the backend returned per-day counts (i.e. status ===
+          'not_submitted').  Pure presentational; numbers come straight
+          from the captured summary payload. */}
+      {summary && status === 'not_submitted' && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-slate-500">Expected to Submit</div>
+            <div className="text-2xl font-bold text-slate-800 dark:text-slate-100">{summary.expectedToSubmit ?? 0}</div>
+          </div>
+          <div className="rounded-lg border border-green-200 dark:border-green-500/30 bg-green-50/60 dark:bg-green-500/10 px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-green-700 dark:text-green-300">Submitted</div>
+            <div className="text-2xl font-bold text-green-700 dark:text-green-300">{summary.submitted ?? 0}</div>
+          </div>
+          <div className="rounded-lg border border-red-200 dark:border-red-500/30 bg-red-50/60 dark:bg-red-500/10 px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-300">Not Submitted</div>
+            <div className="text-2xl font-bold text-red-700 dark:text-red-300">{summary.notSubmitted ?? 0}</div>
+          </div>
+          <div className="rounded-lg border border-blue-200 dark:border-blue-500/30 bg-blue-50/60 dark:bg-blue-500/10 px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-blue-700 dark:text-blue-300">On Approved Leave</div>
+            <div className="text-2xl font-bold text-blue-700 dark:text-blue-300">{summary.onApprovedLeave ?? 0}</div>
+          </div>
+        </div>
+      )}
+
       {loading ? <Loader /> : filteredCards.length === 0 ? (
-        <EmptyState title={cards.length === 0 ? 'No submissions to review on this day' : 'No submissions match the current filters'} />
+        <EmptyState title={
+          cards.length === 0
+            ? (status === 'not_submitted'
+                ? 'No employees missed their submissions on this day'
+                : 'No submissions to review on this day')
+            : 'No submissions match the current filters'
+        } />
       ) : (
         <div className="space-y-3">
           {filteredCards.map((c) => (
-            <EmployeeDayCard
-              key={String(c.employee._id) + String(c.date)}
-              card={c}
-              open={openId === String(c.employee._id)}
-              onToggle={() => setOpenId((cur) => cur === String(c.employee._id) ? null : String(c.employee._id))}
-              onReload={load}
-              selected={selected.has(cardKey(c))}
-              onSelectToggle={() => toggleSelected(c)}
-            />
+            c.notSubmitted ? (
+              <NotSubmittedCard
+                key={String(c.employee._id) + String(c.date)}
+                card={c}
+              />
+            ) : (
+              <EmployeeDayCard
+                key={String(c.employee._id) + String(c.date)}
+                card={c}
+                open={openId === String(c.employee._id)}
+                onToggle={() => setOpenId((cur) => cur === String(c.employee._id) ? null : String(c.employee._id))}
+                onReload={load}
+                selected={selected.has(cardKey(c))}
+                onSelectToggle={() => toggleSelected(c)}
+              />
+            )
           ))}
         </div>
       )}
@@ -201,6 +253,68 @@ export default function SubmissionReviews() {
           onClose={() => setBulkOpen(false)}
           onDone={() => { setBulkOpen(false); clearSelection(); load(); }}
         />
+      )}
+    </div>
+  );
+}
+
+/* =====================================================================
+ * Phase 28 — Not Submitted card
+ *
+ * Compact, non-expandable card for employees who had at least one
+ * scheduled assignment for the selected day but did not submit anything
+ * and aren't on approved leave.  Shows the assignment list + attendance
+ * snapshot so HR can act (chase the employee, mark an attendance
+ * override, approve a leave) directly from Attendance afterwards.
+ *
+ * The card has no Open / Selection / Bulk-score affordances because no
+ * Submission / DailyReview document exists yet — the only meaningful HR
+ * action here is "follow up", which is contextual to each org.
+ * ===================================================================== */
+function NotSubmittedCard({ card }) {
+  const { employee, date, assignments = [], attendance, leave } = card;
+  const ATT_META = {
+    present:        { label: 'Present',     cls: 'bg-green-50 text-green-700  border-green-200' },
+    half_paid:      { label: 'Half Paid',   cls: 'bg-amber-50 text-amber-700  border-amber-200' },
+    half_unpaid:    { label: 'Half Unpaid', cls: 'bg-amber-50 text-amber-700  border-amber-200' },
+    paid_leave:     { label: 'Paid Leave',  cls: 'bg-blue-50  text-blue-700   border-blue-200' },
+    unpaid_leave:   { label: 'Unpaid Leave',cls: 'bg-blue-50  text-blue-700   border-blue-200' },
+    weekly_off:     { label: 'Weekly Off',  cls: 'bg-slate-50 text-slate-700  border-slate-200' },
+    holiday:        { label: 'Holiday',     cls: 'bg-slate-50 text-slate-700  border-slate-200' },
+    absent:         { label: 'Absent',      cls: 'bg-red-50   text-red-700    border-red-200' },
+  };
+  const att = ATT_META[attendance] || { label: attendance || '—', cls: 'bg-slate-50 text-slate-700 border-slate-200' };
+  return (
+    <div className="card overflow-hidden ring-1 ring-red-200">
+      <div className="px-5 py-3 bg-red-50/40 dark:bg-red-500/10 flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="font-semibold text-slate-800 dark:text-slate-100">
+            {employee.name} <span className="text-slate-400 font-normal">({employee.employeeId})</span>
+          </div>
+          <div className="text-[12px] text-slate-500">
+            {employee.department || '—'} · {fmtDate(date)} · {assignments.length} assignment(s)
+          </div>
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className={`badge text-[11px] border ${att.cls}`}>Attendance: {att.label}</span>
+          <span className="badge text-[11px] border bg-slate-50 text-slate-700 border-slate-200">Leave: {leave ? 'Approved' : 'None'}</span>
+          <span className="badge-red">Not Submitted</span>
+        </div>
+      </div>
+      {assignments.length > 0 && (
+        <div className="px-5 py-3 text-sm">
+          <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold mb-1">Expected Assignments</div>
+          <ul className="space-y-0.5 text-slate-700 dark:text-slate-200">
+            {assignments.map((a) => (
+              <li key={String(a._id)} className="flex items-center gap-2">
+                <span className="text-slate-400">•</span>
+                <span className="font-medium">{a.title}</span>
+                {a.customKind ? <span className="text-[11px] text-slate-500">({a.customKind})</span> : null}
+                {a.scheduleLabel ? <span className="text-[11px] text-slate-400 ml-1">{a.scheduleLabel}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </div>
   );

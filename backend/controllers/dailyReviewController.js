@@ -30,8 +30,13 @@ const User           = require('../models/User');
 const DailyReflection= require('../models/DailyReflection');
 const DailyReview    = require('../models/DailyReview');
 const DependencyTask = require('../models/DependencyTask');
+const Leave          = require('../models/Leave');
+const Attendance     = require('../models/Attendance');
+const Assignment     = require('../models/Assignment');
+const Holiday        = require('../models/Holiday');
 const { startOfDay } = require('../utils/dateHelpers');
 const { liveSubmissionFilter } = require('../utils/submissionFilter');
+const { isScheduledOn } = require('../utils/scheduleHelpers');
 const { logAudit }   = require('../utils/audit');
 const notify         = require('../services/notifyEvents');
 
@@ -174,6 +179,149 @@ const listGrouped = asyncHandler(async (req, res) => {
   let out = [...cards.values()];
   if (status === 'pending')  out = out.filter((c) => !c.review || c.review.reviewStatus !== 'reviewed');
   if (status === 'reviewed') out = out.filter((c) =>  c.review && c.review.reviewStatus === 'reviewed');
+
+  /* ====================================================================
+   * Phase 28 -- Not Submitted filter
+   *
+   * Surface employees who were expected to submit work on this day but
+   * didn't, with leave-aware exclusion and HOD scope respect.  An
+   * employee qualifies as "Not Submitted" when ALL of these hold for the
+   * selected date:
+   *   - Active (already enforced by empWhere).
+   *   - role !== 'super_admin' (filtered below).
+   *   - Has at least one active assignment scheduled for the day.
+   *   - Did NOT submit anything for the day.
+   *   - Has NO approved leave (full OR half day) covering the day.
+   *   - The day isn't a weekly off + has no holiday override (skipped by
+   *     the assignment scheduling check via dailyEngine semantics).
+   *
+   * The response shape is intentionally an object { cards, summary } for
+   * this status only -- other statuses still return a plain array for
+   * backward compatibility with the existing frontend.
+   * ================================================================== */
+  if (status === 'not_submitted') {
+    // Pull employees again with the fields the per-day check needs
+    // (designation + weeklyOff), within the same role-scoped where.
+    const empWhereNS = { ...empWhere, role: { $ne: 'super_admin' } };
+    const fullEmployees = await User.find(empWhereNS)
+      .select('_id name employeeId role department designation weeklyOff')
+      .populate('department', 'name')
+      .lean();
+
+    // Employees with at least one submission today (any status).
+    const submittedEmpIds = new Set(
+      (await Submission.find({
+        employee: { $in: fullEmployees.map((e) => e._id) },
+        date: day,
+        submitted: true,
+        ...liveSubmissionFilter({}),
+      }).select('employee').lean()).map((s) => String(s.employee))
+    );
+
+    // Approved leaves covering this day for the scoped employee set.
+    // Includes both full-day and half-day -- per spec, ANY approved
+    // leave excludes the employee from the Not Submitted list.
+    const leavesToday = await Leave.find({
+      employee: { $in: fullEmployees.map((e) => e._id) },
+      status: 'approved',
+      fromDate: { $lte: day },
+      toDate:   { $gte: day },
+    }).lean();
+    const leaveByEmp = new Map();
+    for (const lv of leavesToday) {
+      // Keep first / longest leave per employee for display labelling.
+      const k = String(lv.employee);
+      if (!leaveByEmp.has(k)) leaveByEmp.set(k, lv);
+    }
+
+    // Attendance records on this date (manual overrides).  Used purely
+    // for display so HR sees the latest attendance state.
+    const attRecords = await Attendance.find({
+      employee: { $in: fullEmployees.map((e) => e._id) },
+      date: day,
+    }).lean();
+    const attByEmp = new Map(attRecords.map((a) => [String(a.employee), a]));
+
+    // Holiday lookup -- same gate the dailyEngine uses to decide whether
+    // a day even expects work without holidayOverride assignments.
+    const holiday = await Holiday.findOne({ date: day });
+
+    // Pre-load assignments once per employee.  Uses the same set the
+    // dailyEngine builds (direct / department / designation orList).
+    const notSubmittedCards = [];
+    const summary = { expectedToSubmit: 0, submitted: 0, notSubmitted: 0, onApprovedLeave: 0 };
+
+    for (const e of fullEmployees) {
+      if (String(e._id) === String(req.user._id)) continue;
+      const leave = leaveByEmp.get(String(e._id));
+      const isOnLeave = !!leave;
+      const isWeeklyOff = (e.weeklyOff || [0]).includes(day.getUTCDay());
+
+      // Build orList per dailyEngine.assignmentsForEmployee semantics.
+      const orList = [{ targetType: 'employee', targetRef: e._id }];
+      if (e.department) orList.push({ targetType: 'department', targetRef: e.department._id || e.department });
+      if (e.designation) orList.push({ targetType: 'designation', targetRef: e.designation });
+      const assignments = await Assignment.find({ active: true, $or: orList })
+        .populate('template', 'title customKind templateType').lean();
+
+      // Filter to those scheduled today (recurrence + start/end window).
+      // On weekly-off / holiday days, only holidayOverride assignments
+      // count -- this matches the dailyEngine "nonWorking" gate.
+      const nonWorking = isWeeklyOff || !!holiday;
+      const scheduledToday = assignments.filter((a) => {
+        if (!a.template) return false;
+        if (nonWorking) {
+          if (a.holidayOverride !== true) return false;
+          if (a.overrideScope !== 'all') {
+            const start = a.startDate ? startOfDay(a.startDate) : null;
+            if (!start || start.getTime() !== day.getTime()) return false;
+          }
+        }
+        return isScheduledOn(a, day);
+      });
+
+      const submittedToday = submittedEmpIds.has(String(e._id));
+      const hasAssignments = scheduledToday.length > 0;
+
+      // Summary buckets reflect the full role-scoped employee universe,
+      // not just the not-submitted list -- so HR sees how many people
+      // were on the hook vs. how many actually delivered.
+      if (isOnLeave) summary.onApprovedLeave += 1;
+      if (!isOnLeave && hasAssignments) {
+        summary.expectedToSubmit += 1;
+        if (submittedToday) summary.submitted += 1;
+        else summary.notSubmitted += 1;
+      }
+
+      // Card eligibility -- the four ALL-of conditions from the spec.
+      if (isOnLeave) continue;
+      if (submittedToday) continue;
+      if (!hasAssignments) continue;
+
+      const att = attByEmp.get(String(e._id));
+      notSubmittedCards.push({
+        notSubmitted: true,
+        employee: {
+          _id: e._id,
+          name: e.name,
+          employeeId: e.employeeId,
+          department: e.department?.name || '',
+        },
+        date: day,
+        assignments: scheduledToday.map((a) => ({
+          _id: a._id,
+          title: a.template?.title || '(untitled)',
+          templateType: a.template?.templateType || '',
+          customKind: a.template?.customKind || '',
+          scheduleLabel: a.scheduleLabel || '',
+        })),
+        attendance: att ? att.status : (isWeeklyOff ? 'weekly_off' : (holiday ? 'holiday' : 'absent')),
+        leave: null,
+      });
+    }
+
+    return res.json({ cards: notSubmittedCards, summary });
+  }
 
   res.json(out);
 });
