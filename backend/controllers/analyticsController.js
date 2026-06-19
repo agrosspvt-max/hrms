@@ -895,6 +895,62 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   }
   const trend = [...perDay.values()].sort((a, b) => a.date.localeCompare(b.date));
 
+  /* ====================================================================
+   * Phase 25 -- per-(employee, date) detail rows for drill-down views.
+   *
+   * Read-only projection of the SAME `subs` already in scope -- no extra
+   * query, no new calculation, no change to any rollup.  Each row carries
+   * the raw customResponses values straight from one submission so the
+   * Calling Analytics drill-down modals can show "Employee | Date |
+   * <metric>" tables that reconcile exactly with the aggregate KPIs and
+   * the on-screen leaderboards.
+   *
+   * Role scoping is already enforced by the empWhere clause above, so a
+   * HOD's detail rows only ever contain their own department's
+   * employees.  liveSubmissionFilter (incl. onlyReviewed) is applied to
+   * the same subWhere we walked here, so test / soft-deleted / pending
+   * rows are excluded automatically.
+   * ================================================================== */
+  const detailRows = [];
+  for (const sub of subs) {
+    const e = empMap.get(String(sub.employee));
+    if (!e) continue;
+    const r = (key) => Number((sub.customResponses || []).find((x) => x.key === key)?.value) || 0;
+    const dialed   = r('dialedCalls');
+    const attended = r('attendedCalls');
+    const assigned = r('assignedCalls');
+    const completed= r('totalCallsCompleted');
+    const totalConv= r('totalConversions');
+    const totalPend= r('totalPending');
+    detailRows.push({
+      _id:              String(sub._id),
+      employeeId:       String(sub.employee),
+      employeeName:     e.name,
+      employeeCode:     e.employeeId,
+      department:       e.department?.name || 'Unassigned',
+      designation:      e.designation?.title || 'Unassigned',
+      date:             formatYMD(sub.date),
+      assignedCalls:    assigned,
+      dialedCalls:      dialed,
+      totalCallsCompleted: completed,
+      attendedCalls:    attended,
+      unattendedCalls:  r('unattendedCalls') || Math.max(0, dialed - attended),
+      totalConversions: totalConv,
+      oldConversions:   r('oldCustomerConversions'),
+      newConversions:   r('newCustomerConversions'),
+      totalPending:     totalPend,
+      yesterdayPending: r('yesterdayPending'),
+      // Per-row rates so the drill-down can show a "rate per day per
+      // employee" column if useful.  These mirror the per-employee
+      // rollup formulas above and never feed back into any aggregate.
+      connectionRate:    safeRate(attended,   dialed),
+      conversionRate:    safeRate(totalConv,  attended),
+      pendingRate:       safeRate(totalPend,  assigned),
+      callCompletionRate: safeRate(completed, assigned),
+    });
+  }
+  detailRows.sort((a, b) => a.date.localeCompare(b.date) || a.employeeName.localeCompare(b.employeeName));
+
   /* =================================================================
    * PRODUCT & FARMER METRICS (additive -- existing calling KPIs above
    * are unchanged).  Pulls every submitted custom submission in range
@@ -1127,6 +1183,8 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     kpis,
     leaderboards,
     employees: employeeRows.sort((a, b) => (b.totalCallsCompleted || 0) - (a.totalCallsCompleted || 0)),
+    // Phase 25: per-(employee, date) detail rows for drill-down modals.
+    detailRows,
     trend,
     // ---- Product & Farmer extension ----
     productKpis,

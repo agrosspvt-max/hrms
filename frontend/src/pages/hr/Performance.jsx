@@ -79,6 +79,10 @@ export default function Performance() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [drill, setDrill] = useState(null); // { metricId, title }
+  // Phase 25: Calling Analytics drill-downs.  Held separately from the
+  // pendency / completion drill state so the two flows can't collide --
+  // the calling breakdown function projects rows differently per metric.
+  const [callingDrill, setCallingDrill] = useState(null); // { metricId, title }
 
   useEffect(() => {
     // Phase 23.2: the /employees endpoint is HR-only (authorize('hr')),
@@ -225,6 +229,11 @@ export default function Performance() {
         : mode === 'completion' ? <CompletionMode data={data} onDrill={openDrill} />
         : <CallingMode
             data={data}
+            // Phase 25 -- open drill-down for any KPI / leaderboard card.
+            // Leaderboards pass an `extra` payload (leaderboardId + metric
+            // + suffix + title) so CallingBreakdown can rebuild the full
+            // ranking from data.employees.
+            onDrill={(metricId, title, extra) => setCallingDrill({ metricId, title, extra })}
             // Phase 24 -- pass the live filters so Export Report calls the
             // backend with the EXACT same params Calling Analytics used.
             exportParams={(() => {
@@ -254,6 +263,17 @@ export default function Performance() {
       {drill && (
         <DrillDownModal metricId={drill.metricId} title={drill.title} onClose={() => setDrill(null)}>
           <Breakdown metricId={drill.metricId} mode={mode} data={data} navigate={navigate} onClose={() => setDrill(null)} />
+        </DrillDownModal>
+      )}
+      {/* Phase 25 -- calling-specific drill-down modal */}
+      {callingDrill && data && (
+        <DrillDownModal metricId={callingDrill.metricId} title={callingDrill.title} onClose={() => setCallingDrill(null)}>
+          <CallingBreakdown
+            metricId={callingDrill.metricId}
+            extra={callingDrill.extra}
+            data={data}
+            onClose={() => setCallingDrill(null)}
+          />
         </DrillDownModal>
       )}
     </div>
@@ -649,7 +669,7 @@ function Breakdown({ metricId, mode, data, navigate, onClose }) {
 /*   - Daily trend chart (calls / conversions / pending)                  */
 /*   - Per-employee summary table                                         */
 /* ===================================================================== */
-function CallingMode({ data, exportParams = {}, canExport = false }) {
+function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () => {} }) {
   const toast = useToast();
   const [exporting, setExporting] = useState(false);
   // Phase 24 -- download xlsx of the same on-screen dataset.  Uses an
@@ -740,27 +760,59 @@ function CallingMode({ data, exportParams = {}, canExport = false }) {
         </div>
       )}
 
-      {/* KPI cards -- 10 metrics including the new Dialed Calls pair */}
+      {/* Phase 25: every KPI card is now clickable.  ClickableCard adds
+          cursor-pointer + hover affordance; the metric id routes to the
+          calling-specific Breakdown function which projects appropriate
+          columns from data.detailRows / data.employees / data.leaderboards. */}
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <StatCard label="Total Assigned Calls"     value={k.totalAssignedCalls   ?? 0} accent="brand" />
-        <StatCard label="Total Calls Completed"    value={k.totalCallsCompleted  ?? 0} accent="green" />
-        <StatCard label="Total Dialed Calls"       value={k.totalDialedCalls     ?? 0} accent="blue"
-                  sub={k.totalAssignedCalls > 0 ? `vs ${k.totalAssignedCalls} assigned` : ''} />
-        <StatCard label="Avg Dialed / Employee"    value={fmtAvg(k.averageDialedPerEmployee ?? 0)} accent="blue" />
-        <StatCard label="Total Attended Calls"     value={k.totalAttendedCalls   ?? 0} accent="blue" />
-        <StatCard label="Total Unattended Calls"   value={k.totalUnattendedCalls ?? 0} accent="amber" />
-        <StatCard label="Total Conversions"        value={k.totalConversions     ?? 0} accent="green" />
-        <StatCard label="Old Customer Conversions" value={k.oldConversions       ?? 0} accent="blue" />
-        <StatCard label="New Customer Conversions" value={k.newConversions       ?? 0} accent="green" />
-        <StatCard label="Total Pending Calls"      value={k.totalPendingCalls    ?? 0} accent="red" />
+        <ClickableCard onClick={() => onDrill('callAssigned', 'Assigned Calls')}>
+          <StatCard label="Total Assigned Calls"     value={k.totalAssignedCalls   ?? 0} accent="brand" />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callCompleted', 'Calls Completed')}>
+          <StatCard label="Total Calls Completed"    value={k.totalCallsCompleted  ?? 0} accent="green" />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callDialed', 'Dialed Calls')}>
+          <StatCard label="Total Dialed Calls"       value={k.totalDialedCalls     ?? 0} accent="blue"
+                    sub={k.totalAssignedCalls > 0 ? `vs ${k.totalAssignedCalls} assigned` : ''} />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callDialed', 'Avg Dialed / Employee')}>
+          <StatCard label="Avg Dialed / Employee"    value={fmtAvg(k.averageDialedPerEmployee ?? 0)} accent="blue" />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callAttended', 'Attended Calls')}>
+          <StatCard label="Total Attended Calls"     value={k.totalAttendedCalls   ?? 0} accent="blue" />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callUnattended', 'Unattended Calls')}>
+          <StatCard label="Total Unattended Calls"   value={k.totalUnattendedCalls ?? 0} accent="amber" />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callConversions', 'Conversions')}>
+          <StatCard label="Total Conversions"        value={k.totalConversions     ?? 0} accent="green" />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callConversions', 'Old Customer Conversions')}>
+          <StatCard label="Old Customer Conversions" value={k.oldConversions       ?? 0} accent="blue" />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callConversions', 'New Customer Conversions')}>
+          <StatCard label="New Customer Conversions" value={k.newConversions       ?? 0} accent="green" />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callPending', 'Total Pending Calls')}>
+          <StatCard label="Total Pending Calls"      value={k.totalPendingCalls    ?? 0} accent="red" />
+        </ClickableCard>
       </div>
 
-      {/* Rate strip */}
+      {/* Rate strip — same clickable treatment.  Rate drill-downs route to
+          an employee-ranked breakdown rather than per-day detail. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Connection Rate"      value={fmtPct(k.connectionRate     ?? 0)} accent={(k.connectionRate     || 0) >= 60 ? 'green' : 'amber'} />
-        <StatCard label="Conversion Rate"      value={fmtPct(k.conversionRate     ?? 0)} accent={(k.conversionRate     || 0) >= 20 ? 'green' : 'amber'} />
-        <StatCard label="Pending Rate"         value={fmtPct(k.pendingRate        ?? 0)} accent={(k.pendingRate        || 0) <= 20 ? 'green' : 'red'} />
-        <StatCard label="Call Completion Rate" value={fmtPct(k.callCompletionRate ?? 0)} accent={(k.callCompletionRate || 0) >= 80 ? 'green' : 'amber'} />
+        <ClickableCard onClick={() => onDrill('callConnectionRate', 'Connection Rate')}>
+          <StatCard label="Connection Rate"      value={fmtPct(k.connectionRate     ?? 0)} accent={(k.connectionRate     || 0) >= 60 ? 'green' : 'amber'} />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callConversionRate', 'Conversion Rate')}>
+          <StatCard label="Conversion Rate"      value={fmtPct(k.conversionRate     ?? 0)} accent={(k.conversionRate     || 0) >= 20 ? 'green' : 'amber'} />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callPendingRate', 'Pending Rate')}>
+          <StatCard label="Pending Rate"         value={fmtPct(k.pendingRate        ?? 0)} accent={(k.pendingRate        || 0) <= 20 ? 'green' : 'red'} />
+        </ClickableCard>
+        <ClickableCard onClick={() => onDrill('callCompletionRate', 'Call Completion Rate')}>
+          <StatCard label="Call Completion Rate" value={fmtPct(k.callCompletionRate ?? 0)} accent={(k.callCompletionRate || 0) >= 80 ? 'green' : 'amber'} />
+        </ClickableCard>
       </div>
 
       {/* Daily trend chart -- assigned vs dialed vs completed/attended/conv/pending */}
@@ -780,27 +832,30 @@ function CallingMode({ data, exportParams = {}, canExport = false }) {
         </AreaChart>
       </ChartCard>
 
-      {/* Six "Top" leaderboards */}
+      {/* Six "Top" leaderboards -- each clickable to expand into the full
+          ranking (not just top 5).  The leaderboardId carried in `extra`
+          tells CallingBreakdown which sort key + direction + value-suffix
+          to apply when rebuilding from data.employees. */}
       <div>
         <div className="text-sm font-semibold text-slate-800 mb-2">Top Callers</div>
         <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-          <Leaderboard title="By Calls Completed"    rows={lb.topCallsCompleted}   metric="totalCallsCompleted" suffix="" />
-          <Leaderboard title="By Dialed Calls"       rows={lb.topDialedCalls}      metric="dialedCalls"         suffix="" />
-          <Leaderboard title="By Conversion Rate"    rows={lb.topConversionRate}   metric="conversionRate"      suffix="%" />
-          <Leaderboard title="By New Customers"      rows={lb.topNewCustomers}     metric="newConversions"      suffix="" />
-          <Leaderboard title="By Total Conversions"  rows={lb.topTotalConversions} metric="totalConversions"    suffix="" />
-          <Leaderboard title="Lowest Pending Calls"  rows={lb.lowestPending}       metric="totalPending"        suffix="" accent="green" />
-          <Leaderboard title="Best Connection Rate"  rows={lb.bestConnectionRate}  metric="connectionRate"      suffix="%" />
+          <LeaderboardCard onDrill={onDrill} drillId="topCallsCompleted" title="By Calls Completed"   rows={lb.topCallsCompleted}   metric="totalCallsCompleted" suffix="" />
+          <LeaderboardCard onDrill={onDrill} drillId="topDialedCalls"    title="By Dialed Calls"      rows={lb.topDialedCalls}      metric="dialedCalls"         suffix="" />
+          <LeaderboardCard onDrill={onDrill} drillId="topConversionRate" title="By Conversion Rate"   rows={lb.topConversionRate}   metric="conversionRate"      suffix="%" />
+          <LeaderboardCard onDrill={onDrill} drillId="topNewCustomers"   title="By New Customers"     rows={lb.topNewCustomers}     metric="newConversions"      suffix="" />
+          <LeaderboardCard onDrill={onDrill} drillId="topTotalConversions" title="By Total Conversions" rows={lb.topTotalConversions} metric="totalConversions" suffix="" />
+          <LeaderboardCard onDrill={onDrill} drillId="lowestPending"     title="Lowest Pending Calls" rows={lb.lowestPending}       metric="totalPending"        suffix="" accent="green" />
+          <LeaderboardCard onDrill={onDrill} drillId="bestConnectionRate" title="Best Connection Rate" rows={lb.bestConnectionRate} metric="connectionRate"      suffix="%" />
         </div>
       </div>
 
-      {/* Three "Bottom" leaderboards */}
+      {/* Three "Bottom" leaderboards -- same clickable treatment. */}
       <div>
         <div className="text-sm font-semibold text-slate-800 mb-2">Needs Attention</div>
         <div className="grid md:grid-cols-3 gap-4">
-          <Leaderboard title="Highest Pending"       rows={lb.bottomHighestPending}    metric="totalPending"        suffix=""  accent="red" />
-          <Leaderboard title="Lowest Conversion"     rows={lb.bottomLowestConversion}  metric="conversionRate"      suffix="%" accent="red" />
-          <Leaderboard title="Lowest Call Completion" rows={lb.bottomLowestCompletion} metric="callCompletionRate" suffix="%" accent="red" />
+          <LeaderboardCard onDrill={onDrill} drillId="bottomHighestPending"    title="Highest Pending"       rows={lb.bottomHighestPending}    metric="totalPending"        suffix=""  accent="red" />
+          <LeaderboardCard onDrill={onDrill} drillId="bottomLowestConversion"  title="Lowest Conversion"     rows={lb.bottomLowestConversion}  metric="conversionRate"      suffix="%" accent="red" />
+          <LeaderboardCard onDrill={onDrill} drillId="bottomLowestCompletion"  title="Lowest Call Completion" rows={lb.bottomLowestCompletion} metric="callCompletionRate" suffix="%" accent="red" />
         </div>
       </div>
 
@@ -1044,8 +1099,26 @@ function CallingMode({ data, exportParams = {}, canExport = false }) {
   );
 }
 
+/* =====================================================================
+ * Phase 25 — Calling Leaderboard with drill-down
+ *
+ * Wraps the bare Leaderboard in a ClickableCard, adds a "View all" hint
+ * row at the bottom, and routes clicks to the parent's onDrill handler
+ * with a `extra` payload that carries the metric key + direction + suffix
+ * so CallingBreakdown can rebuild the complete ranking (not just top 5)
+ * from data.employees, applying the same filter the leaderboard used
+ * (e.g. dialedCalls >= 1 for Best Connection Rate).
+ * ===================================================================== */
+function LeaderboardCard({ onDrill, drillId, title, rows = [], metric, suffix = '', accent }) {
+  return (
+    <ClickableCard onClick={() => onDrill('callLeaderboard', title, { leaderboardId: drillId, metric, suffix, accent, title })}>
+      <Leaderboard title={title} rows={rows} metric={metric} suffix={suffix} accent={accent} showHint />
+    </ClickableCard>
+  );
+}
+
 /** Compact leaderboard card -- one row per employee with the named metric. */
-function Leaderboard({ title, rows = [], metric, suffix = '', accent }) {
+function Leaderboard({ title, rows = [], metric, suffix = '', accent, showHint = false }) {
   const accentCls = accent === 'red' ? 'text-red-600' : accent === 'green' ? 'text-green-600' : 'text-slate-800';
   return (
     <div className="card card-body">
@@ -1063,6 +1136,202 @@ function Leaderboard({ title, rows = [], metric, suffix = '', accent }) {
           ))}
         </ol>
       )}
+      {showHint && rows.length > 0 && (
+        <div className="mt-2 text-[10px] text-brand-600 hover:underline cursor-pointer text-right select-none">
+          View full ranking →
+        </div>
+      )}
     </div>
   );
+}
+
+/* =====================================================================
+ * Phase 25 — CallingBreakdown
+ *
+ * Projects per-metric columns from the captured analytics payload:
+ *
+ *   metricId             source                       columns rendered
+ *   -------------------- ---------------------------- ------------------------------------
+ *   callAssigned         data.detailRows              Employee | Date | Assigned Calls
+ *   callCompleted        data.detailRows              Employee | Date | Calls Completed
+ *   callDialed           data.detailRows              Employee | Date | Dialed Calls
+ *   callAttended         data.detailRows              Employee | Date | Attended Calls
+ *   callUnattended       data.detailRows              Employee | Date | Unattended Calls
+ *   callConversions      data.detailRows              Employee | Date | Old | New | Total
+ *   callPending          data.detailRows              Employee | Date | Yesterday | Current
+ *   callConnectionRate   data.employees (full)        Employee | Dept | Dialed | Attended | %
+ *   callConversionRate   data.employees (full)        Employee | Dept | Attended | Conv | %
+ *   callPendingRate      data.employees (full)        Employee | Dept | Assigned | Pending | %
+ *   callCompletionRate   data.employees (full)        Employee | Dept | Assigned | Completed | %
+ *   callLeaderboard      data.employees (filtered)    Rank | Employee | Dept | Metric value
+ *
+ * No new aggregation logic -- everything is read from the captured
+ * payload which already had filter + role scope applied by the backend.
+ * ===================================================================== */
+function CallingBreakdown({ metricId, extra = {}, data, onClose }) {
+  const detail = data.detailRows || [];
+  const employees = data.employees || [];
+
+  // ---- Per-(employee, date) views ----
+  // Filter out zero-value rows so the modal only shows submissions that
+  // actually contributed to the metric being drilled.
+  if (['callAssigned','callCompleted','callDialed','callAttended','callUnattended','callConversions','callPending'].includes(metricId)) {
+    const COLS = {
+      callAssigned:    [{ label: 'Assigned Calls', key: 'assignedCalls' }],
+      callCompleted:   [{ label: 'Calls Completed', key: 'totalCallsCompleted' }],
+      callDialed:      [{ label: 'Dialed Calls', key: 'dialedCalls' }],
+      callAttended:    [{ label: 'Attended Calls', key: 'attendedCalls' }],
+      callUnattended:  [{ label: 'Unattended Calls', key: 'unattendedCalls' }],
+      callConversions: [
+        { label: 'Old Conversions', key: 'oldConversions' },
+        { label: 'New Conversions', key: 'newConversions' },
+        { label: 'Total Conversions', key: 'totalConversions' },
+      ],
+      callPending: [
+        { label: 'Yesterday Pending', key: 'yesterdayPending' },
+        { label: 'Current Pending',   key: 'totalPending' },
+      ],
+    }[metricId];
+    const rows = detail.filter((d) => COLS.some((c) => (d[c.key] || 0) > 0));
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">
+          One row per (employee, day) submission contributing to this metric.  Filtered by the same date range, department, employee and HOD scope as the on-screen view.
+        </div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No records for this metric in the selected range.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Department</th>
+                  <th>Date</th>
+                  {COLS.map((c) => <th key={c.key} className="text-right">{c.label}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r._id}>
+                    <td className="font-medium text-slate-800">{r.employeeName}<div className="text-[11px] text-slate-500">{r.employeeCode}</div></td>
+                    <td>{r.department}</td>
+                    <td>{r.date}</td>
+                    {COLS.map((c) => <td key={c.key} className="text-right">{r[c.key] ?? 0}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Rate views: per-employee ranking from the rollup ----
+  if (['callConnectionRate','callConversionRate','callPendingRate','callCompletionRate'].includes(metricId)) {
+    const SCHEMA = {
+      callConnectionRate: { sortKey: 'connectionRate', filter: (e) => (e.dialedCalls || 0) >= 1, dir: 'desc',
+        cols: [{ label: 'Dialed', key: 'dialedCalls' }, { label: 'Attended', key: 'attendedCalls' }, { label: 'Connection %', key: 'connectionRate', suffix: '%' }] },
+      callConversionRate: { sortKey: 'conversionRate', filter: (e) => (e.attendedCalls || 0) >= 1, dir: 'desc',
+        cols: [{ label: 'Attended', key: 'attendedCalls' }, { label: 'Conversions', key: 'totalConversions' }, { label: 'Conversion %', key: 'conversionRate', suffix: '%' }] },
+      callPendingRate: { sortKey: 'pendingRate', filter: (e) => (e.assignedCalls || 0) >= 1, dir: 'desc',
+        cols: [{ label: 'Assigned', key: 'assignedCalls' }, { label: 'Pending', key: 'totalPending' }, { label: 'Pending %', key: 'pendingRate', suffix: '%' }] },
+      callCompletionRate: { sortKey: 'callCompletionRate', filter: (e) => (e.assignedCalls || 0) >= 1, dir: 'desc',
+        cols: [{ label: 'Assigned', key: 'assignedCalls' }, { label: 'Completed', key: 'totalCallsCompleted' }, { label: 'Completion %', key: 'callCompletionRate', suffix: '%' }] },
+    }[metricId];
+    const rows = [...employees].filter(SCHEMA.filter).sort((a, b) =>
+      SCHEMA.dir === 'asc'
+        ? (a[SCHEMA.sortKey] || 0) - (b[SCHEMA.sortKey] || 0)
+        : (b[SCHEMA.sortKey] || 0) - (a[SCHEMA.sortKey] || 0)
+    );
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">
+          Full per-employee ranking — same employee scope as the on-screen view.  Click outside or press Esc to close.
+        </div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No employees in the selected range have enough data for this rate.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Rank</th><th>Employee</th><th>Department</th>
+                  {SCHEMA.cols.map((c) => <th key={c.key} className="text-right">{c.label}</th>)}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={r._id}>
+                    <td>{i + 1}</td>
+                    <td className="font-medium text-slate-800">{r.name}<div className="text-[11px] text-slate-500">{r.employeeId}</div></td>
+                    <td>{r.department}</td>
+                    {SCHEMA.cols.map((c) => <td key={c.key} className="text-right">{r[c.key] ?? 0}{c.suffix || ''}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Leaderboard expansion: full ranking on the chosen metric ----
+  if (metricId === 'callLeaderboard') {
+    const { leaderboardId, metric, suffix = '', title } = extra;
+    // Mirror the filter + direction the backend uses when assembling the
+    // top-5 list inside callingAnalytics.leaderboards.  This is the only
+    // place where the front-end re-derives a "full" ranking; the rule
+    // table below is read-only documentation of the backend's selection.
+    const RULES = {
+      topCallsCompleted:    { dir: 'desc', filter: () => true },
+      topDialedCalls:       { dir: 'desc', filter: () => true },
+      topConversionRate:    { dir: 'desc', filter: (e) => (e.attendedCalls || 0) >= 1 },
+      topNewCustomers:      { dir: 'desc', filter: () => true },
+      topTotalConversions:  { dir: 'desc', filter: () => true },
+      lowestPending:        { dir: 'asc',  filter: (e) => (e.assignedCalls || 0) >= 1 },
+      bestConnectionRate:   { dir: 'desc', filter: (e) => (e.dialedCalls || 0) >= 1 },
+      bottomHighestPending: { dir: 'desc', filter: (e) => (e.assignedCalls || 0) >= 1 },
+      bottomLowestConversion: { dir: 'asc', filter: (e) => (e.attendedCalls || 0) >= 1 },
+      bottomLowestCompletion: { dir: 'asc', filter: (e) => (e.assignedCalls || 0) >= 1 },
+    };
+    const rule = RULES[leaderboardId] || { dir: 'desc', filter: () => true };
+    const rows = [...employees].filter(rule.filter).sort((a, b) =>
+      rule.dir === 'asc'
+        ? (a[metric] || 0) - (b[metric] || 0)
+        : (b[metric] || 0) - (a[metric] || 0)
+    );
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">
+          Full ranking for "{title}" — all employees in scope, not just the top 5.  Same scope / filter as the on-screen Calling Analytics view.
+        </div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No employees match the ranking criteria in this range.</div>
+          ) : (
+            <table className="table">
+              <thead>
+                <tr><th>Rank</th><th>Employee</th><th>Department</th><th className="text-right">{title}</th></tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={r._id}>
+                    <td>{i + 1}</td>
+                    <td className="font-medium text-slate-800">{r.name}<div className="text-[11px] text-slate-500">{r.employeeId}</div></td>
+                    <td>{r.department}</td>
+                    <td className="text-right font-semibold">{r[metric] ?? 0}{suffix}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return <div className="text-sm text-slate-400 italic">No drill-down available for this metric.</div>;
 }
