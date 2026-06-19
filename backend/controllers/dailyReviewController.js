@@ -283,12 +283,24 @@ const finalizeDay = asyncHandler(async (req, res) => {
   // Primary submission = first chronological (already sorted).
   const primary = subs[0];
 
+  // Phase 26 — workflow gating.  A "pure HOD" is a HOD account that is
+  // NOT also HR or Super Admin.  Their finalisation is a recommendation
+  // step (hodReview), not the real HR finalisation: it must NOT flip the
+  // submission to reviewStatus='reviewed' or stage='finalized', because
+  // doing so would surface the day as "HR Reviewed" on HR / SA accounts
+  // before HR has actually acted.  HR + SA paths keep the existing
+  // finalisation behaviour exactly as it was.
+  const isPureHOD = isHOD && role !== 'hr' && role !== 'super_admin';
+
   // Persist the DailyReview doc.  This is the SINGLE SOURCE OF TRUTH
   // for the day's discipline + innovation marks.  Per-submission rows
   // are NEVER touched -- they carry only their own work scoring.
   // Analytics, salary, employee history all read DailyReview directly
   // for the day-level marks (see analyticsController.completion,
   // salaryController.computeSlip, dashboardController.employeeSummary).
+  // For HOD recommendations we save the marks (so HR can see what was
+  // proposed and override if needed) but keep reviewStatus='pending'
+  // so analytics / dashboards don't treat the day as finalised.
   const review = await DailyReview.findOneAndUpdate(
     { employee: employee._id, date: day },
     {
@@ -296,7 +308,7 @@ const finalizeDay = asyncHandler(async (req, res) => {
         disciplineMarks: disc, maxDisciplineMarks: maxDisc, disciplineNote: discNote,
         ideaMarks: idea,       maxIdeaMarks: maxIdea,       ideaFeedback: ideaFeedback,
         reviewedBy: req.user._id, reviewedAt: new Date(),
-        reviewStatus: 'reviewed',
+        reviewStatus: isPureHOD ? 'pending' : 'reviewed',
         // Kept for the rare audit-trail use case; not used by any
         // analytics path anymore.
         primarySubmissionId: primary._id,
@@ -306,13 +318,42 @@ const finalizeDay = asyncHandler(async (req, res) => {
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
 
-  // Flip every same-day submission to reviewed so the existing review
-  // pipeline + Submission Control's reviewStatus filters reflect the
-  // finalised day.  IMPORTANT: we no longer touch disciplineMarks /
-  // ideaMarks / earnedPoints on any submission -- those live solely
-  // on DailyReview now.  earnedPoints stays = workEarnedPoints, which
-  // analytics joins to DailyReview to surface the true day total.
+  // ---- Per-submission updates -------------------------------------
+  // HR / SA path (unchanged): flip to reviewed + finalized so the
+  // existing review pipeline + Submission Control's reviewStatus
+  // filters reflect the finalised day.
+  //
+  // HOD path (Phase 26): write hodReview block + set stage to
+  // 'hod_reviewed' so HR / SA see "HOD Approved — Awaiting HR".  Leave
+  // reviewStatus untouched (stays pending) and never write to the
+  // top-level reviewedBy / reviewedAt — those are HR-only audit fields.
   for (const s of subs) {
+    if (isPureHOD) {
+      s.hodReview = {
+        reviewedBy: req.user._id,
+        reviewedAt: new Date(),
+        recommend:  'approve',
+        marksGiven: true,
+        remarks:    discNote || s.hodReview?.remarks || '',
+      };
+      s.currentReviewStage = 'hod_reviewed';
+      // Do NOT touch reviewStatus / reviewedBy / reviewedAt / earned -
+      // those reflect HR finalisation only.
+      s.reviewHistory = s.reviewHistory || [];
+      s.reviewHistory.push({
+        reviewedBy: req.user._id,
+        reviewerName: req.user.name,
+        role,
+        stage: 'hod_reviewed',
+        action: 'daily_hod_review',
+        marks: disc + idea,
+        remarks: discNote || '',
+        timestamp: new Date(),
+      });
+      await s.save();
+      continue;
+    }
+    // HR / SA path -- existing behaviour.
     s.reviewStatus = 'reviewed';
     s.currentReviewStage = 'finalized';
     s.reviewedBy = req.user._id;
@@ -339,14 +380,18 @@ const finalizeDay = asyncHandler(async (req, res) => {
     await s.save();
   }
 
-  // One day-level notification, not N per-sub notifications.
-  try {
-    notify.notifySubmissionReviewed({
-      employeeId: employee._id,
-      submission: { date: day },
-      reviewedBy: req.user,
-    });
-  } catch (_) { /* notify never blocks */ }
+  // Notify the employee ONLY when HR / SA truly finalises the day.
+  // HOD action is a recommendation -- firing a "review complete"
+  // notification at that point would misrepresent the workflow stage.
+  if (!isPureHOD) {
+    try {
+      notify.notifySubmissionReviewed({
+        employeeId: employee._id,
+        submission: { date: day },
+        reviewedBy: req.user,
+      });
+    } catch (_) { /* notify never blocks */ }
+  }
 
   logAudit(req, {
     action: 'daily-review.finalize',
@@ -623,6 +668,10 @@ const bulkFinalize = asyncHandler(async (req, res) => {
     res.status(400); throw new Error('items[] is required.');
   }
 
+  // Phase 26 — same workflow gating as finalizeDay.  HOD-only callers
+  // recommend; HR / SA finalise.
+  const isPureHOD = isHOD && role !== 'hr' && role !== 'super_admin';
+
   const maxDisc = Number(req.body.maxDisciplineMarks ?? 3);
   const maxIdea = Number(req.body.maxIdeaMarks ?? 2);
   const disc    = Math.max(0, Math.min(Number(req.body.disciplineMarks) || 0, maxDisc));
@@ -680,7 +729,10 @@ const bulkFinalize = asyncHandler(async (req, res) => {
             disciplineMarks: disc, maxDisciplineMarks: maxDisc, disciplineNote: discNote,
             ideaMarks: idea,       maxIdeaMarks: maxIdea,       ideaFeedback,
             reviewedBy: req.user._id, reviewedAt: new Date(),
-            reviewStatus: 'reviewed',
+            // Phase 26 — HOD bulk recommendation stays 'pending' on the
+            // DailyReview so analytics + dashboards continue treating the
+            // day as "not yet finalised by HR".
+            reviewStatus: isPureHOD ? 'pending' : 'reviewed',
             primarySubmissionId: primary._id,
           },
           $setOnInsert: { employee: employee._id, date: day },
@@ -688,7 +740,29 @@ const bulkFinalize = asyncHandler(async (req, res) => {
         { upsert: true, new: true, setDefaultsOnInsert: true },
       );
 
+      // Phase 26 — same workflow gating as finalizeDay.  HOD path writes
+      // the per-submission hodReview block + stage='hod_reviewed' only;
+      // HR / SA path keeps the existing reviewed + finalized flip.
       for (const s of subs) {
+        if (isPureHOD) {
+          s.hodReview = {
+            reviewedBy: req.user._id,
+            reviewedAt: new Date(),
+            recommend:  'approve',
+            marksGiven: true,
+            remarks:    discNote || s.hodReview?.remarks || '',
+          };
+          s.currentReviewStage = 'hod_reviewed';
+          s.reviewHistory = s.reviewHistory || [];
+          s.reviewHistory.push({
+            reviewedBy: req.user._id, reviewerName: req.user.name, role,
+            stage: 'hod_reviewed', action: 'daily_hod_review_bulk',
+            marks: disc + idea, remarks: discNote || '',
+            timestamp: new Date(),
+          });
+          await s.save();
+          continue;
+        }
         s.reviewStatus = 'reviewed';
         s.currentReviewStage = 'finalized';
         s.reviewedBy = req.user._id;
@@ -706,11 +780,14 @@ const bulkFinalize = asyncHandler(async (req, res) => {
         await s.save();
       }
 
-      try {
-        notify.notifySubmissionReviewed({
-          employeeId: employee._id, submission: { date: day }, reviewedBy: req.user,
-        });
-      } catch (_) { /* notify never blocks */ }
+      // Phase 26 — only notify the employee on real HR / SA finalisation.
+      if (!isPureHOD) {
+        try {
+          notify.notifySubmissionReviewed({
+            employeeId: employee._id, submission: { date: day }, reviewedBy: req.user,
+          });
+        } catch (_) { /* notify never blocks */ }
+      }
 
       logAudit(req, {
         action: 'daily-review.bulk-finalize',

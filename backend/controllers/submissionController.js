@@ -610,10 +610,22 @@ const submitOne = asyncHandler(async (req, res) => {
     // with status='done' and awardedMarks=0; HR awards marks during
     // review.  They contribute 0 to earned/total at submit time -- the
     // review step recomputes earned/total to include awardedMarks.
-    if (Array.isArray(addedTasks) && addedTasks.length > 0) {
-      addedTasks.forEach((at) => {
+    //
+    // Phase 27 — IMPORTANT: drop any previously-saved addedByEmployee
+    // rows BEFORE pushing the submit payload.  The draft endpoint
+    // (saveDraft, see below) also stores employee-added rows on
+    // sub.tasks (typically with status='pending_submit' = "Not filled")
+    // so a normal "save draft → submit" sequence used to leave the
+    // draft copies in place and then push fresh "Done" copies on top,
+    // surfacing every extra task twice in HR's Submission Reviews
+    // (once as NOT FILLED, once as DONE).  Mirroring the draft path's
+    // own filter-and-replace pattern fixes the duplication without
+    // touching any scoring or workflow logic.
+    if (Array.isArray(addedTasks)) {
+      sub.tasks = sub.tasks.filter((t) => !t.addedByEmployee);
+      for (const at of addedTasks) {
         const title = String(at?.title || '').trim();
-        if (!title) return;
+        if (!title) continue;
         sub.tasks.push({
           title,
           points: 0,
@@ -621,7 +633,8 @@ const submitOne = asyncHandler(async (req, res) => {
           addedByEmployee: true,
           awardedMarks: 0,
         });
-      });
+      }
+      sub.markModified('tasks');
     }
   }
 

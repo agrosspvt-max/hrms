@@ -549,7 +549,34 @@ function CustomResponsesPanel({ responses, fields }) {
 
 /* ----------------- Task list with per-row inline status editor ----------------- */
 function TaskListPanel({ sub, onReload }) {
-  const tasks = sub.tasks || [];
+  /* Phase 27 -- defensive de-duplication.
+   *
+   * Historical submissions where the employee saved a draft and then
+   * submitted carry duplicate addedByEmployee rows: a "Not filled"
+   * (pending_submit) row left over from the draft AND a fresh "Done"
+   * row pushed by the submit handler.  The backend fix prevents new
+   * duplicates from being written, but existing submissions still have
+   * both rows on disk.  Collapse them here on render by keeping, for
+   * each addedByEmployee title, the row with the most "real" status:
+   *
+   *   done > ongoing > pending > work_not_available > pending_submit
+   *
+   * System-generated rows (addedByEmployee=false) are never affected --
+   * they have unique task ids and stable status semantics.
+   */
+  const PRIORITY = { done: 5, ongoing: 4, pending: 3, work_not_available: 2, pending_submit: 1 };
+  const rawTasks = sub.tasks || [];
+  const sysTasks = rawTasks.filter((t) => !t.addedByEmployee);
+  const addedByTitle = new Map();
+  for (const t of rawTasks) {
+    if (!t.addedByEmployee) continue;
+    const key = String(t.title || '').trim().toLowerCase();
+    const prev = addedByTitle.get(key);
+    if (!prev || (PRIORITY[t.status] || 0) > (PRIORITY[prev.status] || 0)) {
+      addedByTitle.set(key, t);
+    }
+  }
+  const tasks = [...sysTasks, ...addedByTitle.values()];
   const done    = tasks.filter((t) => t.status === 'done').length;
   const ongoing = tasks.filter((t) => t.status === 'ongoing').length;
   const pending = tasks.filter((t) => t.status === 'pending').length;
