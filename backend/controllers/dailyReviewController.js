@@ -201,10 +201,20 @@ const listGrouped = asyncHandler(async (req, res) => {
    * ================================================================== */
   if (status === 'not_submitted') {
     // Pull employees again with the fields the per-day check needs
-    // (designation + weeklyOff), within the same role-scoped where.
-    const empWhereNS = { ...empWhere, role: { $ne: 'super_admin' } };
+    // (designation + weeklyOff + attendanceMode), within the same
+    // role-scoped where.
+    // Phase 29.5: 'auto_attendance' employees never appear in Not
+    // Submitted because they don't need submissions to be marked
+    // Present.  'attendance_review' employees still appear here when
+    // they haven't filed their Attendance Confirmation yet -- HR
+    // wants to see them so they can chase or mark attendance directly.
+    const empWhereNS = {
+      ...empWhere,
+      role: { $ne: 'super_admin' },
+      attendanceMode: { $ne: 'auto_attendance' },
+    };
     const fullEmployees = await User.find(empWhereNS)
-      .select('_id name employeeId role department designation weeklyOff')
+      .select('_id name employeeId role department designation weeklyOff attendanceMode')
       .populate('department', 'name')
       .lean();
 
@@ -217,6 +227,15 @@ const listGrouped = asyncHandler(async (req, res) => {
         ...liveSubmissionFilter({}),
       }).select('employee').lean()).map((s) => String(s.employee))
     );
+    // Phase 29.5: attendance_review employees count as "submitted" if
+    // they've filed (or HR has already resolved) today's Attendance
+    // Confirmation -- so they don't appear in Not Submitted any more.
+    const AttendanceConfirmation = require('../models/AttendanceConfirmation');
+    const reviewModeConfs = await AttendanceConfirmation.find({
+      employee: { $in: fullEmployees.filter((e) => e.attendanceMode === 'attendance_review').map((e) => e._id) },
+      date: day,
+    }).select('employee status').lean();
+    const confirmedEmpIds = new Set(reviewModeConfs.map((c) => String(c.employee)));
 
     // Approved leaves covering this day for the scoped employee set.
     // Includes both full-day and half-day -- per spec, ANY approved
@@ -280,8 +299,17 @@ const listGrouped = asyncHandler(async (req, res) => {
         return isScheduledOn(a, day);
       });
 
-      const submittedToday = submittedEmpIds.has(String(e._id));
-      const hasAssignments = scheduledToday.length > 0;
+      // Phase 29.5: for attendance_review mode the Attendance
+      // Confirmation IS the "I'm submitting myself for today" action.
+      // submission_based mode still uses the Submission collection.
+      const submittedToday = e.attendanceMode === 'attendance_review'
+        ? confirmedEmpIds.has(String(e._id))
+        : submittedEmpIds.has(String(e._id));
+      // attendance_review employees don't need template assignments to
+      // qualify -- their daily attendance confirmation is the work item.
+      const hasAssignments = e.attendanceMode === 'attendance_review'
+        ? true
+        : scheduledToday.length > 0;
 
       // Summary buckets reflect the full role-scoped employee universe,
       // not just the not-submitted list -- so HR sees how many people

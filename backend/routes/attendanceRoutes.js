@@ -14,4 +14,8 @@ router.delete('/employee/:id/status', authorize('hr'), c.clearStatus);
 // accounting + audit log as the single endpoint.
 router.post('/bulk', authorize('hr'), c.bulkSetStatus);
 
+// Phase 29.4: date-range bulk attendance with conflict detection.
+router.post('/bulk-range/preview', authorize('hr'), c.bulkRangePreview);
+router.post('/bulk-range/apply',   authorize('hr'), c.bulkRangeApply);
+
 module.exports = router;

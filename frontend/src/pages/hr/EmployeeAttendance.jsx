@@ -77,6 +77,8 @@ export default function EmployeeAttendance() {
   const [bulkNote, setBulkNote] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
+  // Phase 29.4 -- date-range bulk attendance modal.
+  const [bulkRangeOpen, setBulkRangeOpen] = useState(false);
 
   const toast = useToast();
 
@@ -343,6 +345,10 @@ export default function EmployeeAttendance() {
               <button className="btn-primary !py-1" disabled={bulkBusy} onClick={applyBulkAttendance}>
                 {bulkBusy ? 'Applying…' : 'Apply'}
               </button>
+              {/* Phase 29.4: opens the date-range bulk apply modal. */}
+              <button className="btn-secondary !py-1" disabled={bulkBusy} onClick={() => setBulkRangeOpen(true)}>
+                Date Range…
+              </button>
               <button className="btn-ghost !py-1 text-slate-600" disabled={bulkBusy} onClick={clearSelection}>Clear</button>
             </>
           )}
@@ -371,6 +377,26 @@ export default function EmployeeAttendance() {
           />
         ))}
       </div>
+
+      {/* Phase 29.4 -- date-range bulk attendance modal */}
+      {bulkRangeOpen && (
+        <BulkRangeModal
+          employeeIds={Array.from(selected)}
+          onClose={() => setBulkRangeOpen(false)}
+          onApplied={(result) => {
+            setBulkRangeOpen(false);
+            setBulkResult({
+              status: result.status,
+              date: `${result.fromDate} → ${result.toDate}`,
+              succeededCount: result.appliedCount,
+              failedCount: result.failedCount + result.skippedCount,
+            });
+            clearSelection();
+            const openIds = Object.keys(openMap).filter((id) => openMap[id]);
+            openIds.forEach((id) => fetchAttendance(id));
+          }}
+        />
+      )}
 
       {editing && (
         <Modal
@@ -599,3 +625,184 @@ const Pill = ({ label, value, color }) => {
     </span>
   );
 };
+
+/* =====================================================================
+ * Phase 29.4 — Bulk Attendance · Date Range modal
+ *
+ * Three-step flow:
+ *   1. Configure: pick From / To / Status / Note.
+ *   2. Preview:   POST /attendance/bulk-range/preview, render the
+ *                  conflicts table and let HR pick a resolution mode
+ *                  (skip / override / review individually).
+ *   3. Apply:     POST /attendance/bulk-range/apply with the chosen
+ *                  mode + (optional) per-row selection set.  Calls
+ *                  onApplied(result) so the parent can refresh.
+ * ===================================================================== */
+function BulkRangeModal({ employeeIds, onClose, onApplied }) {
+  const toast = useToast();
+  const [fromDate, setFromDate] = useState(new Date().toISOString().slice(0, 10));
+  const [toDate, setToDate]     = useState(new Date().toISOString().slice(0, 10));
+  const [status, setStatus]     = useState('present');
+  const [note, setNote]         = useState('');
+  const [preview, setPreview]   = useState(null); // { rows, conflictCount, cleanCount }
+  const [mode, setMode]         = useState('skip'); // skip | override | selected
+  const [selectedCells, setSelectedCells] = useState(() => new Set());
+  const [busy, setBusy] = useState(false);
+
+  const cellKey = (r) => `${r.employeeId}|${r.date}`;
+  const conflictRows = preview ? preview.rows.filter((r) => r.hasConflict) : [];
+
+  const doPreview = async () => {
+    if (employeeIds.length === 0) { toast.error('Select at least one employee first.'); return; }
+    if (!fromDate || !toDate) { toast.error('From and To dates are required.'); return; }
+    setBusy(true);
+    try {
+      const { data } = await api.post('/attendance/bulk-range/preview', {
+        employeeIds, fromDate, toDate, status,
+      });
+      setPreview(data);
+      setSelectedCells(new Set());
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+  const doApply = async () => {
+    setBusy(true);
+    try {
+      const body = { employeeIds, fromDate, toDate, status, note: note.trim(), mode };
+      if (mode === 'selected') {
+        body.selected = [...selectedCells].map((k) => {
+          const [employeeId, date] = k.split('|');
+          return { employeeId, date };
+        });
+      }
+      const { data } = await api.post('/attendance/bulk-range/apply', body);
+      toast.success(`Applied to ${data.appliedCount} day(s); ${data.skippedCount} skipped, ${data.failedCount} failed.`);
+      onApplied(data);
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+  const toggleCell = (k) => setSelectedCells((cur) => {
+    const n = new Set(cur);
+    if (n.has(k)) n.delete(k); else n.add(k);
+    return n;
+  });
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="bg-white dark:bg-slate-900 rounded-lg shadow-xl max-w-3xl w-full m-4 p-5 space-y-4 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Bulk Attendance · Date Range</h2>
+          <p className="text-sm text-slate-500">Selected employees: <b>{employeeIds.length}</b></p>
+        </div>
+
+        {/* Step 1 -- Configuration */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div>
+            <label className="label">Start Date</label>
+            <input className="input" type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">End Date</label>
+            <input className="input" type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">Status</label>
+            <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="present">Present</option>
+              <option value="absent">Absent</option>
+              <option value="half_paid">Half Day (Paid)</option>
+              <option value="half_unpaid">Half Day (Unpaid)</option>
+              <option value="full_paid">Full Day Leave (Paid)</option>
+              <option value="full_unpaid">Full Day Leave (Unpaid)</option>
+              <option value="weekly_off">Weekly Off</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Note (optional)</label>
+            <input className="input" value={note} onChange={(e) => setNote(e.target.value)} />
+          </div>
+        </div>
+
+        {!preview && (
+          <div className="flex justify-end gap-2">
+            <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+            <button className="btn-primary" onClick={doPreview} disabled={busy}>
+              {busy ? 'Detecting conflicts…' : 'Preview'}
+            </button>
+          </div>
+        )}
+
+        {/* Step 2 -- Conflicts + mode picker */}
+        {preview && (
+          <>
+            <div className="rounded-lg border border-slate-200 dark:border-slate-700 px-3 py-2 text-sm flex items-center justify-between flex-wrap gap-2">
+              <div>
+                <b>{preview.totalCells}</b> cells in range · <span className="text-green-700">{preview.cleanCount} clean</span> · <span className="text-amber-700">{preview.conflictCount} conflicts</span>
+              </div>
+              <button className="btn-ghost !py-0.5 !text-xs" onClick={() => setPreview(null)}>Back</button>
+            </div>
+
+            {conflictRows.length > 0 ? (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Conflicts Found</div>
+                <div className="overflow-x-auto max-h-60 border border-slate-200 dark:border-slate-700 rounded">
+                  <table className="table text-sm">
+                    <thead><tr>
+                      {mode === 'selected' && <th></th>}
+                      <th>Employee</th><th>Date</th><th>Reason</th>
+                    </tr></thead>
+                    <tbody>
+                      {conflictRows.map((r) => (
+                        <tr key={cellKey(r)}>
+                          {mode === 'selected' && (
+                            <td>
+                              <input type="checkbox" checked={selectedCells.has(cellKey(r))} onChange={() => toggleCell(cellKey(r))} />
+                            </td>
+                          )}
+                          <td className="font-medium text-slate-800">{r.name}<div className="text-[11px] text-slate-500">{r.employeeCode}</div></td>
+                          <td>{r.date}</td>
+                          <td>{r.reason}{r.existingStatus ? <span className="text-[11px] text-slate-500"> · {r.existingStatus}</span> : null}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="flex flex-wrap gap-3 text-sm">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="bulkMode" checked={mode === 'skip'} onChange={() => setMode('skip')} />
+                    Skip Conflicts <span className="text-[11px] text-slate-500">— apply only to clean cells</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="bulkMode" checked={mode === 'override'} onChange={() => setMode('override')} />
+                    Override All <span className="text-[11px] text-slate-500">— apply everywhere</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="radio" name="bulkMode" checked={mode === 'selected'} onChange={() => setMode('selected')} />
+                    Review Individually <span className="text-[11px] text-slate-500">— override only ticked rows</span>
+                  </label>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-green-200 dark:border-green-500/30 bg-green-50/60 dark:bg-green-500/10 px-3 py-2 text-sm text-green-800 dark:text-green-300">
+                No conflicts — all <b>{preview.totalCells}</b> cells are clean.
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+              <button className="btn-primary" onClick={doApply} disabled={busy}>
+                {busy ? 'Applying…' : `Apply (${
+                  mode === 'override'
+                    ? preview.totalCells
+                    : mode === 'skip'
+                      ? preview.cleanCount
+                      : preview.cleanCount + selectedCells.size
+                } cell${preview.totalCells === 1 ? '' : 's'})`}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}

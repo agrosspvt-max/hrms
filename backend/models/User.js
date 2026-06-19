@@ -149,6 +149,36 @@ const userSchema = new mongoose.Schema(
     // Configurable weekly offs - array of weekday numbers (0=Sun .. 6=Sat)
     weeklyOff: { type: [Number], default: [0] },
 
+    /* ====================================================================
+     * Phase 29 — Attendance mode (per-employee)
+     *
+     * Decouples attendance from work submissions for employees whose role
+     * doesn't carry daily templates (HR, Accounts, Admin, Directors, etc.).
+     *
+     *   submission_based   (default) — current behaviour: a submitted work
+     *                        record on a working day flips attendance to
+     *                        Present; no submission = Absent.
+     *   attendance_review  — employee files a lightweight Attendance
+     *                        Confirmation each working day; HR / Super
+     *                        Admin reviews it (Approve Present / Mark
+     *                        Absent / Mark Half Day / Mark Leave) and the
+     *                        outcome becomes the finalised attendance for
+     *                        that day.
+     *   auto_attendance    — every working day automatically counts as
+     *                        Present.  Reserved for senior leadership.
+     *
+     * Leaves, holidays and weekly offs are honoured by every mode the
+     * same way they were before this field existed.
+     * ================================================================== */
+    attendanceMode: {
+      type: String,
+      enum: ['submission_based', 'attendance_review', 'auto_attendance'],
+      default: 'submission_based',
+      index: true,
+    },
+    attendanceModeUpdatedAt: { type: Date },
+    attendanceModeUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
     // ---- Role / job context (employee management dashboard) ----
     jobDescription: { type: String, default: '' },
     scopeOfWork: { type: String, default: '' },

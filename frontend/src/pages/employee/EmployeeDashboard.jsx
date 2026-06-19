@@ -704,6 +704,15 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         </div>
       )}
 
+      {/* Phase 29: Attendance Confirmation card -- renders for
+          attendance_review mode employees on working days only.  The
+          backend already checks weekly-off / holiday / approved-leave
+          state before reporting eligible=true, so we just render the
+          payload it returns. */}
+      {!data.onLeave && !data.weeklyOff && !data.holiday && (
+        <AttendanceConfirmationCard />
+      )}
+
       {/* Today's tasks per submission */}
       {!data.onLeave && !data.weeklyOff && !data.holiday && (
         <div className="space-y-4">
@@ -1328,6 +1337,74 @@ function CustomTemplateForm({
 /* Daily Reflection card                                               */
 /*                                                                     */
 /* Phase 5: lives ONCE per day at the top of "Today's Tasks", regardless */
+/* ------------------------------------------------------------------ */
+/* Phase 29 — Attendance Confirmation card                              */
+/*                                                                      */
+/* Renders only for employees on `attendanceMode === 'attendance_review'`*/
+/* on working days that aren't holidays / weekly offs / approved leaves.*/
+/* The backend's /attendance-confirmation/today endpoint enforces that  */
+/* gate and returns {eligible:false, reason} otherwise -- we just hide   */
+/* the card in that case.                                               */
+/* ------------------------------------------------------------------ */
+function AttendanceConfirmationCard() {
+  const [state, setState] = useState(null); // { eligible, todayIso, status, confirmedAt, reviewedAt }
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const load = async () => {
+    try {
+      const { data } = await api.get('/attendance-confirmation/today');
+      setState(data);
+    } catch (_) { setState({ eligible: false, reason: 'error' }); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      await api.post('/attendance-confirmation/confirm');
+      toast.success('Attendance confirmed for today');
+      await load();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+
+  if (!state || !state.eligible) return null;
+
+  const STATUS_META = {
+    pending:              { label: 'Awaiting HR Review', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    approved_present:     { label: 'Approved · Present', cls: 'bg-green-50 text-green-700 border-green-200' },
+    marked_absent:        { label: 'Marked Absent',       cls: 'bg-red-50   text-red-700   border-red-200' },
+    marked_half_paid:     { label: 'Marked Half Day (Paid)',   cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    marked_half_unpaid:   { label: 'Marked Half Day (Unpaid)', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    marked_paid_leave:    { label: 'Marked Leave (Paid)',      cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+    marked_unpaid_leave:  { label: 'Marked Leave (Unpaid)',    cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+  };
+  const meta = state.status ? STATUS_META[state.status] : null;
+  return (
+    <div className="card card-body bg-brand-50/40 dark:bg-brand-500/10 border border-brand-200 dark:border-brand-500/30 space-y-2">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">Daily Attendance Confirmation</div>
+          <div className="text-[12px] text-slate-500">Date: {state.todayIso}</div>
+        </div>
+        {meta && <span className={`badge text-[11px] border ${meta.cls}`}>{meta.label}</span>}
+      </div>
+      {!state.status ? (
+        <button className="btn-primary" onClick={confirm} disabled={busy}>
+          {busy ? 'Confirming…' : 'Confirm Present'}
+        </button>
+      ) : (
+        <div className="text-[12px] text-slate-600 dark:text-slate-300">
+          Confirmed at {state.confirmedAt ? new Date(state.confirmedAt).toLocaleString() : '—'}.
+          {state.reviewedAt && <> Reviewed at {new Date(state.reviewedAt).toLocaleString()}.</>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /* of how many assignments the employee has.  Upserts to               */
 /* /api/daily-reflection.                                              */
 /* ------------------------------------------------------------------ */

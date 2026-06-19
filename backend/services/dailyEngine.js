@@ -420,6 +420,18 @@ const deriveAttendance = async (employee, from, to) => {
         const lv = fullDayLeaveOn(day);
         if (lv) status = lv.paid ? 'full_paid' : 'full_unpaid';
         else if (submittedDays.has(iso)) status = 'present';
+        // Phase 29 — mode-aware fallback (only kicks in AFTER all the
+        // existing checks above, so the legacy submission-based path is
+        // bit-for-bit identical for default-mode employees).  We branch
+        // only when the day is a working day with no submission, no
+        // record, no leave: that's exactly the spot mode 2 / 3 differ.
+        //   auto_attendance     → Present every working day.
+        //   attendance_review   → still 'absent' / 'ongoing' / 'future'
+        //                          until HR reviews the confirmation and
+        //                          writes a manual Attendance record
+        //                          (handled by the `if (record)` branch
+        //                          on the very next call).
+        else if (employee.attendanceMode === 'auto_attendance') status = 'present';
         else if (day > todayMidnight) status = 'future';
         else if (day.getTime() === todayMidnight.getTime()) status = 'ongoing';
         else status = 'absent';

@@ -247,6 +247,12 @@ export default function SubmissionReviews() {
         </div>
       )}
 
+      {/* Phase 29 -- Attendance Reviews section (mode 2 employees).
+          Renders below the Submission Reviews list and is always visible
+          to HR / Super Admin / HOD because the queue endpoint enforces
+          the scope server-side. */}
+      <AttendanceReviewsSection date={date} />
+
       {bulkOpen && (
         <BulkScoreModal
           cards={selectedCards}
@@ -1214,6 +1220,115 @@ function HodReviewDetails({ sub }) {
 /* ===================================================================== */
 /* Tiny presentational helpers                                            */
 /* ===================================================================== */
+/* =====================================================================
+ * Phase 29 — Attendance Reviews section
+ *
+ * Companion to the Submission Reviews list above.  Lists every
+ * attendance_review-mode employee in scope for the selected date and
+ * lets HR / Super Admin act on each one with Approve Present / Mark
+ * Absent / Mark Half Day Paid|Unpaid / Mark Leave Paid|Unpaid.  Each
+ * action writes a manual Attendance record so the existing
+ * deriveAttendance + salary pipelines pick up the resolution.
+ * ===================================================================== */
+function AttendanceReviewsSection({ date }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState('');
+  const toast = useToast();
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.get('/attendance-confirmation/queue', { params: { date } });
+      setRows(Array.isArray(data) ? data : []);
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [date]);
+
+  const act = async (row, action) => {
+    if (!row.confirmation) {
+      toast.error('Employee has not confirmed attendance for this day yet.');
+      return;
+    }
+    setBusyId(String(row.confirmation._id));
+    try {
+      await api.post(`/attendance-confirmation/${row.confirmation._id}/review`, { action });
+      toast.success('Attendance reviewed');
+      await load();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusyId(''); }
+  };
+
+  if (loading) return null; // silently hide while loading; the section is secondary
+  if (rows.length === 0) return null;
+
+  const pending = rows.filter((r) => !r.confirmation || r.confirmation.status === 'pending').length;
+  const reviewed = rows.length - pending;
+
+  const STATUS_META = {
+    pending:              { label: 'Awaiting Review', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    approved_present:     { label: 'Approved Present', cls: 'bg-green-50 text-green-700 border-green-200' },
+    marked_absent:        { label: 'Marked Absent',    cls: 'bg-red-50   text-red-700   border-red-200' },
+    marked_half_paid:     { label: 'Half Paid',        cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    marked_half_unpaid:   { label: 'Half Unpaid',      cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+    marked_paid_leave:    { label: 'Paid Leave',       cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+    marked_unpaid_leave:  { label: 'Unpaid Leave',     cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+  };
+
+  return (
+    <div className="space-y-3 pt-2">
+      <div className="flex items-end justify-between flex-wrap gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Attendance Reviews</h2>
+          <p className="text-xs text-slate-500">Employees on Attendance Review mode for {fmtDate(date)}.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="badge bg-amber-50 text-amber-700">{pending} pending</span>
+          <span className="badge-green">{reviewed} resolved</span>
+        </div>
+      </div>
+      <div className="space-y-2">
+        {rows.map((row) => {
+          const meta = row.confirmation ? STATUS_META[row.confirmation.status] : null;
+          const noConfirmation = !row.confirmation;
+          const isPending = row.confirmation?.status === 'pending';
+          return (
+            <div key={String(row.employee._id)} className={`card overflow-hidden ${isPending ? 'ring-1 ring-amber-200' : ''}`}>
+              <div className="px-5 py-3 flex items-center justify-between gap-3 flex-wrap bg-slate-50 dark:bg-slate-800/40">
+                <div className="min-w-0">
+                  <div className="font-semibold text-slate-800 dark:text-slate-100">
+                    {row.employee.name} <span className="text-slate-400 font-normal">({row.employee.employeeId})</span>
+                  </div>
+                  <div className="text-[12px] text-slate-500">
+                    {row.employee.department || '—'}
+                    {row.confirmation?.confirmedAt && <> · Confirmed {new Date(row.confirmation.confirmedAt).toLocaleString()}</>}
+                    {row.confirmation?.reviewedAt && <> · Reviewed {new Date(row.confirmation.reviewedAt).toLocaleString()} {row.confirmation.reviewedBy ? `by ${row.confirmation.reviewedBy.name}` : ''}</>}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {meta && <span className={`badge text-[11px] border ${meta.cls}`}>{meta.label}</span>}
+                  {noConfirmation && <span className="badge text-[11px] border bg-slate-50 text-slate-600 border-slate-200">Not Confirmed</span>}
+                </div>
+              </div>
+              {isPending && (
+                <div className="px-5 py-3 flex flex-wrap gap-2 border-t border-slate-100 dark:border-slate-700">
+                  <button className="btn-primary !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'approve_present')}>Approve Present</button>
+                  <button className="btn-secondary !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_absent')}>Mark Absent</button>
+                  <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_half_paid')}>Half Day · Paid</button>
+                  <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_half_unpaid')}>Half Day · Unpaid</button>
+                  <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_paid_leave')}>Leave · Paid</button>
+                  <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_unpaid_leave')}>Leave · Unpaid</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 const KPI = ({ label, value, accent = 'slate' }) => {
   const cls = {
     slate: 'bg-slate-50 text-slate-800 border-slate-200',

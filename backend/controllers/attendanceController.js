@@ -302,4 +302,222 @@ const bulkSetStatus = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { mine, ofEmployee, setStatus, clearStatus, bulkSetStatus };
+/* ====================================================================
+ * Phase 29.4 — Date-range bulk attendance + conflict detection
+ *
+ * The legacy single-date bulkSetStatus stays as-is for backward
+ * compatibility.  These two endpoints add the new flow:
+ *
+ *   POST /api/attendance/bulk-range/preview
+ *     Body: { employeeIds, fromDate, toDate, status }
+ *     Returns: { rows: [{ employeeId, name, date, hasConflict, reason,
+ *                          existingStatus }], conflictCount, cleanCount }
+ *
+ *   POST /api/attendance/bulk-range/apply
+ *     Body: { employeeIds, fromDate, toDate, status, note?,
+ *             mode: 'skip' | 'override' | 'selected',
+ *             selected?: [{ employeeId, date }]   // mode='selected' only
+ *           }
+ *     Returns: { applied: [...], skipped: [...], failed: [...] }
+ *
+ * The two endpoints reuse the same conflict detection helper so the
+ * preview and the apply step can't drift apart.
+ * ================================================================== */
+const Leave_for_bulk = require('../models/Leave');
+const Holiday_for_bulk = require('../models/Holiday');
+
+const _eachDay = function* (from, to) {
+  for (let d = new Date(from); d <= to; d = new Date(d.getTime() + 86400000)) {
+    yield startOfDay(d);
+  }
+};
+
+/**
+ * Build the list of (employee, date) cells the range would touch + flag
+ * any that conflict with existing leave / holiday / weekly-off /
+ * existing-Attendance entries.
+ */
+const _detectConflicts = async ({ employees, fromDay, toDay }) => {
+  const empIds = employees.map((e) => e._id);
+  const holidays = await Holiday_for_bulk.find({ date: { $gte: fromDay, $lte: toDay } }).lean();
+  const holidayDays = new Set(holidays.map((h) => startOfDay(h.date).toISOString()));
+  const leaves = await Leave_for_bulk.find({
+    employee: { $in: empIds },
+    status: 'approved',
+    fromDate: { $lte: toDay },
+    toDate:   { $gte: fromDay },
+  }).lean();
+  const attendance = await Attendance.find({
+    employee: { $in: empIds },
+    date: { $gte: fromDay, $lte: toDay },
+  }).lean();
+  const attByKey = new Map(attendance.map((a) => [`${String(a.employee)}|${startOfDay(a.date).toISOString()}`, a]));
+
+  const rows = [];
+  for (const e of employees) {
+    const weeklyOff = e.weeklyOff || [0];
+    for (const day of _eachDay(fromDay, toDay)) {
+      const iso = day.toISOString();
+      const key = `${String(e._id)}|${iso}`;
+      let reason = '';
+      let existingStatus = '';
+      if (weeklyOff.includes(day.getUTCDay())) reason = 'Weekly Off';
+      else if (holidayDays.has(iso)) reason = 'Holiday';
+      else {
+        const lv = leaves.find((l) => String(l.employee) === String(e._id)
+          && startOfDay(l.fromDate) <= day && startOfDay(l.toDate) >= day);
+        if (lv) reason = lv.paid ? 'Approved Paid Leave' : 'Approved Unpaid Leave';
+        else {
+          const att = attByKey.get(key);
+          if (att) {
+            reason = 'Existing Attendance Entry';
+            existingStatus = att.status;
+          }
+        }
+      }
+      rows.push({
+        employeeId: String(e._id),
+        name: e.name,
+        employeeCode: e.employeeId,
+        date: day.toISOString().slice(0, 10),
+        hasConflict: !!reason,
+        reason,
+        existingStatus,
+      });
+    }
+  }
+  return rows;
+};
+
+const _validateBulkRangeBody = (req) => {
+  const { employeeIds, fromDate, toDate, status } = req.body || {};
+  if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
+    throw Object.assign(new Error('No employees selected'), { _http: 400 });
+  }
+  if (!fromDate || !toDate) {
+    throw Object.assign(new Error('fromDate and toDate are required'), { _http: 400 });
+  }
+  if (!MANUAL_STATUSES.includes(status)) {
+    throw Object.assign(new Error(`status must be one of: ${MANUAL_STATUSES.join(', ')}`), { _http: 400 });
+  }
+  const fromDay = startOfDay(new Date(fromDate));
+  const toDay   = startOfDay(new Date(toDate));
+  if (Number.isNaN(fromDay.getTime()) || Number.isNaN(toDay.getTime())) {
+    throw Object.assign(new Error('Invalid date'), { _http: 400 });
+  }
+  if (fromDay > toDay) {
+    throw Object.assign(new Error('fromDate must be on or before toDate'), { _http: 400 });
+  }
+  return { employeeIds, fromDay, toDay, status };
+};
+
+const bulkRangePreview = asyncHandler(async (req, res) => {
+  let body;
+  try { body = _validateBulkRangeBody(req); }
+  catch (err) { res.status(err._http || 500); throw err; }
+  const employees = await User.find({ _id: { $in: body.employeeIds } })
+    .select('_id name employeeId weeklyOff').lean();
+  const rows = await _detectConflicts({ employees, fromDay: body.fromDay, toDay: body.toDay });
+  const conflictCount = rows.filter((r) => r.hasConflict).length;
+  res.json({
+    rows,
+    totalCells: rows.length,
+    conflictCount,
+    cleanCount: rows.length - conflictCount,
+  });
+});
+
+const bulkRangeApply = asyncHandler(async (req, res) => {
+  let body;
+  try { body = _validateBulkRangeBody(req); }
+  catch (err) { res.status(err._http || 500); throw err; }
+  const mode = req.body?.mode || 'skip';
+  if (!['skip', 'override', 'selected'].includes(mode)) {
+    res.status(400); throw new Error(`mode must be one of: skip, override, selected`);
+  }
+  const selectedSet = new Set(
+    Array.isArray(req.body?.selected)
+      ? req.body.selected.map((s) => `${String(s.employeeId)}|${s.date}`)
+      : [],
+  );
+  const note = String(req.body?.note || '').trim();
+  const employees = await User.find({ _id: { $in: body.employeeIds } });
+  const empById = new Map(employees.map((e) => [String(e._id), e]));
+  const rows = await _detectConflicts({
+    employees: employees.map((e) => ({
+      _id: e._id, name: e.name, employeeId: e.employeeId, weeklyOff: e.weeklyOff,
+    })),
+    fromDay: body.fromDay, toDay: body.toDay,
+  });
+
+  const applied = [];
+  const skipped = [];
+  const failed  = [];
+
+  for (const row of rows) {
+    const key = `${row.employeeId}|${row.date}`;
+    // mode-aware filter -- decide whether to touch this cell.
+    if (row.hasConflict) {
+      if (mode === 'skip') { skipped.push({ ...row, reason: row.reason }); continue; }
+      if (mode === 'selected' && !selectedSet.has(key)) { skipped.push({ ...row, reason: row.reason }); continue; }
+    }
+    const employee = empById.get(row.employeeId);
+    if (!employee) { failed.push({ ...row, error: 'Employee not found' }); continue; }
+    const day = startOfDay(new Date(row.date));
+    try {
+      // Reuse the same leave-accounting math as the single-date bulk.
+      const previousStatus = await effectiveStatusForDay(employee, day);
+      const existing = await Attendance.findOne({ employee: employee._id, date: day });
+      const targetUnits = leaveUnitsForStatus(body.status);
+      const approvalUnits = await approvedPaidLeaveUnitsForDay(employee._id, day);
+      const existingOverrideDelta = existing && existing.source === 'manual' ? (existing.leaveDelta || 0) : 0;
+      const { overrideDelta, balanceChange } = computeOverrideLeaveDelta({
+        targetUnits, approvalUnits, existingOverrideDelta,
+      });
+      if (balanceChange !== 0) {
+        const used = (employee.leaveBalance?.used || 0) + balanceChange;
+        employee.leaveBalance.used = Math.max(0, round2(used));
+        await employee.save();
+      }
+      const record = await Attendance.findOneAndUpdate(
+        { employee: employee._id, date: day },
+        {
+          employee: employee._id, date: day,
+          status: body.status, source: 'manual',
+          note: note || '', setBy: req.user._id, leaveDelta: overrideDelta,
+        },
+        { upsert: true, new: true, setDefaultsOnInsert: true },
+      );
+      logAudit(req, {
+        action: 'attendance.override',
+        targetType: 'Attendance',
+        targetId: record._id,
+        targetLabel: `${employee.name} · ${row.date} (bulk-range, ${mode})`,
+        meta: {
+          employeeId: row.employeeId, date: row.date,
+          previousStatus, newStatus: body.status,
+          targetLeaveUnits: targetUnits, approvedLeaveUnits: approvalUnits,
+          leaveDelta: overrideDelta, balanceChange,
+          via: 'bulk-range', mode, conflict: row.reason || '',
+          note,
+        },
+      });
+      applied.push({ ...row });
+    } catch (err) {
+      failed.push({ ...row, error: err.message });
+    }
+  }
+
+  res.json({
+    fromDate: body.fromDay.toISOString().slice(0, 10),
+    toDate:   body.toDay.toISOString().slice(0, 10),
+    status:   body.status,
+    mode,
+    appliedCount: applied.length,
+    skippedCount: skipped.length,
+    failedCount:  failed.length,
+    applied, skipped, failed,
+  });
+});
+
+module.exports = { mine, ofEmployee, setStatus, clearStatus, bulkSetStatus, bulkRangePreview, bulkRangeApply };

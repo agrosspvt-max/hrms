@@ -704,6 +704,24 @@ export function EmployeeForm({ mode, initial, departments, designations, onCance
             ))}
           </div>
         </div>
+        {/* Phase 29: per-employee Attendance Mode */}
+        <div className="md:col-span-2">
+          <label className="label">Attendance Mode</label>
+          <select className="input max-w-md"
+            value={form.attendanceMode || 'submission_based'}
+            onChange={(e) => set('attendanceMode', e.target.value)}>
+            <option value="submission_based">Submission Based (default)</option>
+            <option value="attendance_review">Attendance Review</option>
+            <option value="auto_attendance">Auto Attendance</option>
+          </select>
+          <div className="text-[11px] text-slate-500 mt-1">
+            {form.attendanceMode === 'attendance_review'
+              ? 'Employee files a daily attendance confirmation; HR reviews + finalises each day.'
+              : form.attendanceMode === 'auto_attendance'
+                ? 'Every working day is automatically Present (for senior leadership). Leaves / holidays / weekly offs are still honoured.'
+                : 'Default — Present when a work submission is filed, Absent otherwise.'}
+          </div>
+        </div>
         {/* Review routing + HOD supervision */}
         <div className="md:col-span-2 bg-indigo-50/60 border border-indigo-100 rounded-lg p-3 space-y-3">
           <div className="text-xs font-semibold text-slate-700">Review &amp; Supervision</div>

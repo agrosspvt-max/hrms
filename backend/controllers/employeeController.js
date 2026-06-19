@@ -247,11 +247,26 @@ const updateEmployee = asyncHandler(async (req, res) => {
     'jobDescription', 'scopeOfWork', 'responsibilities', 'reportingManager', 'kpiNotes',
     // Date of birth (powers automatic birthday events)
     'dateOfBirth',
+    // Phase 29: per-employee attendance mode.
+    'attendanceMode',
   ];
   const patch = {};
   updatable.forEach((k) => { if (k in req.body) patch[k] = req.body[k]; });
   cleanRefs(patch);
   if ('hodPermissions' in patch) patch.hodPermissions = normalizeHodPermissions(patch.hodPermissions);
+  // Phase 29: validate and stamp attendance-mode audit fields whenever
+  // the mode actually changes.  Falls through silently when the patch
+  // just echoes the current value or doesn't include the field.
+  const VALID_ATT_MODES = ['submission_based', 'attendance_review', 'auto_attendance'];
+  if ('attendanceMode' in patch) {
+    if (!VALID_ATT_MODES.includes(patch.attendanceMode)) {
+      res.status(400); throw new Error(`attendanceMode must be one of: ${VALID_ATT_MODES.join(', ')}`);
+    }
+    if (patch.attendanceMode !== target.attendanceMode) {
+      patch.attendanceModeUpdatedAt = new Date();
+      patch.attendanceModeUpdatedBy = req.user._id;
+    }
+  }
   // A HOD must have a department they head; clearing the flag clears the dept.
   if (patch.isHOD === false) patch.hodDepartment = undefined;
 
@@ -318,6 +333,18 @@ const updateEmployee = asyncHandler(async (req, res) => {
       targetId: user._id,
       targetLabel: `${user.name} <${user.email}>`,
       meta: { from: target.role, to: patch.role },
+    });
+  }
+
+  // Phase 29: audit attendance-mode changes so HR can trace who switched
+  // an employee between submission-based / attendance-review / auto.
+  if ('attendanceMode' in patch && patch.attendanceMode !== target.attendanceMode) {
+    logAudit(req, {
+      action: 'employee.attendance_mode_change',
+      targetType: 'User',
+      targetId: user._id,
+      targetLabel: `${user.name} (${user.employeeId || ''})`,
+      meta: { from: target.attendanceMode || 'submission_based', to: patch.attendanceMode },
     });
   }
 
