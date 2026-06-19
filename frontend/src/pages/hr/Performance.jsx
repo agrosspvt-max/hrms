@@ -872,32 +872,47 @@ function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () 
             <span className="badge bg-indigo-50 text-indigo-700">Custom Assignment</span>
             {!hasPF && <span className="text-[11px] text-slate-500">— no submissions in range yet</span>}
           </div>
-          {/* Product / Farmer headline KPIs */}
+          {/* Product / Farmer headline KPIs -- all clickable (Phase 25.1) */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <StatCard label="Total Products Sold"  value={pk.totalProductsSold ?? 0} accent="brand" />
-            <StatCard label="Total Quantity Sold"  value={fmtAvg(pk.totalQuantitySold ?? 0)} accent="blue" sub="L / KG (canonical)" />
-            <StatCard label="Total Sales Value"    value={fmtCurrency(pk.totalSalesValue ?? 0)} accent="green" />
-            <StatCard label="Total NBV Value"      value={fmtCurrency(pk.totalNbvValue ?? 0)} accent="green" />
-            <StatCard label="Total Farmers Added"  value={fk.totalFarmersAdded ?? 0} accent="amber" />
-            <StatCard label="Revenue / Call"       value={fmtCurrency(cm.revenuePerCall ?? 0)} accent="blue" />
-            <StatCard label="NBV / Call"           value={fmtCurrency(cm.nbvPerCall ?? 0)} accent="blue" />
-            <StatCard label="Farmers / Employee"   value={fmtAvg(cm.farmersPerEmployee ?? 0)} accent="amber" />
+            <ClickableCard onClick={() => onDrill('pfTotalProducts', 'Total Products Sold')}>
+              <StatCard label="Total Products Sold"  value={pk.totalProductsSold ?? 0} accent="brand" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('pfTotalQuantity', 'Total Quantity Sold')}>
+              <StatCard label="Total Quantity Sold"  value={fmtAvg(pk.totalQuantitySold ?? 0)} accent="blue" sub="L / KG (canonical)" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('pfTotalSales', 'Total Sales Value')}>
+              <StatCard label="Total Sales Value"    value={fmtCurrency(pk.totalSalesValue ?? 0)} accent="green" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('pfTotalNbv', 'Total NBV Value')}>
+              <StatCard label="Total NBV Value"      value={fmtCurrency(pk.totalNbvValue ?? 0)} accent="green" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('pfTotalFarmers', 'Total Farmers Added')}>
+              <StatCard label="Total Farmers Added"  value={fk.totalFarmersAdded ?? 0} accent="amber" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('pfRevenuePerCall', 'Revenue / Call')}>
+              <StatCard label="Revenue / Call"       value={fmtCurrency(cm.revenuePerCall ?? 0)} accent="blue" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('pfNbvPerCall', 'NBV / Call')}>
+              <StatCard label="NBV / Call"           value={fmtCurrency(cm.nbvPerCall ?? 0)} accent="blue" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('pfFarmersPerEmployee', 'Farmers / Employee')}>
+              <StatCard label="Farmers / Employee"   value={fmtAvg(cm.farmersPerEmployee ?? 0)} accent="amber" />
+            </ClickableCard>
           </div>
 
-          {/* Product & Farmer leaderboards (always rendered, empty list
-              inside each card when no data so HR sees the layout). */}
+          {/* Product & Farmer leaderboards -- clickable, drill into full ranking */}
           <div>
             <div className="text-sm font-semibold text-slate-800 mb-2">Top Employees — Product &amp; Farmer</div>
             <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-4">
-              <Leaderboard title="By Sales Value (₹)"   rows={pLb.topSales || []}    metric="salesValue"   suffix="" />
-              <Leaderboard title="By NBV Value (₹)"     rows={pLb.topNbv || []}      metric="nbvValue"     suffix="" />
-              <Leaderboard title="By Quantity Sold"     rows={pLb.topQuantity || []} metric="quantitySold" suffix="" />
-              <Leaderboard title="By Products Sold"     rows={pLb.topProducts || []} metric="productsSold" suffix="" />
-              <Leaderboard title="By Farmers Added"     rows={pLb.topFarmers || []}  metric="farmersAdded" suffix="" />
+              <LeaderboardCard onDrill={onDrill} drillId="pfTopSales"    title="By Sales Value (₹)" rows={pLb.topSales || []}    metric="salesValue"   suffix="" extraKind="pfEmployeeLeaderboard" />
+              <LeaderboardCard onDrill={onDrill} drillId="pfTopNbv"      title="By NBV Value (₹)"   rows={pLb.topNbv || []}      metric="nbvValue"     suffix="" extraKind="pfEmployeeLeaderboard" />
+              <LeaderboardCard onDrill={onDrill} drillId="pfTopQuantity" title="By Quantity Sold"   rows={pLb.topQuantity || []} metric="quantitySold" suffix="" extraKind="pfEmployeeLeaderboard" />
+              <LeaderboardCard onDrill={onDrill} drillId="pfTopProducts" title="By Products Sold"   rows={pLb.topProducts || []} metric="productsSold" suffix="" extraKind="pfEmployeeLeaderboard" />
+              <LeaderboardCard onDrill={onDrill} drillId="pfTopFarmers"  title="By Farmers Added"   rows={pLb.topFarmers || []}  metric="farmersAdded" suffix="" extraKind="pfEmployeeLeaderboard" />
             </div>
           </div>
 
-          {/* Product breakdown table */}
+          {/* Product breakdown table -- each row clickable for product profile */}
           <div className="card overflow-x-auto">
             <div className="px-5 py-3 border-b border-slate-100 text-sm font-semibold text-slate-800">
               Per-Product Breakdown ({productsTable.length})
@@ -917,8 +932,13 @@ function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () 
                 </thead>
                 <tbody>
                   {productsTable.map((p) => (
-                    <tr key={p.name}>
-                      <td className="font-medium text-slate-800">{p.name}</td>
+                    <tr
+                      key={p.name}
+                      className="cursor-pointer hover:bg-brand-50 dark:hover:bg-brand-500/10"
+                      title={`Click to see who sold ${p.name}`}
+                      onClick={() => onDrill('pfProduct', p.name, { productName: p.name })}
+                    >
+                      <td className="font-medium text-brand-700">{p.name}</td>
                       <td className="text-right">{p.rows}</td>
                       <td className="text-right">{p.qty}</td>
                       <td className="text-right font-semibold text-green-700">{p.sales}</td>
@@ -942,10 +962,18 @@ function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () 
               {dealers.length === 0 && <span className="text-[11px] text-slate-500">— no dealer-linked farmer records in range</span>}
             </div>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <StatCard label="Total Active Dealers"  value={dk.totalActiveDealers ?? 0} accent="brand" />
-              <StatCard label="Dealers Covered"       value={dk.dealersCovered ?? 0}     accent="blue" sub="have at least 1 farmer in range" />
-              <StatCard label="Dealers With Sales"    value={dk.dealersWithSales ?? 0}   accent="green" />
-              <StatCard label="Avg Sales / Dealer"    value={fmtCurrency(dk.avgSalesPerDealer ?? 0)} accent="amber" />
+              <ClickableCard onClick={() => onDrill('dealerActive', 'Total Active Dealers')}>
+                <StatCard label="Total Active Dealers"  value={dk.totalActiveDealers ?? 0} accent="brand" />
+              </ClickableCard>
+              <ClickableCard onClick={() => onDrill('dealerCovered', 'Dealers Covered')}>
+                <StatCard label="Dealers Covered"       value={dk.dealersCovered ?? 0}     accent="blue" sub="have at least 1 farmer in range" />
+              </ClickableCard>
+              <ClickableCard onClick={() => onDrill('dealerWithSales', 'Dealers With Sales')}>
+                <StatCard label="Dealers With Sales"    value={dk.dealersWithSales ?? 0}   accent="green" />
+              </ClickableCard>
+              <ClickableCard onClick={() => onDrill('dealerAvgSales', 'Avg Sales / Dealer')}>
+                <StatCard label="Avg Sales / Dealer"    value={fmtCurrency(dk.avgSalesPerDealer ?? 0)} accent="amber" />
+              </ClickableCard>
             </div>
 
             <div>
@@ -953,10 +981,18 @@ function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () 
               <div className="grid md:grid-cols-2 xl:grid-cols-4 gap-4">
                 {/* Leaderboard label = "Firm — Place" because the same   */}
                 {/* firm can exist in multiple places (per Phase 3 spec). */}
-                <Leaderboard title="By Sales (₹)"   rows={(dLb.topSales    || []).map((d) => ({ name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', sales: d.sales }))}    metric="sales"   suffix="" />
-                <Leaderboard title="By Quantity"    rows={(dLb.topQuantity || []).map((d) => ({ name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', qty: d.qty }))}        metric="qty"     suffix="" />
-                <Leaderboard title="By NBV (₹)"     rows={(dLb.topNbv      || []).map((d) => ({ name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', nbv: d.nbv }))}        metric="nbv"     suffix="" />
-                <Leaderboard title="By Farmers"     rows={(dLb.topFarmers  || []).map((d) => ({ name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', farmers: d.farmers }))} metric="farmers" suffix="" />
+                <LeaderboardCard onDrill={onDrill} drillId="dealerTopSales"    title="By Sales (₹)"
+                  rows={(dLb.topSales    || []).map((d) => ({ _id: d._id, name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', sales: d.sales }))}
+                  metric="sales"   suffix="" extraKind="dealerLeaderboard" />
+                <LeaderboardCard onDrill={onDrill} drillId="dealerTopQuantity" title="By Quantity"
+                  rows={(dLb.topQuantity || []).map((d) => ({ _id: d._id, name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', qty: d.qty }))}
+                  metric="qty"     suffix="" extraKind="dealerLeaderboard" />
+                <LeaderboardCard onDrill={onDrill} drillId="dealerTopNbv"      title="By NBV (₹)"
+                  rows={(dLb.topNbv      || []).map((d) => ({ _id: d._id, name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', nbv: d.nbv }))}
+                  metric="nbv"     suffix="" extraKind="dealerLeaderboard" />
+                <LeaderboardCard onDrill={onDrill} drillId="dealerTopFarmers"  title="By Farmers"
+                  rows={(dLb.topFarmers  || []).map((d) => ({ _id: d._id, name: `${d.firmName || d.name || '—'}${d.place ? ` — ${d.place}` : ''}`, employeeId: d.dealerName || '', farmers: d.farmers }))}
+                  metric="farmers" suffix="" extraKind="dealerLeaderboard" />
               </div>
             </div>
 
@@ -982,8 +1018,13 @@ function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () 
                   </thead>
                   <tbody>
                     {dealers.map((d) => (
-                      <tr key={d._id}>
-                        <td className="font-medium text-slate-800">{d.firmName || d.name || '—'}</td>
+                      <tr
+                        key={d._id}
+                        className="cursor-pointer hover:bg-brand-50 dark:hover:bg-brand-500/10"
+                        title="Open dealer profile"
+                        onClick={() => onDrill('dealerProfile', d.firmName || d.name || 'Dealer profile', { dealerId: String(d._id) })}
+                      >
+                        <td className="font-medium text-brand-700">{d.firmName || d.name || '—'}</td>
                         <td>{d.place || <span className="text-slate-400">—</span>}</td>
                         <td>{d.dealerName || <span className="text-slate-400">—</span>}</td>
                         <td className="text-right">{d.farmers}</td>
@@ -1109,9 +1150,12 @@ function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () 
  * from data.employees, applying the same filter the leaderboard used
  * (e.g. dialedCalls >= 1 for Best Connection Rate).
  * ===================================================================== */
-function LeaderboardCard({ onDrill, drillId, title, rows = [], metric, suffix = '', accent }) {
+function LeaderboardCard({ onDrill, drillId, title, rows = [], metric, suffix = '', accent, extraKind = 'callLeaderboard' }) {
+  // Phase 25.1: `extraKind` lets the same wrapper drive three kinds of
+  // leaderboards (calling, product-farmer employee, dealer) -- each
+  // routes to a different branch of CallingBreakdown.
   return (
-    <ClickableCard onClick={() => onDrill('callLeaderboard', title, { leaderboardId: drillId, metric, suffix, accent, title })}>
+    <ClickableCard onClick={() => onDrill(extraKind, title, { leaderboardId: drillId, metric, suffix, accent, title })}>
       <Leaderboard title={title} rows={rows} metric={metric} suffix={suffix} accent={accent} showHint />
     </ClickableCard>
   );
@@ -1326,6 +1370,475 @@ function CallingBreakdown({ metricId, extra = {}, data, onClose }) {
                   </tr>
                 ))}
               </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ===================================================================
+  // Phase 25.1 -- Product & Farmer drill-downs
+  // ===================================================================
+  const productsTable = data.productsTable || [];
+  const employeesPF = data.employeesPF || [];
+  const productEmployeeRows = data.productEmployeeRows || [];
+  const farmerRows = data.farmerRows || [];
+  const productKpis = data.productKpis || {};
+  const combinedMetrics = data.combinedMetrics || {};
+
+  // Total Products Sold -- show product table with employee contributions.
+  if (metricId === 'pfTotalProducts') {
+    const byProduct = new Map();
+    for (const r of productEmployeeRows) {
+      if (!byProduct.has(r.productName)) byProduct.set(r.productName, []);
+      byProduct.get(r.productName).push(r);
+    }
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">{productsTable.length} product(s) sold in this range, with employee contributions.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {productsTable.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No product sales in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Product</th><th>Employee</th><th className="text-right">Qty</th><th className="text-right">Sales (₹)</th><th className="text-right">NBV (₹)</th></tr></thead>
+              <tbody>
+                {productsTable.flatMap((p) => {
+                  const contribs = (byProduct.get(p.name) || []).sort((a, b) => (b.sales || 0) - (a.sales || 0));
+                  if (contribs.length === 0) {
+                    return [(
+                      <tr key={`${p.name}-totals`}>
+                        <td className="font-medium text-slate-800">{p.name}</td>
+                        <td className="text-slate-400 italic">(no per-employee breakdown)</td>
+                        <td className="text-right">{p.qty}</td>
+                        <td className="text-right text-green-700">{p.sales}</td>
+                        <td className="text-right">{p.nbv}</td>
+                      </tr>
+                    )];
+                  }
+                  return contribs.map((c, i) => (
+                    <tr key={`${p.name}-${c.employeeId}-${i}`}>
+                      <td className="font-medium text-slate-800">{i === 0 ? p.name : ''}</td>
+                      <td>{c.employeeName}<div className="text-[11px] text-slate-500">{c.department}</div></td>
+                      <td className="text-right">{c.qty}</td>
+                      <td className="text-right text-green-700">{c.sales}</td>
+                      <td className="text-right">{c.nbv}</td>
+                    </tr>
+                  ));
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Total Quantity Sold -- per (product, employee) rows.
+  if (metricId === 'pfTotalQuantity' || metricId === 'pfTotalSales' || metricId === 'pfTotalNbv') {
+    const sortKey = metricId === 'pfTotalQuantity' ? 'qty' : metricId === 'pfTotalSales' ? 'sales' : 'nbv';
+    const rows = [...productEmployeeRows].sort((a, b) => (b[sortKey] || 0) - (a[sortKey] || 0));
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">One row per (employee, product) aggregation within the selected range.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No product sales in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Employee</th><th>Department</th><th>Product</th><th className="text-right">Quantity</th><th className="text-right">Sales (₹)</th><th className="text-right">NBV (₹)</th></tr></thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={`${r.employeeId}-${r.productName}-${i}`}>
+                    <td className="font-medium text-slate-800">{r.employeeName}<div className="text-[11px] text-slate-500">{r.employeeCode}</div></td>
+                    <td>{r.department}</td>
+                    <td>{r.productName}</td>
+                    <td className="text-right">{r.qty}</td>
+                    <td className="text-right text-green-700">{r.sales}</td>
+                    <td className="text-right">{r.nbv}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Total Farmers Added -- one row per farmer record.
+  if (metricId === 'pfTotalFarmers') {
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">{farmerRows.length} farmer record(s) added in this range.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {farmerRows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No farmer records in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Farmer</th><th>Employee</th><th>Dealer</th><th>Place</th><th>Products</th><th>Date</th></tr></thead>
+              <tbody>
+                {farmerRows.map((f, i) => (
+                  <tr key={`${f.farmerName}-${i}`}>
+                    <td className="font-medium text-slate-800">{f.farmerName || '—'}{f.mobile ? <div className="text-[11px] text-slate-500">{f.mobile}</div> : null}</td>
+                    <td>{f.employeeName}<div className="text-[11px] text-slate-500">{f.department}</div></td>
+                    <td>{f.dealerFirm || '—'}{f.dealerName ? <div className="text-[11px] text-slate-500">{f.dealerName}</div> : null}</td>
+                    <td>{f.dealerPlace || '—'}</td>
+                    <td className="text-[11px]">{f.products.length === 0 ? <span className="text-slate-400">—</span> : f.products.map((p, j) => <div key={j}>{p.productName} · {p.quantity}</div>)}</td>
+                    <td>{f.date}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Revenue / Call -- per-employee ranking.
+  if (metricId === 'pfRevenuePerCall' || metricId === 'pfNbvPerCall') {
+    const valueKey = metricId === 'pfRevenuePerCall' ? 'salesValue' : 'nbvValue';
+    const valueLabel = metricId === 'pfRevenuePerCall' ? 'Revenue (₹)' : 'NBV (₹)';
+    const perCallLabel = metricId === 'pfRevenuePerCall' ? 'Revenue / Call' : 'NBV / Call';
+    const callsByEmp = new Map(employees.map((e) => [String(e._id), e.totalCallsCompleted || 0]));
+    const rows = employeesPF.map((e) => {
+      const calls = callsByEmp.get(String(e._id)) || 0;
+      return { ...e, calls, perCall: calls > 0 ? Math.round(((e[valueKey] || 0) / calls) * 100) / 100 : 0 };
+    }).sort((a, b) => (b.perCall || 0) - (a.perCall || 0));
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">Per-employee ranking joined across calling and Product &amp; Farmer datasets.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No matching rows in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Rank</th><th>Employee</th><th>Department</th><th className="text-right">{valueLabel}</th><th className="text-right">Calls</th><th className="text-right">{perCallLabel}</th></tr></thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={r._id}>
+                    <td>{i + 1}</td>
+                    <td className="font-medium text-slate-800">{r.name}<div className="text-[11px] text-slate-500">{r.employeeId}</div></td>
+                    <td>{r.department}</td>
+                    <td className="text-right text-green-700">{r[valueKey] || 0}</td>
+                    <td className="text-right">{r.calls}</td>
+                    <td className="text-right font-semibold">{r.perCall}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Farmers / Employee -- per-employee ranking with products + revenue.
+  if (metricId === 'pfFarmersPerEmployee') {
+    const rows = [...employeesPF].sort((a, b) => (b.farmersAdded || 0) - (a.farmersAdded || 0));
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">Per-employee farmer reach within the selected range.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No farmer records in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Rank</th><th>Employee</th><th>Department</th><th className="text-right">Farmers</th><th className="text-right">Products</th><th className="text-right">Revenue (₹)</th><th className="text-right">NBV (₹)</th></tr></thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={r._id}>
+                    <td>{i + 1}</td>
+                    <td className="font-medium text-slate-800">{r.name}<div className="text-[11px] text-slate-500">{r.employeeId}</div></td>
+                    <td>{r.department}</td>
+                    <td className="text-right">{r.farmersAdded || 0}</td>
+                    <td className="text-right">{r.productsSold || 0}</td>
+                    <td className="text-right text-green-700">{r.salesValue || 0}</td>
+                    <td className="text-right">{r.nbvValue || 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Top Employees -- Product & Farmer leaderboard expansion.
+  if (metricId === 'pfEmployeeLeaderboard') {
+    const { metric, suffix = '', title } = extra;
+    const rows = [...employeesPF].sort((a, b) => (b[metric] || 0) - (a[metric] || 0));
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">Full ranking for "{title}" — all employees with Product &amp; Farmer activity in scope.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No matching rows in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Rank</th><th>Employee</th><th>Department</th><th className="text-right">Quantity</th><th className="text-right">Sales (₹)</th><th className="text-right">NBV (₹)</th><th className="text-right">Farmers</th><th className="text-right">Products</th></tr></thead>
+              <tbody>
+                {rows.map((r, i) => (
+                  <tr key={r._id}>
+                    <td>{i + 1}</td>
+                    <td className="font-medium text-slate-800">{r.name}<div className="text-[11px] text-slate-500">{r.employeeId}</div></td>
+                    <td>{r.department}</td>
+                    <td className="text-right">{r.quantitySold || 0}</td>
+                    <td className="text-right text-green-700">{r.salesValue || 0}</td>
+                    <td className="text-right">{r.nbvValue || 0}</td>
+                    <td className="text-right">{r.farmersAdded || 0}</td>
+                    <td className="text-right">{r.productsSold || 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Per-product profile click.
+  if (metricId === 'pfProduct') {
+    const { productName } = extra;
+    const product = productsTable.find((p) => p.name === productName) || { qty: 0, sales: 0, nbv: 0 };
+    const empContribs = productEmployeeRows.filter((r) => r.productName === productName).sort((a, b) => (b.sales || 0) - (a.sales || 0));
+    const farmerHits = farmerRows.filter((f) => (f.products || []).some((p) => (p.productName || '').trim() === productName.trim()));
+    const dealersSet = new Map();
+    for (const f of farmerHits) {
+      const k = `${f.dealerFirm}|${f.dealerPlace}`;
+      if (!dealersSet.has(k)) dealersSet.set(k, { firmName: f.dealerFirm, place: f.dealerPlace, farmers: 0 });
+      dealersSet.get(k).farmers += 1;
+    }
+    const dealersList = [...dealersSet.values()].filter((d) => d.firmName).sort((a, b) => b.farmers - a.farmers);
+    return (
+      <div className="space-y-3">
+        <div className="rounded border border-slate-200 px-3 py-2 text-sm">
+          <div className="font-semibold text-slate-800">{productName}</div>
+          <div className="text-[12px] text-slate-600">Qty <b>{product.qty}</b> · Sales <b className="text-green-700">{product.sales}</b> · NBV <b>{product.nbv}</b></div>
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Employees who sold this product ({empContribs.length})</div>
+          {empContribs.length === 0 ? <div className="text-xs text-slate-400 italic">—</div> : (
+            <table className="table">
+              <thead><tr><th>Employee</th><th>Department</th><th className="text-right">Qty</th><th className="text-right">Sales (₹)</th><th className="text-right">NBV (₹)</th></tr></thead>
+              <tbody>
+                {empContribs.map((c, i) => (
+                  <tr key={`${c.employeeId}-${i}`}>
+                    <td className="font-medium text-slate-800">{c.employeeName}<div className="text-[11px] text-slate-500">{c.employeeCode}</div></td>
+                    <td>{c.department}</td>
+                    <td className="text-right">{c.qty}</td>
+                    <td className="text-right text-green-700">{c.sales}</td>
+                    <td className="text-right">{c.nbv}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Dealers ({dealersList.length})</div>
+          {dealersList.length === 0 ? <div className="text-xs text-slate-400 italic">—</div> : (
+            <table className="table">
+              <thead><tr><th>Dealer</th><th>Place</th><th className="text-right">Farmer hits</th></tr></thead>
+              <tbody>{dealersList.map((d, i) => <tr key={i}><td>{d.firmName}</td><td>{d.place || '—'}</td><td className="text-right">{d.farmers}</td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Farmers ({farmerHits.length})</div>
+          {farmerHits.length === 0 ? <div className="text-xs text-slate-400 italic">—</div> : (
+            <table className="table max-h-60 overflow-y-auto block">
+              <thead><tr><th>Farmer</th><th>Employee</th><th>Dealer</th><th>Date</th></tr></thead>
+              <tbody>
+                {farmerHits.map((f, i) => (
+                  <tr key={i}>
+                    <td>{f.farmerName || '—'}{f.mobile ? <div className="text-[11px] text-slate-500">{f.mobile}</div> : null}</td>
+                    <td>{f.employeeName}</td>
+                    <td>{f.dealerFirm}{f.dealerPlace ? ` — ${f.dealerPlace}` : ''}</td>
+                    <td>{f.date}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // ===================================================================
+  // Phase 25.1 -- Dealer drill-downs
+  // ===================================================================
+  const dealersTable = data.dealersTable || [];
+  const allActiveDealers = data.allActiveDealers || [];
+  const dealerDayRows = data.dealerDayRows || [];
+
+  // Total Active Dealers -- full active dealer roster.
+  if (metricId === 'dealerActive') {
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">Full active Dealer Master list ({allActiveDealers.length}).  Independent of activity in the selected range.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {allActiveDealers.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No active dealers configured.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Firm Name</th><th>Place</th><th>Dealer Name</th></tr></thead>
+              <tbody>{allActiveDealers.map((d) => <tr key={d._id}><td className="font-medium text-slate-800">{d.firmName || '—'}</td><td>{d.place || '—'}</td><td>{d.dealerName || '—'}</td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Dealers Covered -- dealers with ≥1 farmer in range.
+  if (metricId === 'dealerCovered') {
+    const rows = [...dealersTable].filter((d) => (d.farmers || 0) >= 1).sort((a, b) => (b.farmers || 0) - (a.farmers || 0));
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">Dealers with at least one farmer record in this range.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No dealers were covered in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Dealer</th><th>Place</th><th className="text-right">Farmers</th><th className="text-right">Products</th></tr></thead>
+              <tbody>{rows.map((d) => <tr key={d._id}><td className="font-medium text-slate-800">{d.firmName || d.name || '—'}{d.dealerName ? <div className="text-[11px] text-slate-500">{d.dealerName}</div> : null}</td><td>{d.place || '—'}</td><td className="text-right">{d.farmers}</td><td className="text-right">{d.products}</td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Dealers With Sales -- dealers whose farmer records mapped to sales.
+  if (metricId === 'dealerWithSales') {
+    const rows = [...dealersTable].filter((d) => (d.sales || 0) > 0).sort((a, b) => (b.sales || 0) - (a.sales || 0));
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">Dealers whose farmer records translated to product sales in this range.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No dealers had sales in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Dealer</th><th>Place</th><th className="text-right">Quantity</th><th className="text-right">Sales (₹)</th><th className="text-right">NBV (₹)</th></tr></thead>
+              <tbody>{rows.map((d) => <tr key={d._id}><td className="font-medium text-slate-800">{d.firmName || d.name || '—'}</td><td>{d.place || '—'}</td><td className="text-right">{d.qty}</td><td className="text-right text-green-700">{d.sales}</td><td className="text-right">{d.nbv}</td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Avg Sales / Dealer -- per-dealer totals with row count and average.
+  if (metricId === 'dealerAvgSales') {
+    const rows = [...dealersTable].sort((a, b) => (b.sales || 0) - (a.sales || 0));
+    const totalSales = rows.reduce((s, d) => s + (d.sales || 0), 0);
+    const avg = rows.length > 0 ? Math.round((totalSales / rows.length) * 100) / 100 : 0;
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">Per-dealer sales totals — average across the covered set is <b>{avg}</b>.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No dealers in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Dealer</th><th>Place</th><th className="text-right">Total Sales (₹)</th><th className="text-right">Sales Rows</th><th className="text-right">Avg / Sale</th></tr></thead>
+              <tbody>{rows.map((d) => {
+                const perRow = (d.products || 0) > 0 ? Math.round(((d.sales || 0) / d.products) * 100) / 100 : 0;
+                return <tr key={d._id}><td className="font-medium text-slate-800">{d.firmName || d.name || '—'}</td><td>{d.place || '—'}</td><td className="text-right text-green-700">{d.sales}</td><td className="text-right">{d.products}</td><td className="text-right">{perRow}</td></tr>;
+              })}</tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Dealer leaderboard expansion -- full ranking on selected metric.
+  if (metricId === 'dealerLeaderboard') {
+    const { metric, title } = extra;
+    const rows = [...dealersTable].sort((a, b) => (b[metric] || 0) - (a[metric] || 0));
+    return (
+      <div className="space-y-2">
+        <div className="text-xs text-slate-500">Full dealer ranking for "{title}".  Same scope as the on-screen view.</div>
+        <div className="overflow-x-auto max-h-[60vh]">
+          {rows.length === 0 ? (
+            <div className="text-sm text-slate-400 italic py-4 text-center">No dealers in this range.</div>
+          ) : (
+            <table className="table">
+              <thead><tr><th>Rank</th><th>Dealer Name</th><th>Place</th><th className="text-right">Quantity</th><th className="text-right">Sales (₹)</th><th className="text-right">NBV (₹)</th><th className="text-right">Farmers</th></tr></thead>
+              <tbody>{rows.map((d, i) => <tr key={d._id}><td>{i + 1}</td><td className="font-medium text-slate-800">{d.firmName || d.name || '—'}{d.dealerName ? <div className="text-[11px] text-slate-500">{d.dealerName}</div> : null}</td><td>{d.place || '—'}</td><td className="text-right">{d.qty}</td><td className="text-right text-green-700">{d.sales}</td><td className="text-right">{d.nbv}</td><td className="text-right">{d.farmers}</td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Per-dealer profile -- full picture of one dealer.
+  if (metricId === 'dealerProfile') {
+    const { dealerId } = extra;
+    const dealer = dealersTable.find((d) => String(d._id) === String(dealerId));
+    if (!dealer) {
+      return <div className="text-sm text-slate-400 italic">Dealer not found in the current range.</div>;
+    }
+    // Employees who visited this dealer: derived from farmerRows that
+    // match the dealer's firm + place snapshot.
+    const empVisitors = new Map();
+    const dealerFarmers = farmerRows.filter((f) =>
+      (f.dealerFirm || '') === (dealer.firmName || '') && (f.dealerPlace || '') === (dealer.place || '')
+    );
+    for (const f of dealerFarmers) {
+      if (!empVisitors.has(f.employeeId)) empVisitors.set(f.employeeId, { name: f.employeeName, code: f.employeeCode, dept: f.department, count: 0 });
+      empVisitors.get(f.employeeId).count += 1;
+    }
+    const empVisitorList = [...empVisitors.values()].sort((a, b) => b.count - a.count);
+    const productsList = new Map();
+    for (const f of dealerFarmers) {
+      for (const p of (f.products || [])) {
+        const k = p.productName || '—';
+        if (!productsList.has(k)) productsList.set(k, { name: k, qty: 0 });
+        productsList.get(k).qty += Number(p.quantity) || 0;
+      }
+    }
+    const productsArr = [...productsList.values()].sort((a, b) => b.qty - a.qty);
+    const dayActivity = dealerDayRows.filter((r) => String(r.dealerId) === String(dealerId));
+
+    return (
+      <div className="space-y-3">
+        <div className="rounded border border-slate-200 px-3 py-2 text-sm">
+          <div className="font-semibold text-slate-800">{dealer.firmName || dealer.name || '—'}</div>
+          <div className="text-[12px] text-slate-600">Place: <b>{dealer.place || '—'}</b> · Dealer: <b>{dealer.dealerName || '—'}</b></div>
+          <div className="text-[12px] text-slate-600 mt-1">Farmers <b>{dealer.farmers}</b> · Products <b>{dealer.products}</b> · Qty <b>{dealer.qty}</b> · Sales <b className="text-green-700">{dealer.sales}</b> · NBV <b>{dealer.nbv}</b></div>
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Employees who visited ({empVisitorList.length})</div>
+          {empVisitorList.length === 0 ? <div className="text-xs text-slate-400 italic">—</div> : (
+            <table className="table"><thead><tr><th>Employee</th><th>Department</th><th className="text-right">Farmer records</th></tr></thead>
+              <tbody>{empVisitorList.map((e, i) => <tr key={i}><td className="font-medium text-slate-800">{e.name}<div className="text-[11px] text-slate-500">{e.code}</div></td><td>{e.dept}</td><td className="text-right">{e.count}</td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Products sold ({productsArr.length})</div>
+          {productsArr.length === 0 ? <div className="text-xs text-slate-400 italic">—</div> : (
+            <table className="table"><thead><tr><th>Product</th><th className="text-right">Quantity</th></tr></thead>
+              <tbody>{productsArr.map((p, i) => <tr key={i}><td>{p.name}</td><td className="text-right">{p.qty}</td></tr>)}</tbody>
+            </table>
+          )}
+        </div>
+        <div>
+          <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-1">Date-wise activity ({dayActivity.length})</div>
+          {dayActivity.length === 0 ? <div className="text-xs text-slate-400 italic">—</div> : (
+            <table className="table"><thead><tr><th>Date</th><th className="text-right">Farmers</th><th className="text-right">Sales (₹)</th><th className="text-right">NBV (₹)</th></tr></thead>
+              <tbody>{dayActivity.map((r) => <tr key={r.date}><td>{r.date}</td><td className="text-right">{r.farmers}</td><td className="text-right text-green-700">{r.sales}</td><td className="text-right">{r.nbv}</td></tr>)}</tbody>
             </table>
           )}
         </div>

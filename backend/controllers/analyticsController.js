@@ -974,7 +974,9 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   // Dealer Master snapshot for the "active dealers" KPI.  Independent of
   // pfSubs so an empty range still reports the catalogue size.
   const Dealer = require('../models/Dealer');
-  const allDealers = await Dealer.find({ active: true }).select('_id name place').lean();
+  // Phase 25.1: select firmName + dealerName too so the drill-down list
+  // can render the same labels as the per-dealer breakdown table.
+  const allDealers = await Dealer.find({ active: true }).select('_id name place firmName dealerName').lean();
   const totalActiveDealers = allDealers.length;
 
   // Defensive log so deploys can verify data flow at a glance.
@@ -1081,6 +1083,89 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   totalSalesValue = round2(totalSalesValue);
   totalNbvValue   = round2(totalNbvValue);
   totalQuantitySold = round2(totalQuantitySold);
+
+  /* ================================================================
+   * Phase 25.1 -- per-(employee, product) + per-farmer projections
+   *
+   * Read-only walk of the SAME `pfSubs` already aggregated above so the
+   * drill-down modals on Product & Farmer / Dealer KPIs can list the
+   * underlying rows.  No new query, no new aggregation rule -- the
+   * sums, counts and rates used by the headline KPIs stay exactly as
+   * they were.  The employee scope (HOD clamp + filters) is inherited
+   * because `pfSubs` was already filtered by `empWhere → empIds`.
+   * ================================================================ */
+  const productEmployeeAgg = new Map(); // `${empId}|${productName}` -> { qty, sales, nbv, rows }
+  const farmerRows = [];                // one row per farmerRecord
+  for (const sub of pfSubs) {
+    const e = empMap.get(String(sub.employee));
+    const eName = e?.name || '';
+    const eCode = e?.employeeId || '';
+    const eDept = e?.department?.name || 'Unassigned';
+    const dateK = formatYMD(sub.date);
+    // (employee, product) rollup
+    for (const row of (sub.productSales || [])) {
+      const pname = (row.productName || '—').trim() || '—';
+      const k = `${String(sub.employee)}|${pname}`;
+      if (!productEmployeeAgg.has(k)) productEmployeeAgg.set(k, {
+        employeeId:   String(sub.employee),
+        employeeName: eName,
+        employeeCode: eCode,
+        department:   eDept,
+        productName:  pname,
+        qty: 0, sales: 0, nbv: 0, rows: 0,
+      });
+      const pe = productEmployeeAgg.get(k);
+      pe.qty   += Number(row.quantityValue) || 0;
+      pe.sales += Number(row.salesValue)    || 0;
+      pe.nbv   += Number(row.nbvValue)      || 0;
+      pe.rows  += 1;
+    }
+    // farmer projections -- one row per farmerRecord with the
+    // attached dealer snapshot + product list flattened.
+    for (const f of (sub.farmerRecords || [])) {
+      farmerRows.push({
+        farmerName:  f.name || '',
+        mobile:      f.mobile || '',
+        village:     f.village || '',
+        employeeId:  String(sub.employee),
+        employeeName: eName,
+        employeeCode: eCode,
+        department:  eDept,
+        dealerFirm:  f.dealerFirmSnapshot   || f.dealerNameSnapshot || '',
+        dealerPlace: f.dealerPlaceSnapshot  || '',
+        dealerName:  f.dealerPersonSnapshot || '',
+        products:    Array.isArray(f.products) ? f.products.map((p) => ({
+          productName: p.productName || '',
+          quantity:    Number(p.quantity) || 0,
+        })) : [],
+        date:        dateK,
+      });
+    }
+  }
+  const productEmployeeRows = [...productEmployeeAgg.values()].map((r) => ({
+    ...r,
+    qty:   round2(r.qty),
+    sales: round2(r.sales),
+    nbv:   round2(r.nbv),
+  }));
+
+  // Per-(dealer, date) records -- expose what `dealerDay` already
+  // tracked (sales / nbv / farmers) joined with dealer display labels
+  // from `dealerAgg` so the drill-down can render a date-wise activity
+  // table without a separate lookup.
+  const dealerDayRows = [...dealerDay.values()].map((d) => {
+    const da = dealerAgg.get(d.dealerId);
+    return {
+      dealerId:   d.dealerId,
+      firmName:   da?.firmName   || '',
+      place:      da?.place      || '',
+      dealerName: da?.dealerName || '',
+      date:       d.date,
+      sales:      round2(d.sales),
+      nbv:        round2(d.nbv),
+      farmers:    d.farmers,
+    };
+  }).sort((a, b) => a.date.localeCompare(b.date));
 
   const productKpis = {
     totalProductsSold,
@@ -1196,11 +1281,25 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     productEmployeeLeaderboards,
     combinedMetrics,
     employeesPF: employeePF.sort((a, b) => (b.salesValue || 0) - (a.salesValue || 0)),
+    // Phase 25.1: drill-down rows (read-only projections).
+    productEmployeeRows,
+    farmerRows,
     // ---- Dealer Analytics (Phase 2.6) ----
     dealerKpis,
     dealerLeaderboards,
     dealersTable,
     dealerTrend,
+    // Phase 25.1: full active dealer list + per-(dealer, date) rows
+    // for dealer drill-downs.  Active list comes straight from the
+    // same `allDealers` query used to compute totalActiveDealers --
+    // no new query.
+    allActiveDealers: allDealers.map((d) => ({
+      _id: String(d._id),
+      firmName:   d.firmName   || d.name || '',
+      place:      d.place      || '',
+      dealerName: d.dealerName || '',
+    })),
+    dealerDayRows,
   });
 });
 
