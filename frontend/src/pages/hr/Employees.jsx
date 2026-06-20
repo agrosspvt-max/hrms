@@ -818,14 +818,28 @@ function SalaryStructureEditor({ form, set }) {
   // Employer contributions (CTC items - never reduce net).  Employer PF is
   // % of Basic; Employer ESIC is % of Gross.
   const employerPf = s.pfEnabled ? Math.round(num(s.basicSalary) * num(s.employerPfPercentage ?? 13) / 100) : 0;
-  const employerEsic = s.esicEnabled ? Math.round(gross * num(s.employerEsicPercentage ?? 3.25) / 100) : 0;
+  // Phase 36 -- single source of truth.  The profile preview MUST mirror
+  // the backend payroll engine (utils/payroll.js) exactly, otherwise HR
+  // sees different ESIC numbers on the profile vs. the generated slip.
+  // Both checks below match payroll.js verbatim:
+  //   esicConfigured = esicEnabled OR esicAmount > 0 (any signal that
+  //                    ESIC was set up on the profile)
+  //   employerEsicRate = stored % when > 0, else default 3.25
+  //                      (Number(0) ?? 3.25 doesn't fall back; we test
+  //                      for > 0 so legacy structures don't silently
+  //                      zero the employer-side line)
+  const esicConfigured = !!s.esicEnabled || num(s.esicAmount) > 0;
+  const employerEsicRate = num(s.employerEsicPercentage) > 0 ? num(s.employerEsicPercentage) : 3.25;
+  const employerEsic = esicConfigured ? Math.round(gross * employerEsicRate / 100) : 0;
   const employerTotal = employerPf + employerEsic;
   const ctcMonthly = gross + employerTotal;
 
   // Employee deductions: all percentage-based deductions are on TOTAL CTC
   // (monthly).  PT is fixed; explicit amount overrides still win.
   const pf = s.pfEnabled ? (num(s.pfAmount) > 0 ? num(s.pfAmount) : Math.round(ctcMonthly * num(s.pfPercentage) / 100)) : 0;
-  const esic = s.esicEnabled ? (num(s.esicAmount) > 0 ? num(s.esicAmount) : Math.round(ctcMonthly * num(s.esicPercentage) / 100)) : 0;
+  // Phase 36 -- employee ESIC also gates on esicConfigured so legacy
+  // amount-only structures preview correctly.
+  const esic = esicConfigured ? (num(s.esicAmount) > 0 ? num(s.esicAmount) : Math.round(ctcMonthly * num(s.esicPercentage) / 100)) : 0;
   const pt = s.ptEnabled ? num(s.ptAmount) : 0;
   const tds = s.tdsEnabled ? (s.tdsType === 'fixed' ? num(s.tdsValue) : Math.round(ctcMonthly * num(s.tdsValue) / 100)) : 0;
   const employeeDeductions = pf + esic + pt + tds;
@@ -876,11 +890,21 @@ function SalaryStructureEditor({ form, set }) {
         {/* ESIC */}
         <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-2">
           {toggle('ESIC', 'esicEnabled')}
-          {s.esicEnabled && (
+          {/* Phase 36 -- inputs surface whenever ESIC is configured
+              (toggle on OR override amount set).  Otherwise legacy
+              structures with `esicAmount > 0` but `esicEnabled = false`
+              couldn't be edited from this form. */}
+          {(s.esicEnabled || num(s.esicAmount) > 0) && (
             <div className="grid grid-cols-2 gap-2">
               {field('Employee ESIC % of CTC', 'esicPercentage', '0.01')}
               {field('ESIC Amount (override)', 'esicAmount')}
               {field('Employer ESIC % of Gross', 'employerEsicPercentage', '0.01')}
+            </div>
+          )}
+          {/* Hint when employer % falls back to default. */}
+          {esicConfigured && num(s.employerEsicPercentage) === 0 && (
+            <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded px-2 py-1">
+              Employer ESIC % not set on profile — payroll will use the standard {`3.25%`} rate.
             </div>
           )}
         </div>
