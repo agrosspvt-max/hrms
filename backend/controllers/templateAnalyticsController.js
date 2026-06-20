@@ -681,6 +681,134 @@ const generate = asyncHandler(async (req, res) => {
     });
   }
 
+  /* ====================================================================
+   * Phase 30 — Drill-down detail rows
+   *
+   * Flat, read-only projections of the SAME `subs` cursor already walked
+   * above so every card / table cell on Template Analytics can open a
+   * drill-down modal showing the records behind the number.  No new
+   * query, no new aggregation, no change to any KPI / leaderboard /
+   * rate / formula -- the existing payload is left exactly as it was;
+   * we just append three flat arrays below.
+   *
+   *   submissionRows[]  — one row per submission in scope
+   *   taskRows[]        — one row per task across every submission
+   *                       (system + employee-added), keyed by task title
+   *                       and statusFieldKey so the Task Status table
+   *                       cells can filter by title + status
+   *   fieldRows[]       — one row per (submission, numeric field) so
+   *                       every auto-generated Field Analytics KPI card
+   *                       has a per-record drill behind it
+   *
+   * Auto-coverage for future templates: the projections are derived
+   * purely from `tpl.customFields` and `Submission.tasks[]` /
+   * `Submission.customResponses[]`.  Any new custom template inherits
+   * the drill-down behaviour without per-template code, satisfying the
+   * spec's "Auto-Generated Future Templates" requirement.
+   * ================================================================== */
+  const submissionRows = [];
+  const taskRows = [];
+  const fieldRows = [];
+  for (const s of subs) {
+    const e = empMap.get(String(s.employee));
+    if (!e) continue;
+    const empSnap = {
+      employeeId: String(e._id),
+      employeeName: e.name,
+      employeeCode: e.employeeId,
+      department: e.department?.name || 'Unassigned',
+      designation: e.designation?.title || 'Unassigned',
+    };
+    const dateKey = formatYMD(s.date);
+    const submissionRow = {
+      _id: String(s._id),
+      ...empSnap,
+      date: dateKey,
+      submittedAt: s.submittedAt,
+      reviewStatus: s.reviewStatus,
+      earnedPoints: Number(s.earnedPoints) || 0,
+      totalPoints:  Number(s.totalPoints)  || 0,
+      workEarnedPoints: Number(s.workEarnedPoints) || 0,
+      workTotalPoints:  Number(s.workTotalPoints)  || 0,
+      // Per-submission rollups so Overview drill-downs can sort by
+      // contribution.  Mirrors the same status math the aggregate uses
+      // (Done/Ongoing → done, Pending → pending, Work N/A → wna).
+      taskDone: 0, taskPending: 0, taskWNA: 0, taskOngoing: 0,
+      extraDone: 0, extraPending: 0, extraWNA: 0, extraCount: 0,
+    };
+    submissionRows.push(submissionRow);
+
+    // Walk system + employee-added tasks.
+    for (const t of (s.tasks || [])) {
+      const title = (t.title || '').trim() || '(untitled)';
+      const row = {
+        submissionId: String(s._id),
+        taskId: String(t._id || ''),
+        ...empSnap,
+        date: dateKey,
+        title,
+        status: t.status,
+        points: Number(t.points) || 0,
+        awardedMarks: Number(t.awardedMarks) || 0,
+        addedByEmployee: !!t.addedByEmployee,
+        pendingReason: t.pendingReason || '',
+      };
+      taskRows.push(row);
+      if (t.addedByEmployee) {
+        submissionRow.extraCount += 1;
+        if (t.status === 'done' || t.status === 'ongoing') submissionRow.extraDone += 1;
+        else if (t.status === 'pending') submissionRow.extraPending += 1;
+        else if (t.status === 'work_not_available') submissionRow.extraWNA += 1;
+      } else {
+        if (t.status === 'done')                    submissionRow.taskDone += 1;
+        else if (t.status === 'ongoing')            submissionRow.taskOngoing += 1;
+        else if (t.status === 'pending')            submissionRow.taskPending += 1;
+        else if (t.status === 'work_not_available') submissionRow.taskWNA += 1;
+      }
+    }
+
+    // Status-supporting customField responses (Phase 14) — same task
+    // semantics, just stored on customResponses[] instead of tasks[].
+    for (const r of (s.customResponses || [])) {
+      const def = statusFieldByKey.get(r.key);
+      if (def) {
+        const title = (def.label || def.key || '').trim() || '(untitled)';
+        taskRows.push({
+          submissionId: String(s._id),
+          taskId: '',
+          fieldKey: def.key,
+          ...empSnap,
+          date: dateKey,
+          title,
+          status: r.status || '',
+          remark: r.remark || '',
+          addedByEmployee: false,
+        });
+        if (r.status === 'done')                    submissionRow.taskDone += 1;
+        else if (r.status === 'ongoing')            submissionRow.taskOngoing += 1;
+        else if (r.status === 'pending')            submissionRow.taskPending += 1;
+        else if (r.status === 'work_not_available') submissionRow.taskWNA += 1;
+      }
+      // Numeric field projection — per-(submission, field) row.
+      // numericFields is already filtered above.
+      const numericDef = numericFields.find((f) => f.key === r.key);
+      if (numericDef) {
+        const v = Number(r.value);
+        if (Number.isFinite(v)) {
+          fieldRows.push({
+            submissionId: String(s._id),
+            ...empSnap,
+            date: dateKey,
+            fieldKey: numericDef.key,
+            fieldLabel: numericDef.label || numericDef.key,
+            fieldType: numericDef.fieldType,
+            value: v,
+          });
+        }
+      }
+    }
+  }
+
   res.json({
     template: {
       _id: tpl._id, title: tpl.title,
@@ -697,6 +825,8 @@ const generate = asyncHandler(async (req, res) => {
     employeePerformance,
     extraWork,
     subTemplates,
+    // Phase 30: drill-down detail rows.
+    detail: { submissionRows, taskRows, fieldRows },
   });
 });
 
