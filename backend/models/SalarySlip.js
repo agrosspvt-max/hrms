@@ -52,6 +52,16 @@ const salarySlipSchema = new mongoose.Schema(
     // Total paid day-units used for gross pay (present + paid leaves +
     // half_paid + 0.5*half_unpaid).
     payableDays: { type: Number, default: 0 },
+    // Phase 31.2 -- standardized payroll rule.
+    //   monthDays         = total calendar days in the payroll period
+    //                        (perDay rate divisor; Sundays + holidays
+    //                        ARE included so each calendar day is
+    //                        equally weighted).
+    //   holidayWorkedDays = days where the employee submitted work on a
+    //                        weekly-off or holiday day; each such day
+    //                        adds one extra payable-day credit.
+    monthDays: { type: Number, default: 0 },
+    holidayWorkedDays: { type: Number, default: 0 },
 
     completionPercentage: { type: Number, default: 0 },
     backlogCount: { type: Number, default: 0 },

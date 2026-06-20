@@ -68,12 +68,17 @@ const resolveComponents = (structure = {}, inHand = 0) => {
  */
 const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bonusItems = [], deductionItems = [] }) => {
   const workingDays = attendance.workingDays || 1;
+  // Phase 31.2 -- standardised payroll rule. `monthDays` (calendar days
+  // in the salary month, Sundays + holidays included) replaces
+  // `workingDays` as the divisor when present on the attendance bundle.
+  const monthDays = attendance.monthDays || workingDays;
   const presentDays = attendance.presentDays || 0;
   const paidLeaves = attendance.paidLeaves || 0;
   const unpaidLeaves = attendance.unpaidLeaves || 0;
   const halfPaidDays = attendance.halfPaidDays || 0;
   const halfUnpaidDays = attendance.halfUnpaidDays || 0;
   const absentDays = attendance.absentDays || 0;
+  const holidayWorkedDays = attendance.holidayWorkedDays || 0;
 
   // Every payslip line is rounded to whole rupees AS IT IS COMPUTED, and
   // all totals are summed from those rounded lines.  This guarantees the
@@ -125,10 +130,18 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
   }
 
   // ---- Attendance / LOP deductions (prorated on gross) ----
-  const perDayGross = monthlyGross / workingDays;
+  // Phase 31.2: per-day rate divides by monthDays (Sundays + holidays
+  // included), so each absent day deducts exactly perDayGross — matching
+  // the documented rule monthlyGross ÷ daysInMonth.
+  const perDayGross = monthlyGross / Math.max(1, monthDays);
   const unpaidLeaveDeduction = rupee(perDayGross * unpaidLeaves);
   const halfDayDeduction = rupee(perDayGross * 0.5 * halfUnpaidDays);
   const absentDeduction = rupee(perDayGross * absentDays);
+  // Phase 31.2: holiday / Sunday worked credit -- one extra payable day
+  // per day the employee filed work on a weekly-off / holiday day.
+  // Stored as a positive adjustment so the slip can render it as
+  // "Adjustment: +₹X" alongside the deductions line.
+  const holidayWorkedCredit = rupee(perDayGross * holidayWorkedDays);
 
   // ---- Penalties / custom deductions ----
   const penalties = rupee(sumItems(deductionItems));
@@ -141,10 +154,12 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
 
   // ---- STEP 4: Net in-hand (reconciles to the rupee) ----
   // Company rule: deductions reduce TOTAL CTC (monthly), not just gross.
-  //   Net = Total CTC + ad-hoc incentives - Total Employee Deductions
+  //   Net = Total CTC + ad-hoc incentives + Holiday Worked Credit
+  //         - Total Employee Deductions
   // (For legacy employees employerTotal is 0, so CTC === gross and the
-  //  net is identical to the previous behaviour.)
-  const netPayable = Math.max(0, ctcMonthly + incentives - totalDeductions);
+  //  net is identical to the previous behaviour aside from the new
+  //  Holiday Worked credit which defaults to 0.)
+  const netPayable = Math.max(0, ctcMonthly + incentives + holidayWorkedCredit - totalDeductions);
 
   // ---- Attendance summary ----
   const totalDays = (attendance.perDay && attendance.perDay.length) ||
@@ -191,8 +206,12 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
     },
     netPayable: rupee(netPayable),
     perDayGross: round(perDayGross),
+    // Phase 31.2 -- positive holiday/Sunday-worked adjustment surfaced
+    // for the new salary slip breakdown (Adjustment line).
+    holidayWorkedCredit: rupee(holidayWorkedCredit),
     attendanceSummary: {
       totalDays,
+      monthDays,
       presentDays,
       paidLeaves,
       unpaidLeaves,
@@ -200,6 +219,7 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
       halfUnpaidDays,
       halfDayCount,
       weeklyOffDays: attendance.weeklyOffDays || 0,
+      holidayWorkedDays,
       lopDays,
       attendancePercentage,
     },

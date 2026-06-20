@@ -45,6 +45,9 @@ export default function HRSalary() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [modal, setModal] = useState(null);
+  // Phase 31.4 -- per-employee generate modal state.
+  const [oneOpen, setOneOpen] = useState(false);
+  const [employees, setEmployees] = useState([]);
   const toast = useToast();
 
   const rangeValid = startDate && endDate && startDate <= endDate;
@@ -57,6 +60,14 @@ export default function HRSalary() {
     setLoading(false);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [startDate, endDate]);
+  // Phase 31.4 -- lazily load the employee list for the individual
+  // generate modal so the page itself doesn't pay for it on every visit.
+  useEffect(() => {
+    if (!oneOpen || employees.length > 0) return;
+    api.get('/employees', { params: { status: 'active' } })
+      .then((r) => setEmployees(r.data || []))
+      .catch(() => {});
+  }, [oneOpen, employees.length]);
 
   const generateAll = async () => {
     if (!rangeValid) { toast.error('Start date must be on or before end date'); return; }
@@ -113,10 +124,22 @@ export default function HRSalary() {
               <input className="input max-w-[170px]" type="date" value={endDate} min={startDate || undefined} onChange={(e) => setEndDate(e.target.value)} />
             </div>
             <a className="btn-secondary" href={authUrl(`/api/salary/export.csv?periodStart=${startDate}&periodEnd=${endDate}`)}>Export CSV</a>
+            {/* Phase 31.4: per-employee generate -- bulk button untouched. */}
+            <button className="btn-secondary" onClick={() => setOneOpen(true)}>+ Individual Salary</button>
             <button className="btn-primary" disabled={busy || !rangeValid} onClick={generateAll}>{busy ? 'Generating...' : 'Generate / Refresh All Slips'}</button>
           </div>
         </div>
       </div>
+
+      {oneOpen && (
+        <IndividualGenerateModal
+          employees={employees}
+          defaultStartDate={startDate}
+          defaultEndDate={endDate}
+          onClose={() => setOneOpen(false)}
+          onGenerated={() => { setOneOpen(false); load(); }}
+        />
+      )}
 
       <div className="card overflow-x-auto">
         {loading ? <Loader /> :
@@ -207,6 +230,13 @@ function AdjustModal({ modal, setModal, onSave }) {
       </>}
     >
       <div className="space-y-5">
+        {/* Phase 31.3 -- payable-days breakdown.  Surfaces how the
+            standardised rule (Monthly Gross ÷ Calendar Days) arrived at
+            the final figure: month days, present, absent, paid leave,
+            holiday worked, payable days, per-day, gross, adjustment,
+            deduction, final. */}
+        <SalaryBreakdown slip={modal} />
+
         {/* Additional Compensation (per-payslip ad-hoc additions) */}
         <ItemEditor
           title="Additional Compensation"
@@ -304,6 +334,147 @@ function ItemEditor({ title, accent, items, onAdd, onRemove, onEdit, total }) {
           Total {title.toLowerCase()}: {a.sign} {fmtMoney(total)}
         </div>
       )}
+    </div>
+  );
+}
+
+/* =====================================================================
+ * Phase 31.4 — Generate Individual Salary
+ *
+ * Wraps the existing `POST /api/salary/generate` endpoint (which has
+ * always accepted an `employeeId` plus a date range) into a focused UI.
+ * Bulk generation is untouched; this just adds a per-employee path.
+ *
+ * Access control: the endpoint is gated by `authorize('hr')` on the
+ * route which accepts HR + Super Admin and rejects HOD / employees.
+ * Same gate as bulk -- no parallel permission logic here.
+ * ===================================================================== */
+function IndividualGenerateModal({ employees, defaultStartDate, defaultEndDate, onClose, onGenerated }) {
+  const [employeeId, setEmployeeId] = useState('');
+  const [startDate, setStartDate] = useState(defaultStartDate);
+  const [endDate, setEndDate]     = useState(defaultEndDate);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const submit = async () => {
+    if (!employeeId) { toast.error('Pick an employee.'); return; }
+    if (!startDate || !endDate || startDate > endDate) { toast.error('Provide a valid date range.'); return; }
+    setBusy(true);
+    try {
+      await api.post('/salary/generate', { employeeId, startDate, endDate });
+      toast.success('Salary slip generated');
+      onGenerated();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Modal open onClose={onClose} size="md" title="Generate Individual Salary"
+      footer={<>
+        <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+        <button className="btn-primary" onClick={submit} disabled={busy}>
+          {busy ? 'Generating…' : 'Generate Salary'}
+        </button>
+      </>}>
+      <div className="space-y-3 text-sm">
+        <p className="text-slate-500 text-xs">
+          Same payroll engine + same validations + same slip format as bulk generation.
+          Use this when you only need to recompute one employee.
+        </p>
+        <div>
+          <label className="label">Employee</label>
+          <select className="input" value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <option value="">— Select —</option>
+            {employees.map((e) => (
+              <option key={e._id} value={e._id}>
+                {e.name}{e.employeeId ? ` · ${e.employeeId}` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label">Start Date</label>
+            <input className="input" type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
+          </div>
+          <div>
+            <label className="label">End Date</label>
+            <input className="input" type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* =====================================================================
+ * Phase 31.3 — Salary breakdown panel
+ *
+ * Renders the standardised payroll breakdown documented in the spec:
+ *
+ *   Month Days        Calendar days in the salary month
+ *   Present Days      Days the employee was marked present
+ *   Absent Days       Days the employee was marked absent
+ *   Approved Leave    Full-day paid + unpaid leaves
+ *   Holiday Worked    Sundays / holidays the employee submitted on
+ *   Payable Days      monthDays - absent - unpaid - 0.5*halfUnpaid
+ *                     + holidayWorked
+ *   Per Day Salary    monthlyGross ÷ monthDays
+ *   Gross Salary      monthlyGross (constant for the month)
+ *   Adjustment        + perDay × holidayWorked
+ *   Deduction         − perDay × (absent + unpaid + 0.5*halfUnpaid)
+ *                     − all PF / ESIC / PT / TDS / penalties from payroll
+ *   Final Salary      net payable in hand
+ * ===================================================================== */
+export function SalaryBreakdown({ slip }) {
+  if (!slip) return null;
+  const payroll = slip.payroll || {};
+  const att = payroll.attendanceSummary || {};
+  const ded = payroll.deductions || {};
+  // Pull from the slip's canonical fields; fall back to payroll engine
+  // values when present (older slips may lack the top-level fields).
+  const monthDays      = slip.monthDays || att.monthDays || slip.workingDays || 0;
+  const presentDays    = slip.presentDays ?? att.presentDays ?? 0;
+  const absentDays     = slip.absentDays ?? 0;
+  const approvedLeaves = (slip.paidLeaves || 0) + (slip.unpaidLeaves || 0);
+  const halfPaid       = slip.halfPaidDays || 0;
+  const halfUnpaid     = slip.halfUnpaidDays || 0;
+  const holidayWorked  = slip.holidayWorkedDays || att.holidayWorkedDays || 0;
+  const payableDays    = slip.payableDays || 0;
+  const perDay         = slip.perDaySalary || (monthDays > 0 ? slip.monthlySalary / monthDays : 0);
+  const grossSalary    = slip.monthlySalary || 0;
+  const adjustment     = (payroll.holidayWorkedCredit || 0)
+                       + (slip.bonuses || 0);
+  const deduction      = ded.totalDeductions ?? slip.deductions ?? 0;
+  const finalSalary    = slip.netSalary ?? 0;
+
+  const Row = ({ k, v, cls = '' }) => (
+    <div className={`flex justify-between text-sm ${cls}`}>
+      <span className="text-slate-500 dark:text-slate-400">{k}</span>
+      <span className="font-medium text-slate-800 dark:text-slate-100">{v}</span>
+    </div>
+  );
+  return (
+    <div className="rounded-lg border border-indigo-100 dark:border-brand-500/30 bg-indigo-50/40 dark:bg-brand-500/10 p-3 space-y-1">
+      <div className="text-xs font-semibold uppercase tracking-wide text-indigo-700 dark:text-brand-300 mb-1">
+        Payable Days Breakdown
+      </div>
+      <Row k="Month Days"        v={monthDays} />
+      <Row k="Present Days"      v={presentDays} />
+      <Row k="Absent Days"       v={absentDays} />
+      <Row k="Approved Leave"    v={approvedLeaves} />
+      {(halfPaid + halfUnpaid) > 0 && (
+        <Row k="Half Days (paid / unpaid)" v={`${halfPaid} / ${halfUnpaid}`} />
+      )}
+      <Row k="Holiday Worked"    v={holidayWorked} />
+      <div className="border-t border-indigo-200/70 dark:border-brand-500/30 my-1" />
+      <Row k="Total Payable Days" v={payableDays} cls="font-semibold" />
+      <Row k="Per Day Salary"    v={fmtMoney(perDay)} />
+      <Row k="Gross Salary"      v={fmtMoney(grossSalary)} />
+      {adjustment > 0 && <Row k="Adjustment" v={`+ ${fmtMoney(adjustment)}`} cls="text-green-700 dark:text-green-300" />}
+      <Row k="Deduction"         v={`− ${fmtMoney(deduction)}`} cls="text-red-700 dark:text-red-300" />
+      <div className="border-t border-indigo-200/70 dark:border-brand-500/30 my-1" />
+      <Row k="Final Salary"      v={fmtMoney(finalSalary)} cls="font-bold text-base" />
     </div>
   );
 }

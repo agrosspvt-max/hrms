@@ -75,16 +75,59 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
   ]);
   const backlogCount = backlogTasks[0]?.count || 0;
 
+  // Phase 31.2 — Standardised payroll rule (audited):
+  //
+  //   Per Day Salary = Monthly Gross ÷ Calendar Days in the salary
+  //                    month  (Sundays + holidays included).
+  //   Payable Days   = monthDays
+  //                   - absentDays
+  //                   - unpaidLeaves
+  //                   - 0.5 × halfUnpaidDays
+  //                   + holidayWorkedDays         (Sunday/holiday
+  //                                                 submissions earn +1)
+  //   Final Salary   = perDaySalary × payableDays
+  //
+  // The legacy `workingDays` (calendar days minus weekly-off minus
+  // holiday) is retained on the slip for backward-compat display, but
+  // it no longer drives the perDay rate.
+  const monthDays = (att.perDay && att.perDay.length)
+    || Math.max(1, Math.round((to - from) / 86400000));
+
+  // Sunday / Holiday worked credit -- one credit per day where the
+  // employee filed any submission AND the day was classified as
+  // weekly_off or holiday by deriveAttendance.  Computed from the same
+  // `submissions` array already pulled above, so no extra query.
+  const submittedDayIso = new Set(submissions.map((s) => startOfDay(s.date).toISOString()));
+  let holidayWorkedDays = 0;
+  for (const d of (att.perDay || [])) {
+    const iso = startOfDay(d.date).toISOString();
+    if ((d.status === 'weekly_off' || d.status === 'holiday') && submittedDayIso.has(iso)) {
+      holidayWorkedDays += 1;
+    }
+  }
+
   const workingDays = att.workingDays || 1;
   const monthlySalary = employee.monthlySalary || 0;
-  const perDaySalary = monthlySalary / workingDays;
+  const perDaySalary = monthlySalary / Math.max(1, monthDays);
 
-  // Paid day-units: present + full paid leaves + half_paid (full) +
-  // 0.5 * half_unpaid (worked half).  Kept for the legacy grossSalary field.
-  const paidDays = att.payableDays != null
-    ? att.payableDays
-    : (att.presentDays + att.paidLeaves);
-  const grossSalary = Math.round(perDaySalary * paidDays);
+  // Standardised payable days under the new rule.  Half-paid days are
+  // already fully paid (worked half + paid half) so they don't deduct;
+  // half-unpaid forfeits the second half (0.5 day LOP).
+  const standardPayableDays = Math.max(0,
+    monthDays
+    - (att.absentDays || 0)
+    - (att.unpaidLeaves || 0)
+    - 0.5 * (att.halfUnpaidDays || 0)
+    + holidayWorkedDays
+  );
+  const grossSalary = Math.round(perDaySalary * standardPayableDays);
+
+  // Re-publish the standardised value on att so computePayroll (below)
+  // uses the same number for its breakdown without us having to thread
+  // an extra parameter through every call site.
+  att.monthDays = monthDays;
+  att.holidayWorkedDays = holidayWorkedDays;
+  att.standardPayableDays = standardPayableDays;
 
   // Accept either the new items arrays OR fall back to legacy single
   // numeric `bonuses` / `deductions` values for callers that don't yet
@@ -149,7 +192,13 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
     holidayDays: att.holidayDays || 0,
     halfPaidDays: att.halfPaidDays || 0,
     halfUnpaidDays: att.halfUnpaidDays || 0,
-    payableDays: att.payableDays != null ? att.payableDays : (att.presentDays + att.paidLeaves),
+    // Phase 31.2 -- persist the standardised payable days (matches the
+    // new rule) on the canonical field.  workingDays + the legacy
+    // `att.payableDays` (worked-half + paid leaves) are still in the
+    // schema for compat but no longer drive the rate.
+    payableDays: standardPayableDays,
+    monthDays,
+    holidayWorkedDays,
     completionPercentage,
     backlogCount,
     monthlySalary,

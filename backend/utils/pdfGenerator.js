@@ -150,14 +150,17 @@ const streamSalarySlipPdf = (res, { slip, employee, company }) => {
   // ---- Attendance table ----
   y = sectionTitle('Attendance', y);
   const att = vm.attendance;
+  // Phase 31.3: include Month Days / Absent / Payable Days / Holiday
+  // Worked / Per Day Salary in the slip's Attendance table so the
+  // standardised breakdown is visible directly on the PDF.
   const attCols = [
-    ['Total Days', att.totalDays ?? '-'],
-    ['Present', att.presentDays ?? 0],
-    ['Paid Leaves', att.paidLeaves ?? 0],
-    ['Unpaid Lv', att.unpaidLeaves ?? 0],
-    ['Half Days', att.halfDayCount ?? 0],
-    ['Weekly Off', att.weeklyOffDays ?? 0],
-    ['LOP', att.lopDays ?? 0],
+    ['Month Days',   slip.monthDays ?? att.monthDays ?? att.totalDays ?? '-'],
+    ['Present',      att.presentDays ?? slip.presentDays ?? 0],
+    ['Absent',       slip.absentDays ?? 0],
+    ['Approved Lv',  (slip.paidLeaves ?? 0) + (slip.unpaidLeaves ?? 0)],
+    ['Holiday Wk.',  slip.holidayWorkedDays ?? att.holidayWorkedDays ?? 0],
+    ['Payable Days', slip.payableDays ?? 0],
+    ['Per Day ₹',    Math.round(slip.perDaySalary || 0)],
     ['Attendance %', `${att.attendancePercentage ?? 0}%`],
   ];
   const aCellW = PAGE.width / attCols.length;
