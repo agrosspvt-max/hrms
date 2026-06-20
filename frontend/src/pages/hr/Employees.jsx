@@ -846,13 +846,16 @@ function SalaryStructureEditor({ form, set }) {
   const pf = s.pfEnabled
     ? (num(s.pfAmount) > 0 ? num(s.pfAmount) : Math.round(num(s.basicSalary) * num(s.pfPercentage) / 100))
     : 0;
-  // Phase 36 / 37 -- employee ESIC follows the same priority: amount
-  // override beats percentage, percentage beats default.
+  // Phase 36 / 37 / 39 -- employee ESIC follows the same priority:
+  // amount override beats percentage, percentage beats default.  Basis
+  // is Monthly Gross for BOTH sides (matches the backend payroll
+  // engine after Phase 39); previously the employee side was on CTC,
+  // creating an asymmetry with the employer side.
   const esic = !esicConfigured
     ? 0
     : (esicAmountOverride > 0
         ? esicAmountOverride
-        : Math.round(ctcMonthly * (num(s.esicPercentage) > 0 ? num(s.esicPercentage) : 0.75) / 100));
+        : Math.round(gross * (num(s.esicPercentage) > 0 ? num(s.esicPercentage) : 0.75) / 100));
   const pt = s.ptEnabled ? num(s.ptAmount) : 0;
   const tds = s.tdsEnabled ? (s.tdsType === 'fixed' ? num(s.tdsValue) : Math.round(ctcMonthly * num(s.tdsValue) / 100)) : 0;
   const employeeDeductions = pf + esic + pt + tds;
@@ -884,9 +887,9 @@ function SalaryStructureEditor({ form, set }) {
       </div>
       <div className="text-[11px] text-slate-500">
         Monthly Gross is the sum of these components.  Both Employee PF and Employer PF are calculated on
-        <b> Basic Salary</b>.  ESIC and TDS percentages are calculated on <b>Total CTC (monthly)</b>;
+        <b> Basic Salary</b>.  Both Employee ESIC and Employer ESIC are calculated on <b>Monthly Gross</b>;
         ESIC has an "Amount Override" that takes priority over the percentage for both sides.
-        PT is a fixed amount.
+        TDS percentage is calculated on <b>Total CTC (monthly)</b>.  PT is a fixed amount.
       </div>
 
       <div className="text-xs font-semibold text-slate-700">Statutory Deductions</div>
@@ -913,7 +916,8 @@ function SalaryStructureEditor({ form, set }) {
               couldn't be edited from this form. */}
           {(s.esicEnabled || num(s.esicAmount) > 0) && (
             <div className="grid grid-cols-2 gap-2">
-              {field('Employee ESIC % of CTC', 'esicPercentage', '0.01')}
+              {/* Phase 39 -- relabelled to match the new basis. */}
+              {field('Employee ESIC % of Gross', 'esicPercentage', '0.01')}
               {field('ESIC Amount (override)', 'esicAmount')}
               {field('Employer ESIC % of Gross', 'employerEsicPercentage', '0.01')}
             </div>

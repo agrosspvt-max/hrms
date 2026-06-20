@@ -154,14 +154,24 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
   }
 
   let esic = 0;
-  // Phase 33 -- mirror the employer-side `esicConfigured` check so the
-  // employee ESIC deduction is read from the same signal.  Otherwise
-  // we'd compute the employer side (CTC line) but skip the employee
-  // side (net deduction), which would inflate net pay incorrectly.
+  // Phase 33 + Phase 39 -- ESIC basis = Monthly Gross for BOTH sides.
+  //
+  //   Employer ESIC : pct(monthlyGross, employerEsicPercentage ?? 3.25)
+  //   Employee ESIC : pct(monthlyGross, esicPercentage           ?? 0.75)
+  //
+  // Previously the employee side was computed on `deductionBase` (=
+  // ctcMonthly), which made it asymmetric with the employer side and
+  // produced the user's reported numbers (₹163 vs ₹683 on a ₹21 000
+  // gross instead of the consistent ~₹158 / ₹683).  The override
+  // priority chain is preserved exactly:
+  //   1. Manual amount (`esicAmount > 0`) → BOTH sides use the amount
+  //      (Phase 37 rule, still applies via `employerEsic` block above).
+  //   2. Configured percentage of Gross
+  //   3. Default percentage of Gross (0.75 % employee / 3.25 % employer)
   if (esicConfigured) {
     esic = rupee(Number(structure.esicAmount) > 0
       ? Number(structure.esicAmount)
-      : pct(deductionBase, structure.esicPercentage ?? 0.75));
+      : pct(monthlyGross, structure.esicPercentage ?? 0.75));
   }
   const pt = structure.ptEnabled ? rupee(structure.ptAmount) : 0;
   let tds = 0;
