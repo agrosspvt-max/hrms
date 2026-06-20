@@ -50,6 +50,10 @@ export default function HRSalary() {
   const [employees, setEmployees] = useState([]);
   // Phase 32 -- toggle to surface retracted slips for audit.
   const [includeRetracted, setIncludeRetracted] = useState(false);
+  // Phase 34 -- bulk selection (Set of slip _id strings).  Mirrors the
+  // selection model used by Attendance and Submission Reviews so HR has
+  // a consistent interaction across the app.
+  const [selected, setSelected] = useState(() => new Set());
   const toast = useToast();
 
   const rangeValid = startDate && endDate && startDate <= endDate;
@@ -107,6 +111,67 @@ export default function HRSalary() {
       setModal(null);
       load();
     } catch (err) { toast.error(errMsg(err)); }
+  };
+
+  /* ----------------- Phase 34 -- bulk selection ----------------- */
+  // Only active slips are selectable (retracted ones can't be re-
+  // retracted, and Generate Selected always refreshes the active set).
+  const selectableSlips = slips.filter((s) => s.status !== 'retracted');
+  const toggleOne = (id) => setSelected((prev) => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+  const allSelected = selectableSlips.length > 0
+    && selectableSlips.every((s) => selected.has(s._id));
+  const someSelected = selectableSlips.some((s) => selected.has(s._id));
+  const toggleSelectAll = () => setSelected((prev) => {
+    if (allSelected) return new Set();
+    const n = new Set(prev);
+    selectableSlips.forEach((s) => n.add(s._id));
+    return n;
+  });
+  const clearSelection = () => setSelected(new Set());
+
+  const bulkRetract = async () => {
+    if (selected.size === 0) return;
+    const ok = window.confirm(`Retract ${selected.size} salary slip(s)?\nThis will remove the generated payroll records and allow them to be generated again.`);
+    if (!ok) return;
+    const reason = window.prompt('Reason (optional) — applied to every selected slip', '');
+    try {
+      const { data } = await api.post('/salary/retract-bulk', {
+        slipIds: [...selected],
+        reason: reason || '',
+      });
+      toast.success(`Retracted ${data.succeededCount} slip(s)${data.skippedCount ? ` · ${data.skippedCount} already retracted` : ''}`);
+      clearSelection();
+      load();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
+
+  const bulkGenerate = async () => {
+    if (selected.size === 0) return;
+    // Selected rows carry the employee id; the period mirrors the
+    // page's date range so the same cycle is recomputed.
+    const employeeIds = slips
+      .filter((s) => selected.has(s._id))
+      .map((s) => s.employee?._id || s.employee)
+      .filter(Boolean);
+    if (employeeIds.length === 0) return;
+    try {
+      const { data } = await api.post('/salary/generate-bulk-selected', {
+        employeeIds, startDate, endDate,
+      });
+      toast.success(`Generated ${data.count} slip(s)${data.regeneratedCount ? ` · ${data.regeneratedCount} regenerated from retracted` : ''}`);
+      clearSelection();
+      load();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
+
+  const bulkExportHref = () => {
+    if (selected.size === 0) return null;
+    const ids = [...selected].join(',');
+    return authUrl(`/api/salary/export.csv?periodStart=${startDate}&periodEnd=${endDate}&slipIds=${encodeURIComponent(ids)}`);
   };
 
   const openAdjust = (s) => {
@@ -167,11 +232,36 @@ export default function HRSalary() {
         />
       )}
 
+      {/* Phase 34 -- bulk action bar.  Renders only when at least one
+          slip is selected so the page stays uncluttered. */}
+      {selected.size > 0 && (
+        <div className="flex items-center justify-between gap-2 flex-wrap text-xs text-slate-600 bg-brand-50 dark:bg-brand-500/10 border border-brand-200 dark:border-brand-500/30 rounded-lg px-3 py-2">
+          <span><b>{selected.size}</b> slip(s) selected</span>
+          <div className="flex items-center gap-2">
+            <button className="btn-secondary !py-1 !text-xs" onClick={clearSelection}>Clear</button>
+            <a className="btn-secondary !py-1 !text-xs" href={bulkExportHref() || '#'} onClick={(e) => { if (!bulkExportHref()) e.preventDefault(); }}>Export Selected</a>
+            <button className="btn-primary !py-1 !text-xs" onClick={bulkGenerate}>Generate Selected</button>
+            <button className="btn-secondary !py-1 !text-xs text-red-600" onClick={bulkRetract}>Retract Selected</button>
+          </div>
+        </div>
+      )}
+
       <div className="card overflow-x-auto">
         {loading ? <Loader /> :
           slips.length === 0 ? <EmptyState title="No slips for this period" subtitle="Click 'Generate / Refresh All Slips' to compute payroll for the selected date range." /> :
           <table className="table">
             <thead><tr>
+              {/* Phase 34 -- select-all header.  Indeterminate when only
+                  some rows are selected. */}
+              <th className="w-8">
+                <input
+                  type="checkbox"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+                  onChange={toggleSelectAll}
+                  title="Select all active slips"
+                />
+              </th>
               <th>Employee</th><th>Status</th><th>Present</th><th>Paid Lv</th><th>Half</th><th>LOP</th>
               <th>Gross</th><th>PF</th><th>ESIC</th><th>PT</th><th>TDS</th><th>Deductions</th><th>Net</th><th></th>
             </tr></thead>
@@ -181,6 +271,16 @@ export default function HRSalary() {
                 const isRetracted = s.status === 'retracted';
                 return (
                 <tr key={s._id} className={isRetracted ? 'opacity-60' : ''}>
+                  {/* Phase 34 -- per-row checkbox; disabled for already-
+                      retracted slips so they can't be bulk-retracted again. */}
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(s._id)}
+                      disabled={isRetracted}
+                      onChange={() => toggleOne(s._id)}
+                    />
+                  </td>
                   <td className="font-medium">
                     {s.employee?.name || s.employeeName || <em className="text-slate-400">Deleted employee</em>}
                     <div className="text-[11px] text-slate-500">

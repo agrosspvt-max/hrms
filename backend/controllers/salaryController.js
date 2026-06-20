@@ -257,12 +257,26 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
     generatedBy: opts.generatedBy,
   };
 
-  // Phase 32 -- only ACTIVE slips collide with this generation.  A
-  // retracted slip for the same (employee, periodKey) stays in place
-  // (audit trail) and a fresh active slip is created on top.
+  // Phase 32 + Phase 34 -- regeneration reuses the existing document.
+  //
+  // The (employee, periodKey) pair is a unique index on the collection,
+  // so we cannot create a second slip for the same employee + period.
+  // Instead, find ANY slip for that pair and update it in place:
+  //   - active   → refresh in place (existing behaviour)
+  //   - retracted → flip back to active, clear retraction fields,
+  //                  reuse the same _id (audit log gets a
+  //                  `salary.regenerated` entry from the caller)
+  //   - no slip   → upsert creates a fresh active one
+  //
+  // The `_setRetractionCleared` block below explicitly clears the
+  // retracted-only fields so a regenerated slip doesn't carry stale
+  // reason / reviewer / timestamp data from its prior life.
   update.status = 'active';
+  update.retractedAt = null;
+  update.retractedBy = null;
+  update.retractionReason = '';
   const slip = await SalarySlip.findOneAndUpdate(
-    { employee: employee._id, periodKey, status: { $ne: 'retracted' } },
+    { employee: employee._id, periodKey },
     update,
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
@@ -524,6 +538,15 @@ const exportCsv = asyncHandler(async (req, res) => {
   }
   // Phase 32: retracted slips are excluded from payroll exports + totals.
   where.status = { $ne: 'retracted' };
+  // Phase 34: Export Selected -- narrow to a comma-separated list of
+  // slip ids when provided so HR can hand-pick rows for export.
+  if (req.query.slipIds) {
+    const ids = String(req.query.slipIds).split(',').map((x) => x.trim()).filter(Boolean);
+    if (ids.length > 0) {
+      where._id = { $in: ids };
+      label = `${label}-selected-${ids.length}`;
+    }
+  }
   const items = await SalarySlip.find(where).populate('employee', 'name employeeId');
   const rows = items.map((s) => ({
     employeeId: s.employee?.employeeId || s.employeeEmpId || '',
@@ -594,7 +617,123 @@ const retract = asyncHandler(async (req, res) => {
   res.json({ ok: true, slip });
 });
 
+/* ====================================================================
+ * Phase 34 — Bulk retraction
+ *
+ * Accepts an array of slip ids and retracts each one, mirroring the
+ * single-slip `retract` handler's audit + permission semantics.
+ * Already-retracted slips are silently skipped so the call is
+ * idempotent for HR running it twice.
+ *
+ * Body: { slipIds: [String], reason? }
+ * Returns: { requested, succeeded[], skipped[], failed[] }
+ * ================================================================== */
+const bulkRetract = asyncHandler(async (req, res) => {
+  const role = req.user.role;
+  if (role !== 'hr' && role !== 'super_admin') {
+    res.status(403); throw new Error('Only HR / Super Admin can retract salary slips.');
+  }
+  const { slipIds } = req.body || {};
+  if (!Array.isArray(slipIds) || slipIds.length === 0) {
+    res.status(400); throw new Error('slipIds[] is required.');
+  }
+  const reason = String(req.body?.reason || '').trim();
+  const succeeded = [];
+  const skipped = [];
+  const failed = [];
+  for (const id of slipIds) {
+    try {
+      const slip = await SalarySlip.findById(id);
+      if (!slip) { failed.push({ id, error: 'Slip not found' }); continue; }
+      if (slip.status === 'retracted') {
+        skipped.push({ id, reason: 'already retracted' });
+        continue;
+      }
+      slip.status = 'retracted';
+      slip.retractedAt = new Date();
+      slip.retractedBy = req.user._id;
+      slip.retractionReason = reason;
+      await slip.save();
+      logAudit(req, {
+        action: 'salary.retracted',
+        targetType: 'SalarySlip',
+        targetId: slip._id,
+        targetLabel: `${slip.employeeName || slip.employee} · ${slip.periodKey || slip.month}`,
+        meta: {
+          employeeId: String(slip.employee),
+          periodKey: slip.periodKey, month: slip.month,
+          previousStatus: 'active', newStatus: 'retracted',
+          reason, via: 'bulk',
+        },
+      });
+      succeeded.push({ id: String(slip._id) });
+    } catch (err) {
+      failed.push({ id, error: err.message });
+    }
+  }
+  res.json({
+    requested: slipIds.length,
+    succeededCount: succeeded.length,
+    skippedCount: skipped.length,
+    failedCount: failed.length,
+    succeeded, skipped, failed,
+  });
+});
+
+/* ====================================================================
+ * Phase 34 — Bulk regenerate for a list of employees
+ *
+ * Lets HR run the per-employee generate path for a specific subset of
+ * employees in one call -- e.g. "regenerate just the 5 employees I
+ * selected, for the same period the rest of the page is showing."
+ *
+ * Body: { employeeIds: [String], startDate, endDate }   (legacy { year, month } still accepted)
+ * Returns: { count, slips, regeneratedCount, failed[] }
+ * ================================================================== */
+const bulkGenerateForEmployees = asyncHandler(async (req, res) => {
+  const role = req.user.role;
+  if (role !== 'hr' && role !== 'super_admin') {
+    res.status(403); throw new Error('Only HR / Super Admin can generate salary slips.');
+  }
+  const { employeeIds } = req.body || {};
+  if (!Array.isArray(employeeIds) || employeeIds.length === 0) {
+    res.status(400); throw new Error('employeeIds[] is required.');
+  }
+  const { startDate, endDate } = resolveRange(req.body);
+  if (startDate > endDate) { res.status(400); throw new Error('Start date must be on or before end date'); }
+  const periodKeyHint = `${formatYMD(startOfDay(startDate))}_${formatYMD(startOfDay(endDate))}`;
+
+  const succeeded = [];
+  const failed = [];
+  let regeneratedCount = 0;
+  for (const empId of employeeIds) {
+    try {
+      const priorRetracted = await SalarySlip.findOne({
+        employee: empId, periodKey: periodKeyHint, status: 'retracted',
+      }).select('_id').lean();
+      const { slip } = await computeSlip(empId, startDate, endDate, { generatedBy: req.user._id });
+      if (priorRetracted) regeneratedCount += 1;
+      succeeded.push(slip);
+    } catch (err) {
+      failed.push({ employeeId: empId, error: err.message });
+    }
+  }
+  logAudit(req, {
+    action: regeneratedCount > 0 ? 'salary.regenerated' : 'salary.generated',
+    targetType: 'SalarySlip',
+    targetLabel: `Bulk-selected · ${formatYMD(startDate)} → ${formatYMD(endDate)} · ${succeeded.length} slip(s)`,
+    meta: {
+      via: 'bulk-selected',
+      periodStart: formatYMD(startDate),
+      periodEnd: formatYMD(endDate),
+      employeeIds, regeneratedCount,
+      slipIds: succeeded.map((s) => String(s._id)),
+    },
+  });
+  res.json({ count: succeeded.length, slips: succeeded, regeneratedCount, failed });
+});
+
 module.exports = {
   generate, generateAll, mySlips, listSlips, downloadPdf, updateSlip, exportCsv,
-  retract,
+  retract, bulkRetract, bulkGenerateForEmployees,
 };
