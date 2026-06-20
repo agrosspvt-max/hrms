@@ -139,9 +139,16 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
 
   let employeePf = 0;
   if (structure.pfEnabled) {
+    // Phase 38 — Employee PF basis = Basic Salary (NOT CTC).  Matches
+    // the spec + the explanatory text rendered on the salary structure
+    // form: "Employee PF is % of Basic ... Employer PF is % of Basic".
+    // The override-priority chain is unchanged:
+    //   1. Manual amount (`pfAmount > 0`)
+    //   2. Configured percentage of Basic
+    //   3. Default 12% of Basic
     employeePf = rupee(Number(structure.pfAmount) > 0
       ? Number(structure.pfAmount)
-      : pct(deductionBase, structure.pfPercentage ?? 12));
+      : pct(basic, structure.pfPercentage ?? 12));
   } else if (Number(structure.pf) > 0 && monthlyGross === basic) {
     employeePf = rupee(structure.pf); // honour legacy flat PF only when no modern structure
   }

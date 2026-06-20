@@ -839,9 +839,13 @@ function SalaryStructureEditor({ form, set }) {
   const employerTotal = employerPf + employerEsic;
   const ctcMonthly = gross + employerTotal;
 
-  // Employee deductions: all percentage-based deductions are on TOTAL CTC
-  // (monthly).  PT is fixed; explicit amount overrides still win.
-  const pf = s.pfEnabled ? (num(s.pfAmount) > 0 ? num(s.pfAmount) : Math.round(ctcMonthly * num(s.pfPercentage) / 100)) : 0;
+  // Employee deductions: ESIC / TDS use TOTAL CTC, PT is fixed.
+  // Phase 38 -- Employee PF basis = Basic Salary (NOT CTC), matching
+  // the backend payroll engine and the spec.  Override priority is
+  // unchanged: amount → percentage of Basic → default 12% of Basic.
+  const pf = s.pfEnabled
+    ? (num(s.pfAmount) > 0 ? num(s.pfAmount) : Math.round(num(s.basicSalary) * num(s.pfPercentage) / 100))
+    : 0;
   // Phase 36 / 37 -- employee ESIC follows the same priority: amount
   // override beats percentage, percentage beats default.
   const esic = !esicConfigured
@@ -879,8 +883,10 @@ function SalaryStructureEditor({ form, set }) {
         {field('Special Allowance', 'bonus')}
       </div>
       <div className="text-[11px] text-slate-500">
-        Monthly Gross is the sum of these components. All employee deductions (PF / ESIC / TDS %) are calculated on
-        <b> Total CTC (monthly)</b>; PT is a fixed amount. Employer PF is % of Basic and Employer ESIC is % of Gross.
+        Monthly Gross is the sum of these components.  Both Employee PF and Employer PF are calculated on
+        <b> Basic Salary</b>.  ESIC and TDS percentages are calculated on <b>Total CTC (monthly)</b>;
+        ESIC has an "Amount Override" that takes priority over the percentage for both sides.
+        PT is a fixed amount.
       </div>
 
       <div className="text-xs font-semibold text-slate-700">Statutory Deductions</div>
@@ -890,7 +896,9 @@ function SalaryStructureEditor({ form, set }) {
           {toggle('Provident Fund (PF / EPF)', 'pfEnabled')}
           {s.pfEnabled && (
             <div className="grid grid-cols-2 gap-2">
-              {field('Employee PF % of CTC', 'pfPercentage', '0.01')}
+              {/* Phase 38 -- relabelled to match the calculation basis.
+                  Employee PF is computed on Basic, not CTC. */}
+              {field('Employee PF % of Basic', 'pfPercentage', '0.01')}
               {field('PF Amount (override)', 'pfAmount')}
               {field('Employer PF % of Basic', 'employerPfPercentage', '0.01')}
             </div>
