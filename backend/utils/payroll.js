@@ -104,16 +104,28 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
   // "If ESIC is not enabled/configured: ESIC should remain 0.")
   // PF logic is unchanged.
   const esicConfigured = !!structure.esicEnabled || Number(structure.esicAmount) > 0;
-  // Phase 35 -- treat a missing OR a zero `employerEsicPercentage` as
-  // "use the schema default" (3.25%).  Legacy User documents that were
-  // saved before the field existed, or HR profiles where only
-  // `esicAmount` was filled, persist this as 0; the previous `??`
-  // operator only caught null / undefined, so a stored 0 silently
-  // zeroed Employer ESIC even when employee ESIC was computed.
+  // Phase 35 / 37 -- ESIC priority:
+  //   1. Manual amount override (`esicAmount > 0`) → BOTH employee and
+  //      employer use that exact amount.  The percentage rates are
+  //      ignored entirely.
+  //   2. Configured percentage (`employerEsicPercentage > 0`) → use
+  //      the stored employer rate.
+  //   3. Default percentage (3.25%) → fallback when nothing is set.
+  //
+  // Phase 35 introduced the `> 0` fallback because the legacy `??`
+  // operator only caught null / undefined.  Phase 37 widens the rule
+  // so that an explicit override amount takes precedence over the
+  // percentage path on the employer side too -- previously only the
+  // employee side respected the override.
+  const esicAmountOverride = Number(structure.esicAmount) || 0;
   const employerEsicRate = Number(structure.employerEsicPercentage) > 0
     ? Number(structure.employerEsicPercentage)
     : 3.25;
-  const employerEsic = esicConfigured ? rupee(pct(monthlyGross, employerEsicRate)) : 0;
+  const employerEsic = !esicConfigured
+    ? 0
+    : (esicAmountOverride > 0
+        ? rupee(esicAmountOverride)
+        : rupee(pct(monthlyGross, employerEsicRate)));
   const employerTotal = employerPf + employerEsic;
   const ctcMonthly = monthlyGross + employerTotal;
 

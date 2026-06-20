@@ -818,28 +818,37 @@ function SalaryStructureEditor({ form, set }) {
   // Employer contributions (CTC items - never reduce net).  Employer PF is
   // % of Basic; Employer ESIC is % of Gross.
   const employerPf = s.pfEnabled ? Math.round(num(s.basicSalary) * num(s.employerPfPercentage ?? 13) / 100) : 0;
-  // Phase 36 -- single source of truth.  The profile preview MUST mirror
-  // the backend payroll engine (utils/payroll.js) exactly, otherwise HR
-  // sees different ESIC numbers on the profile vs. the generated slip.
-  // Both checks below match payroll.js verbatim:
-  //   esicConfigured = esicEnabled OR esicAmount > 0 (any signal that
-  //                    ESIC was set up on the profile)
-  //   employerEsicRate = stored % when > 0, else default 3.25
-  //                      (Number(0) ?? 3.25 doesn't fall back; we test
-  //                      for > 0 so legacy structures don't silently
-  //                      zero the employer-side line)
+  // Phase 36 / 37 -- single source of truth.  The profile preview MUST
+  // mirror the backend payroll engine (utils/payroll.js) exactly.
+  //
+  // ESIC priority (employer + employee both):
+  //   1. Manual amount override (`esicAmount > 0`) → BOTH sides use
+  //      that exact amount.  Percentages are ignored.
+  //   2. Configured percentage  → use the stored rate.
+  //   3. Default percentage     → 3.25% employer / 0.75% employee.
+  //
+  // `esicConfigured` mirrors payroll.js's check (toggle OR amount).
   const esicConfigured = !!s.esicEnabled || num(s.esicAmount) > 0;
+  const esicAmountOverride = num(s.esicAmount);
   const employerEsicRate = num(s.employerEsicPercentage) > 0 ? num(s.employerEsicPercentage) : 3.25;
-  const employerEsic = esicConfigured ? Math.round(gross * employerEsicRate / 100) : 0;
+  const employerEsic = !esicConfigured
+    ? 0
+    : (esicAmountOverride > 0
+        ? esicAmountOverride
+        : Math.round(gross * employerEsicRate / 100));
   const employerTotal = employerPf + employerEsic;
   const ctcMonthly = gross + employerTotal;
 
   // Employee deductions: all percentage-based deductions are on TOTAL CTC
   // (monthly).  PT is fixed; explicit amount overrides still win.
   const pf = s.pfEnabled ? (num(s.pfAmount) > 0 ? num(s.pfAmount) : Math.round(ctcMonthly * num(s.pfPercentage) / 100)) : 0;
-  // Phase 36 -- employee ESIC also gates on esicConfigured so legacy
-  // amount-only structures preview correctly.
-  const esic = esicConfigured ? (num(s.esicAmount) > 0 ? num(s.esicAmount) : Math.round(ctcMonthly * num(s.esicPercentage) / 100)) : 0;
+  // Phase 36 / 37 -- employee ESIC follows the same priority: amount
+  // override beats percentage, percentage beats default.
+  const esic = !esicConfigured
+    ? 0
+    : (esicAmountOverride > 0
+        ? esicAmountOverride
+        : Math.round(ctcMonthly * (num(s.esicPercentage) > 0 ? num(s.esicPercentage) : 0.75) / 100));
   const pt = s.ptEnabled ? num(s.ptAmount) : 0;
   const tds = s.tdsEnabled ? (s.tdsType === 'fixed' ? num(s.tdsValue) : Math.round(ctcMonthly * num(s.tdsValue) / 100)) : 0;
   const employeeDeductions = pf + esic + pt + tds;
@@ -901,10 +910,16 @@ function SalaryStructureEditor({ form, set }) {
               {field('Employer ESIC % of Gross', 'employerEsicPercentage', '0.01')}
             </div>
           )}
-          {/* Hint when employer % falls back to default. */}
-          {esicConfigured && num(s.employerEsicPercentage) === 0 && (
+          {/* Phase 37 -- explain the active priority so HR sees why
+              the preview number matches what payroll will produce. */}
+          {esicConfigured && esicAmountOverride > 0 && (
+            <div className="text-[11px] text-blue-700 bg-blue-50 border border-blue-100 rounded px-2 py-1">
+              Override amount ₹{esicAmountOverride} is set — payroll will use it for BOTH employee and employer ESIC.  Percentage fields are ignored.
+            </div>
+          )}
+          {esicConfigured && esicAmountOverride === 0 && num(s.employerEsicPercentage) === 0 && (
             <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-100 rounded px-2 py-1">
-              Employer ESIC % not set on profile — payroll will use the standard {`3.25%`} rate.
+              Employer ESIC % not set on profile — payroll will use the standard 3.25% rate.
             </div>
           )}
         </div>
