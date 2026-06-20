@@ -122,18 +122,24 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
   const attByIso = new Map(attRecords.map((a) => [startOfDay(a.date).toISOString(), a.status]));
   const employeeWeeklyOff = new Set(employee.weeklyOff || [0]);
   const submittedDayIso = new Set(submissions.map((s) => startOfDay(s.date).toISOString()));
-  // Presence signal used by the credit check.  Any of these counts as
-  // "the employee actually worked that day", independent of the day's
-  // derived status:
-  //   - a submission was filed on this day
-  //   - an Attendance record says present / half_paid / half_unpaid
-  //   - the employee is on auto_attendance mode (Mode 3 = always-Present)
+  // Presence signal used by the credit check.  ONLY these signals
+  // qualify as "the employee actually worked that day":
+  //   - a submission was filed on this day, OR
+  //   - an Attendance record says present / half_paid / half_unpaid.
+  //
+  // Phase 35 fix: auto_attendance mode (Mode 3) is intentionally NOT a
+  // signal here.  Mode 3 only marks WORKING days as Present; weekly
+  // offs and holidays remain weekly_off / holiday for that employee,
+  // and there's no reason to assume they worked every Sunday in the
+  // month just because their mode is "auto".  Including it caused
+  // 4 Sundays in a 30-day month to all count as holiday-worked,
+  // bumping payable days from 30 to 34 when only 1 should have been
+  // credited (the spec's required Case B → answer = 1).
   const PRESENT_STATUSES = new Set(['present', 'half_paid', 'half_unpaid']);
   const wasPresentOn = (dayDate) => {
     const iso = startOfDay(dayDate).toISOString();
     if (submittedDayIso.has(iso)) return true;
     if (PRESENT_STATUSES.has(attByIso.get(iso))) return true;
-    if (employee.attendanceMode === 'auto_attendance') return true;
     return false;
   };
 

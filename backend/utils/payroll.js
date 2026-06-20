@@ -104,7 +104,16 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
   // "If ESIC is not enabled/configured: ESIC should remain 0.")
   // PF logic is unchanged.
   const esicConfigured = !!structure.esicEnabled || Number(structure.esicAmount) > 0;
-  const employerEsic = esicConfigured ? rupee(pct(monthlyGross, structure.employerEsicPercentage ?? 3.25)) : 0;
+  // Phase 35 -- treat a missing OR a zero `employerEsicPercentage` as
+  // "use the schema default" (3.25%).  Legacy User documents that were
+  // saved before the field existed, or HR profiles where only
+  // `esicAmount` was filled, persist this as 0; the previous `??`
+  // operator only caught null / undefined, so a stored 0 silently
+  // zeroed Employer ESIC even when employee ESIC was computed.
+  const employerEsicRate = Number(structure.employerEsicPercentage) > 0
+    ? Number(structure.employerEsicPercentage)
+    : 3.25;
+  const employerEsic = esicConfigured ? rupee(pct(monthlyGross, employerEsicRate)) : 0;
   const employerTotal = employerPf + employerEsic;
   const ctcMonthly = monthlyGross + employerTotal;
 
