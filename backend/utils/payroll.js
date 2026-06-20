@@ -94,7 +94,17 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
 
   // ---- STEP 2: Employer contributions (CTC only - never reduce net) ----
   const employerPf = structure.pfEnabled ? rupee(pct(basic, structure.employerPfPercentage ?? 13)) : 0;
-  const employerEsic = structure.esicEnabled ? rupee(pct(monthlyGross, structure.employerEsicPercentage ?? 3.25)) : 0;
+  // Phase 33 -- ESIC is considered "configured" when ANY of the
+  // following holds.  A bare default percentage (3.25) is NOT enough --
+  // every employee carries that default, so it would auto-enable
+  // everyone.  We only trust signals HR actually set on the profile:
+  //   - the explicit toggle (`esicEnabled === true`), OR
+  //   - an override amount (`esicAmount > 0`)
+  // When neither is present, ESIC stays at 0 (matches the user's spec
+  // "If ESIC is not enabled/configured: ESIC should remain 0.")
+  // PF logic is unchanged.
+  const esicConfigured = !!structure.esicEnabled || Number(structure.esicAmount) > 0;
+  const employerEsic = esicConfigured ? rupee(pct(monthlyGross, structure.employerEsicPercentage ?? 3.25)) : 0;
   const employerTotal = employerPf + employerEsic;
   const ctcMonthly = monthlyGross + employerTotal;
 
@@ -116,7 +126,11 @@ const computePayroll = ({ structure = {}, monthlySalary = 0, attendance = {}, bo
   }
 
   let esic = 0;
-  if (structure.esicEnabled) {
+  // Phase 33 -- mirror the employer-side `esicConfigured` check so the
+  // employee ESIC deduction is read from the same signal.  Otherwise
+  // we'd compute the employer side (CTC line) but skip the employee
+  // side (net deduction), which would inflate net pay incorrectly.
+  if (esicConfigured) {
     esic = rupee(Number(structure.esicAmount) > 0
       ? Number(structure.esicAmount)
       : pct(deductionBase, structure.esicPercentage ?? 0.75));

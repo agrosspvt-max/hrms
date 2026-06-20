@@ -8,6 +8,7 @@ const { monthRange, formatMonth, formatYMD, parseDay, startOfDay, addDays } = re
 const { streamSalarySlipPdf } = require('../utils/pdfGenerator');
 const { sendCSV } = require('../utils/csvExporter');
 const { computePayroll } = require('../utils/payroll');
+const { logAudit } = require('../utils/audit');
 
 /**
  * Normalise an array of { amount, note } objects coming from the API
@@ -93,17 +94,57 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
   const monthDays = (att.perDay && att.perDay.length)
     || Math.max(1, Math.round((to - from) / 86400000));
 
-  // Sunday / Holiday worked credit -- one credit per day where the
-  // employee filed any submission AND the day was classified as
-  // weekly_off or holiday by deriveAttendance.  Computed from the same
-  // `submissions` array already pulled above, so no extra query.
+  // Phase 33 -- Sunday / Holiday worked credit.
+  //
+  // A day earns the credit when BOTH hold:
+  //   (a) the day is calendar-wise a weekly off (per employee.weeklyOff[])
+  //       OR a holiday (per the Holiday collection), AND
+  //   (b) the employee was effectively present -- either by filing a
+  //       submission, by an Attendance record with status 'present' /
+  //       half_paid / half_unpaid, or by auto_attendance mode.
+  //
+  // We can't use deriveAttendance's `status` field alone because a
+  // manual Attendance override that flips a Sunday to 'present' rewrites
+  // the day's status (manual wins), so `status === 'weekly_off'` was
+  // failing for exactly the case the user reported.  We instead detect
+  // weekly-off / holiday from the calendar independently, then check
+  // for any signal that the employee actually worked that day.
+  const Holiday = require('../models/Holiday');
+  const Attendance = require('../models/Attendance');
+  const holidayMap = new Map(
+    (await Holiday.find({ date: { $gte: from, $lt: to } }).select('date').lean())
+      .map((h) => [startOfDay(h.date).toISOString(), true]),
+  );
+  const attRecords = await Attendance.find({
+    employee: employee._id,
+    date: { $gte: from, $lt: to },
+  }).select('date status').lean();
+  const attByIso = new Map(attRecords.map((a) => [startOfDay(a.date).toISOString(), a.status]));
+  const employeeWeeklyOff = new Set(employee.weeklyOff || [0]);
   const submittedDayIso = new Set(submissions.map((s) => startOfDay(s.date).toISOString()));
+  // Presence signal used by the credit check.  Any of these counts as
+  // "the employee actually worked that day", independent of the day's
+  // derived status:
+  //   - a submission was filed on this day
+  //   - an Attendance record says present / half_paid / half_unpaid
+  //   - the employee is on auto_attendance mode (Mode 3 = always-Present)
+  const PRESENT_STATUSES = new Set(['present', 'half_paid', 'half_unpaid']);
+  const wasPresentOn = (dayDate) => {
+    const iso = startOfDay(dayDate).toISOString();
+    if (submittedDayIso.has(iso)) return true;
+    if (PRESENT_STATUSES.has(attByIso.get(iso))) return true;
+    if (employee.attendanceMode === 'auto_attendance') return true;
+    return false;
+  };
+
   let holidayWorkedDays = 0;
   for (const d of (att.perDay || [])) {
-    const iso = startOfDay(d.date).toISOString();
-    if ((d.status === 'weekly_off' || d.status === 'holiday') && submittedDayIso.has(iso)) {
-      holidayWorkedDays += 1;
-    }
+    const dayDate = new Date(d.date);
+    const iso = startOfDay(dayDate).toISOString();
+    const isWeeklyOff = employeeWeeklyOff.has(dayDate.getUTCDay());
+    const isHoliday   = holidayMap.has(iso);
+    if (!isWeeklyOff && !isHoliday) continue;
+    if (wasPresentOn(dayDate)) holidayWorkedDays += 1;
   }
 
   const workingDays = att.workingDays || 1;
@@ -216,8 +257,12 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
     generatedBy: opts.generatedBy,
   };
 
+  // Phase 32 -- only ACTIVE slips collide with this generation.  A
+  // retracted slip for the same (employee, periodKey) stays in place
+  // (audit trail) and a fresh active slip is created on top.
+  update.status = 'active';
   const slip = await SalarySlip.findOneAndUpdate(
-    { employee: employee._id, periodKey },
+    { employee: employee._id, periodKey, status: { $ne: 'retracted' } },
     update,
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
@@ -256,10 +301,35 @@ const generate = asyncHandler(async (req, res) => {
   } = req.body;
   const { startDate, endDate } = resolveRange(req.body);
   if (startDate > endDate) { res.status(400); throw new Error('Start date must be on or before end date'); }
+
+  // Phase 32 — detect whether a retracted slip exists for the same
+  // (employee, periodKey); if so, this counts as a regeneration for
+  // audit-log purposes.  The compute path itself doesn't care: it
+  // upserts onto status !== 'retracted', leaving the retracted row in
+  // place.
+  const periodKeyHint = `${formatYMD(startOfDay(startDate))}_${formatYMD(startOfDay(endDate))}`;
+  const priorRetracted = await SalarySlip.findOne({
+    employee: employeeId, periodKey: periodKeyHint, status: 'retracted',
+  }).select('_id').lean();
+
   const { slip } = await computeSlip(employeeId, startDate, endDate, {
     bonuses, deductions, bonusNote, deductionNote, bonusItems, deductionItems,
     generatedBy: req.user._id,
   });
+
+  logAudit(req, {
+    action: priorRetracted ? 'salary.regenerated' : 'salary.generated',
+    targetType: 'SalarySlip',
+    targetId: slip._id,
+    targetLabel: `${slip.employeeName || employeeId} · ${slip.periodKey}`,
+    meta: {
+      employeeId: String(employeeId),
+      periodKey: slip.periodKey,
+      month: slip.month,
+      via: 'individual',
+    },
+  });
+
   res.status(201).json(slip);
 });
 
@@ -286,6 +356,20 @@ const generateAll = asyncHandler(async (req, res) => {
       console.error('[salary] failed for', emp.employeeId, err.message);
     }
   }
+  // Phase 32: one audit entry per bulk run (per-row entries would flood
+  // the log).  Detail rows live inside `meta.slipIds[]`.
+  logAudit(req, {
+    action: 'salary.generated',
+    targetType: 'SalarySlip',
+    targetLabel: `Bulk · ${formatYMD(startDate)} → ${formatYMD(endDate)} · ${slips.length} slip(s)`,
+    meta: {
+      via: 'bulk',
+      periodStart: formatYMD(startDate),
+      periodEnd: formatYMD(endDate),
+      count: slips.length,
+      slipIds: slips.map((s) => String(s._id)),
+    },
+  });
   res.json({ count: slips.length, slips });
 });
 
@@ -310,8 +394,15 @@ const listSlips = asyncHandler(async (req, res) => {
   } else if (req.query.month) {
     where.month = req.query.month;
   }
+  // Phase 32: by default hide retracted slips so active payroll views
+  // never include them.  HR can pass ?includeRetracted=true to audit
+  // historical retractions from the Salary module.
+  if (req.query.includeRetracted !== 'true') {
+    where.status = { $ne: 'retracted' };
+  }
   const items = await SalarySlip.find(where)
     .populate('employee', 'name employeeId email')
+    .populate('retractedBy', 'name email')
     .sort({ periodStart: -1, month: -1 });
   res.json(items);
 });
@@ -431,6 +522,8 @@ const exportCsv = asyncHandler(async (req, res) => {
     where.month = req.query.month;
     label = req.query.month;
   }
+  // Phase 32: retracted slips are excluded from payroll exports + totals.
+  where.status = { $ne: 'retracted' };
   const items = await SalarySlip.find(where).populate('employee', 'name employeeId');
   const rows = items.map((s) => ({
     employeeId: s.employee?.employeeId || s.employeeEmpId || '',
@@ -451,6 +544,57 @@ const exportCsv = asyncHandler(async (req, res) => {
   sendCSV(res, `salary-${label}.csv`, rows);
 });
 
+/* ====================================================================
+ * Phase 32 — Soft-delete retraction
+ *
+ * Marks a generated salary slip as `retracted` so it disappears from
+ * active payroll surfaces (list / CSV / totals / mySlips) but stays in
+ * the database + audit trail.  The retracted slip's PDF endpoint still
+ * works for historical audit; no calculation logic is altered.
+ *
+ * After a slip is retracted, a fresh `active` slip can be generated for
+ * the same (employee, periodKey) because computeSlip's upsert scopes
+ * to `status !== 'retracted'`.
+ *
+ * Body: { reason? }
+ * ================================================================== */
+const retract = asyncHandler(async (req, res) => {
+  const role = req.user.role;
+  if (role !== 'hr' && role !== 'super_admin') {
+    res.status(403); throw new Error('Only HR / Super Admin can retract salary slips.');
+  }
+  const slip = await SalarySlip.findById(req.params.id);
+  if (!slip) { res.status(404); throw new Error('Slip not found.'); }
+  if (slip.status === 'retracted') {
+    return res.json({ ok: true, slip, message: 'Slip is already retracted.' });
+  }
+  const reason = String(req.body?.reason || '').trim();
+
+  slip.status = 'retracted';
+  slip.retractedAt = new Date();
+  slip.retractedBy = req.user._id;
+  slip.retractionReason = reason;
+  await slip.save();
+
+  logAudit(req, {
+    action: 'salary.retracted',
+    targetType: 'SalarySlip',
+    targetId: slip._id,
+    targetLabel: `${slip.employeeName || slip.employee} · ${slip.periodKey || slip.month}`,
+    meta: {
+      employeeId: String(slip.employee),
+      periodKey: slip.periodKey,
+      month: slip.month,
+      previousStatus: 'active',
+      newStatus: 'retracted',
+      reason,
+    },
+  });
+
+  res.json({ ok: true, slip });
+});
+
 module.exports = {
   generate, generateAll, mySlips, listSlips, downloadPdf, updateSlip, exportCsv,
+  retract,
 };

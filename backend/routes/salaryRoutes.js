@@ -12,5 +12,7 @@ router.get('/', authorize('hr'), c.listSlips);
 router.post('/generate', authorize('hr'), c.generate);
 router.post('/generate-all', authorize('hr'), c.generateAll);
 router.patch('/:id', authorize('hr'), c.updateSlip);
+// Phase 32 — soft-delete retraction (HR / Super Admin only).
+router.post('/:id/retract', authorize('hr'), c.retract);
 
 module.exports = router;

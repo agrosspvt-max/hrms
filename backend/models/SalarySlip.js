@@ -111,6 +111,32 @@ const salarySlipSchema = new mongoose.Schema(
     deductionNote: { type: String, default: '' },
 
     generatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
+    /* Phase 32 -- soft-delete retraction.
+     *
+     *   active     - the live slip used by active payroll, exports,
+     *                totals and reports.  Default for every newly
+     *                generated slip (preserves backward compatibility
+     *                with every existing record).
+     *   retracted  - HR / Super Admin pulled the slip back.  Stays in
+     *                the database + audit logs but is excluded from
+     *                every active-payroll surface.  A fresh slip can
+     *                be generated for the same (employee, periodKey)
+     *                because the active scope check ignores retracted
+     *                rows.
+     *   paid      - reserved for future "marked as paid" workflow;
+     *                schema accepts it now so the UI can render the
+     *                blue badge without a follow-up migration.
+     */
+    status: {
+      type: String,
+      enum: ['active', 'retracted', 'paid'],
+      default: 'active',
+      index: true,
+    },
+    retractedAt:  { type: Date },
+    retractedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    retractionReason: { type: String, default: '' },
   },
   { timestamps: true }
 );
