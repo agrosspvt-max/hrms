@@ -28,6 +28,8 @@ app.use('/api/dashboard', require('./routes/dashboardRoutes'));
 app.use('/api/attendance', require('./routes/attendanceRoutes'));
 // Phase 29: per-employee attendance confirmations (attendance_review mode).
 app.use('/api/attendance-confirmation', require('./routes/attendanceConfirmationRoutes'));
+// Phase 43: per-employee feature permissions (Manage Access → Feature Access).
+app.use('/api/feature-permissions', require('./routes/featurePermissionsRoutes'));
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 app.use('/api/contacts', require('./routes/contactRoutes'));
 app.use('/api/events', require('./routes/eventRoutes'));

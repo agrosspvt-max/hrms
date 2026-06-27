@@ -105,7 +105,11 @@ export default function ManageAccess() {
           <h1 className="text-2xl font-bold">Manage Access</h1>
           <p className="text-sm text-slate-500">Self-service administration for Super Admin &amp; HR accounts — no seed files, no DB scripts.</p>
         </div>
-        <button className="btn-primary" onClick={() => setModal({ kind: 'create', data: { ...FORM_BLANK } })}>+ Create Admin Account</button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Phase 43 -- Feature Access management entry point. */}
+          <a className="btn-secondary" href="/feature-access">Feature Access</a>
+          <button className="btn-primary" onClick={() => setModal({ kind: 'create', data: { ...FORM_BLANK } })}>+ Create Admin Account</button>
+        </div>
       </div>
 
       {/* Summary cards */}

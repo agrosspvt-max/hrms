@@ -57,6 +57,39 @@ const userSchema = new mongoose.Schema(
       index: true,
     },
 
+    /* ====================================================================
+     * Phase 43 — Feature Permissions
+     *
+     * Per-employee feature access map.  Lets HR / Super Admin grant
+     * specific modules + sub-permissions to individual employees
+     * without promoting them to HR / Super Admin.  The map is a free-
+     * form Mixed payload so new modules can be added without schema
+     * migrations.  Shape:
+     *
+     *   featurePermissions: {
+     *     <moduleKey>: {
+     *       enabled: Boolean,             // module visible / accessible
+     *       level: 'view'|'edit'|'full',  // access level (when needed)
+     *       sub: { ... }                  // sub-permission map (e.g.
+     *                                     // { dealers: { view, create,
+     *                                     //   edit, delete }, ... })
+     *       allowedTemplateIds: [String]  // template-analytics scope
+     *     }
+     *   }
+     *
+     * Semantics:
+     *   - HR / Super Admin bypass all featurePermissions checks
+     *     (existing behaviour preserved).
+     *   - HOD-only modules continue to gate on isHOD; featurePermissions
+     *     can layer additional employee-level grants on top, but never
+     *     downgrade an existing role.
+     *   - Employees with no featurePermissions set keep their default
+     *     employee surface unchanged.
+     * ================================================================== */
+    featurePermissions: { type: mongoose.Schema.Types.Mixed, default: {} },
+    featurePermissionsUpdatedAt: { type: Date },
+    featurePermissionsUpdatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+
     // monthlySalary is the IN-HAND (net) amount the employee actually
     // takes home each month.  All daily-rate / salary-slip math is
     // derived from this value (perDay = monthlySalary / workingDays).

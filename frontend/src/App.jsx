@@ -16,6 +16,7 @@ import WorkAssignments from './pages/hr/WorkAssignments.jsx';
 import Contacts from './pages/hr/Contacts.jsx';
 import EventsCalendar from './pages/hr/EventsCalendar.jsx';
 import ManageAccess from './pages/superadmin/ManageAccess.jsx';
+import FeatureAccess from './pages/superadmin/FeatureAccess.jsx';
 import Departments from './pages/hr/Departments.jsx';
 import Designations from './pages/hr/Designations.jsx';
 import Templates from './pages/hr/Templates.jsx';
@@ -114,6 +115,8 @@ export default function App() {
         {/* Super Admin only */}
         <Route path="/hr-management" element={<ProtectedRoute role="super_admin"><HRManagement /></ProtectedRoute>} />
         <Route path="/manage-access" element={<ProtectedRoute role="super_admin"><ManageAccess /></ProtectedRoute>} />
+        {/* Phase 43 -- Feature Access management.  HR also gets in. */}
+        <Route path="/feature-access" element={<ProtectedRoute role="hr"><FeatureAccess /></ProtectedRoute>} />
         <Route path="/audit" element={<ProtectedRoute role="super_admin"><AuditLog /></ProtectedRoute>} />
         <Route path="/performance" element={<PerformanceGate><Performance /></PerformanceGate>} />
         <Route path="/leaves" element={<ProtectedRoute role="hr"><HRLeaves /></ProtectedRoute>} />

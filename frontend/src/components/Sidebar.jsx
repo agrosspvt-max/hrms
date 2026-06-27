@@ -34,6 +34,35 @@ const I = {
   chevron: 'M9 18l6-6-6-6',
 };
 
+/* =====================================================================
+ * Phase 43 — Feature Permissions map for the sidebar
+ *
+ * Per-employee `featurePermissions[<moduleKey>].enabled === true` adds
+ * the corresponding nav item to the employee's sidebar.  HR / Super
+ * Admin / HOD sidebars are unchanged.  Employees without any
+ * configured permissions keep their default sidebar.
+ *
+ * Module-key → nav-item lookup.  Keep the labels + icons aligned with
+ * the HR / Super Admin defaults below so the UX feels native.
+ * ===================================================================== */
+const GRANTED_MODULES = [
+  { key: 'attendance',        to: '/attendance',        label: 'Attendance',        icon: I.attendance },
+  { key: 'leaveApprovals',    to: '/leaves',            label: 'Leave Approvals',   icon: I.leave },
+  { key: 'submissionReviews', to: '/reviews',           label: 'Submission Reviews', icon: I.review },
+  { key: 'globalPendency',    to: '/backlog',           label: 'Global Pendency',   icon: I.clock },
+  { key: 'departments',       to: '/organization',     label: 'Departments',       icon: I.grid },
+  { key: 'products',          to: '/products',          label: 'Products & Dealers', icon: I.tools },
+  { key: 'assignments',       to: '/assignments',       label: 'Assignments',       icon: I.tasks },
+  { key: 'submissionControl', to: '/submission-control', label: 'Submission Control', icon: I.review },
+  { key: 'templateAnalytics', to: '/template-analytics', label: 'Template Analytics', icon: I.chart },
+  { key: 'salary',            to: '/salary',            label: 'Salary',            icon: I.money },
+  { key: 'contacts',          to: '/contacts',          label: 'Contacts',          icon: I.people },
+  { key: 'eventsHolidays',    to: '/events',            label: 'Events & Holidays', icon: I.calendar },
+  { key: 'auditLog',          to: '/audit',             label: 'Audit Log',         icon: I.audit },
+  { key: 'sendAlerts',        to: '/sent-alerts',       label: 'Send Alerts',       icon: I.send },
+  { key: 'performance',       to: '/performance',       label: 'Performance',       icon: I.chart },
+];
+
 /** Build the role-aware grouped navigation tree. */
 function buildNav(user) {
   const role = user?.role;
@@ -49,9 +78,23 @@ function buildNav(user) {
         { to: '/performance', label: 'Performance', icon: I.chart },
       ],
     }] : [];
+
+    // Phase 43: HR-granted modules.  When the employee has any module
+    // toggled on via featurePermissions, surface those items in a new
+    // "Granted Access" group above My Work.  Default employee
+    // experience is preserved when no permissions are configured.
+    const perms = (user?.featurePermissions && typeof user.featurePermissions === 'object')
+      ? user.featurePermissions : {};
+    const grantedItems = GRANTED_MODULES.filter((m) => perms[m.key]?.enabled);
+    const grantedGroup = grantedItems.length > 0 ? [{
+      type: 'group', id: 'granted', label: 'Granted Access', icon: I.admin,
+      items: grantedItems.map((m) => ({ to: m.to, label: m.label, icon: m.icon })),
+    }] : [];
+
     return [
       { type: 'link', to: '/', label: 'My Dashboard', icon: I.dash },
       ...team,
+      ...grantedGroup,
       {
         type: 'group', id: 'mywork', label: 'My Work', icon: I.inbox, items: [
           { to: '/notifications', label: 'Notifications', icon: I.bell, badgeKey: 'notifications' },
