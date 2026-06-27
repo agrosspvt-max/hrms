@@ -291,6 +291,18 @@ const templateSchema = new mongoose.Schema(
     // Lifecycle toggle so HR can deactivate templates without deleting.
     isActive: { type: Boolean, default: true },
 
+    /* Phase 41 -- Template Analytics surface visibility toggle.
+     *
+     * When `true`, the template still exists + still accepts new
+     * submissions (assignments / reviews / attendance / submissions all
+     * keep working), but it is hidden from the Template Analytics
+     * picker.  HR uses this from the Template Analytics page's
+     * "Delete Analytics" action: the underlying template + every
+     * historical record is preserved; only the analytics-surface entry
+     * disappears.
+     */
+    analyticsHidden: { type: Boolean, default: false, index: true },
+
     // When enabled (excel / sheet templates), each scored row gets a
     // Done / Pending / Work Not Available status dropdown + optional
     // dependency hand-off, just like task templates.  Off by default so

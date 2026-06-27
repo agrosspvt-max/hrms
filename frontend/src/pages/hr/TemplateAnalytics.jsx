@@ -10,6 +10,7 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { ClickableCard, DrillDownModal } from '../../components/AnalyticsDrillDown.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, fmtCurrency, fmtPct, fmtAvg, fmtInt } from '../../utils/helpers';
 
 /**
@@ -71,33 +72,12 @@ export default function TemplateAnalytics() {
   // Picker view (no templateId in URL).
   if (!templateId) {
     return (
-      <div className="space-y-4">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-900">Template Analytics</h1>
-          <p className="text-sm text-slate-500">
-            Auto-generated analytics for every custom template. Pick a template below — the engine derives KPIs, leaderboards, and trends from the template definition itself.
-          </p>
-        </div>
-        {templates.length === 0 ? (
-          <EmptyState title="No templates available" subtitle="HR can create custom templates from the Work Assignments page; they'll show up here automatically." />
-        ) : (
-          <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
-            {templates.map((t) => (
-              <button
-                key={t._id}
-                onClick={() => navigate(`/template-analytics/${t._id}`)}
-                className="card card-body text-left hover:shadow-md transition"
-              >
-                <div className="text-sm font-semibold text-slate-800">{t.analyticsName}</div>
-                <div className="text-[11px] text-slate-500 mt-1">
-                  {t.templateType}{t.customKind ? ` / ${t.customKind}` : ''}
-                  {t.department?.name ? ` · ${t.department.name}` : ' · Global'}
-                </div>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      <TemplatePicker
+        templates={templates}
+        canDelete={user?.role === 'hr' || user?.role === 'super_admin'}
+        onPick={(id) => navigate(`/template-analytics/${id}`)}
+        onChange={() => api.get('/template-analytics').then((r) => setTemplates(r.data || []))}
+      />
     );
   }
 
@@ -654,6 +634,175 @@ function ExtraWorkSection({ extra, onDrill = () => {} }) {
           </BarChart>
         </div>
       )}
+    </div>
+  );
+}
+
+/* =====================================================================
+ * Phase 41 — Template Analytics picker with multi-select + delete
+ *
+ * Per-card delete (HR / SA only) + a multi-select bar that mirrors the
+ * pattern used elsewhere (Attendance / Salary / Submission Reviews).
+ * Delete only hides the analytics-surface entry: the underlying
+ * template, assignments, submissions, attendance, and historical
+ * records all stay intact (backend sets `template.analyticsHidden=true`,
+ * does not touch the Template document beyond that flag).
+ * ===================================================================== */
+function TemplatePicker({ templates, canDelete, onPick, onChange }) {
+  const toast = useToast();
+  const [selected, setSelected] = useState(() => new Set());
+  const [busy, setBusy] = useState(false);
+  const [confirmIds, setConfirmIds] = useState(null); // null | [String]
+
+  const toggleOne = (id) => setSelected((cur) => {
+    const n = new Set(cur);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+  const allSelected = templates.length > 0 && templates.every((t) => selected.has(t._id));
+  const someSelected = templates.some((t) => selected.has(t._id));
+  const toggleSelectAll = () => setSelected((cur) => {
+    if (allSelected) return new Set();
+    const n = new Set(cur);
+    templates.forEach((t) => n.add(t._id));
+    return n;
+  });
+  const clearSelection = () => setSelected(new Set());
+
+  const performDelete = async (ids) => {
+    setBusy(true);
+    try {
+      if (ids.length === 1) await api.delete(`/template-analytics/${ids[0]}`);
+      else await api.post('/template-analytics/hide-bulk', { templateIds: ids });
+      toast.success(`Removed analytics for ${ids.length} template${ids.length === 1 ? '' : 's'}`);
+      setConfirmIds(null);
+      clearSelection();
+      onChange();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Template Analytics</h1>
+        <p className="text-sm text-slate-500">
+          Auto-generated analytics for every template. Pick a template below — the engine derives KPIs, leaderboards, and trends from the template definition itself.
+        </p>
+      </div>
+
+      {/* Phase 41 -- bulk action bar.  Renders only when at least one
+          template is selected so the page stays uncluttered. */}
+      {canDelete && selected.size > 0 && (
+        <div className="flex items-center justify-between gap-2 flex-wrap text-xs bg-brand-50 dark:bg-brand-500/10 border border-brand-200 dark:border-brand-500/30 rounded-lg px-3 py-2">
+          <span><b>{selected.size}</b> template{selected.size === 1 ? '' : 's'} selected</span>
+          <div className="flex items-center gap-2">
+            <button className="btn-secondary !py-1 !text-xs" onClick={clearSelection}>Clear</button>
+            <button
+              className="btn-secondary !py-1 !text-xs text-red-600"
+              onClick={() => setConfirmIds([...selected])}
+            >
+              {selected.size > 1 ? 'Delete Selected Analytics' : 'Delete Analytics'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Select-all toggle */}
+      {canDelete && templates.length > 0 && (
+        <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={allSelected}
+            ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+            onChange={toggleSelectAll}
+          />
+          Select all templates on this page
+        </label>
+      )}
+
+      {templates.length === 0 ? (
+        <EmptyState title="No templates available" subtitle="HR can create templates from the Work Assignments page; they'll show up here automatically." />
+      ) : (
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {templates.map((t) => {
+            const isSelected = selected.has(t._id);
+            return (
+              <div
+                key={t._id}
+                className={`card card-body relative transition ${isSelected ? 'ring-2 ring-brand-400' : 'hover:shadow-md'}`}
+              >
+                {canDelete && (
+                  <label
+                    className="absolute top-2 left-2 cursor-pointer select-none"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleOne(t._id)}
+                    />
+                  </label>
+                )}
+                <button
+                  onClick={() => onPick(t._id)}
+                  className={`text-left ${canDelete ? 'pl-6' : ''} w-full`}
+                >
+                  <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">{t.analyticsName}</div>
+                  <div className="text-[11px] text-slate-500 mt-1">
+                    {t.templateType}{t.customKind ? ` / ${t.customKind}` : ''}
+                    {t.department?.name ? ` · ${t.department.name}` : ' · Global'}
+                  </div>
+                </button>
+                {canDelete && (
+                  <button
+                    className="absolute top-2 right-2 text-[11px] text-red-600 hover:underline"
+                    title="Remove this template's analytics entry"
+                    onClick={(e) => { e.stopPropagation(); setConfirmIds([t._id]); }}
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {confirmIds && (
+        <DeleteAnalyticsConfirm
+          count={confirmIds.length}
+          busy={busy}
+          onCancel={() => setConfirmIds(null)}
+          onConfirm={() => performDelete(confirmIds)}
+        />
+      )}
+    </div>
+  );
+}
+
+function DeleteAnalyticsConfirm({ count, busy, onCancel, onConfirm }) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={onCancel}>
+      <div className="bg-white dark:bg-slate-900 rounded-lg shadow-xl max-w-md w-full m-4 p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+            Delete Analytics?
+          </h2>
+          <p className="text-sm text-slate-600 dark:text-slate-300 mt-2">
+            This will remove the analytics generated for the selected template{count === 1 ? '' : 's'}.
+          </p>
+          <p className="text-[12px] text-slate-500 dark:text-slate-400 mt-2">
+            The original work template, employee submissions, attendance, and historical data will NOT be deleted.
+          </p>
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onCancel} disabled={busy}>Cancel</button>
+          <button className="btn-primary !bg-red-600 hover:!bg-red-700" onClick={onConfirm} disabled={busy}>
+            {busy ? 'Deleting…' : 'Delete'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

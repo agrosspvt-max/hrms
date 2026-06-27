@@ -71,7 +71,22 @@ const safePct = (num, den) => (den > 0 ? round1((num / den) * 100) : 0);
 /* clamp so the sidebar / picker only shows what the caller can see.   */
 /* ------------------------------------------------------------------ */
 const list = asyncHandler(async (req, res) => {
-  const where = { isActive: true };
+  // Phase 41.1 -- backfill legacy templates.  Older Template documents
+  // that pre-date the `isActive` field carry it as `undefined`, which
+  // failed the strict `isActive: true` filter and made them invisible
+  // in the Template Analytics picker.  `$ne: false` matches `true`,
+  // `undefined`, and any document where the field is missing -- the
+  // exact set the user wants surfaced.  Templates HR explicitly
+  // deactivated (`isActive: false`) still stay hidden.
+  //
+  // Phase 41.2 -- hide analytics-surface entries HR has "deleted" via
+  // the Template Analytics page.  The underlying template document is
+  // preserved (so submissions / assignments / history keep working),
+  // only the analytics picker entry is hidden.
+  const where = {
+    isActive: { $ne: false },
+    analyticsHidden: { $ne: true },
+  };
   // HOD scope: only templates without a department (global) OR templates
   // tied to the HOD's department.  HR/SA see everything.
   const role = req.user.role;
@@ -830,4 +845,70 @@ const generate = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { list, generate };
+/* ====================================================================
+ * Phase 41.2 — Delete Template Analytics entry (analytics only)
+ *
+ * Sets `template.analyticsHidden = true` so the template disappears
+ * from the Template Analytics picker.  Everything else about the
+ * template is preserved verbatim:
+ *   - the Template document stays in the collection,
+ *   - active assignments keep targeting it,
+ *   - submissions keep flowing in,
+ *   - attendance / performance / review-history / dashboards keep
+ *     reading from the same Submission rows,
+ *   - the original work-template can still be re-surfaced later by
+ *     flipping the flag back to `false`.
+ *
+ * HR / Super Admin only.  HODs cannot delete analytics entries.
+ *
+ *   DELETE /api/template-analytics/:templateId
+ *     hide a single template
+ *
+ *   POST   /api/template-analytics/hide-bulk
+ *     Body: { templateIds: [String] }
+ *     hide many templates in one call
+ *
+ * To re-enable an analytics entry, HR can flip the flag back via the
+ * Templates admin page (or this endpoint with action='restore').
+ * ================================================================== */
+const remove = asyncHandler(async (req, res) => {
+  const role = req.user.role;
+  if (role !== 'hr' && role !== 'super_admin') {
+    res.status(403); throw new Error('Only HR / Super Admin can manage analytics entries.');
+  }
+  const { templateId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(templateId)) {
+    res.status(400); throw new Error('Valid templateId is required.');
+  }
+  const tpl = await Template.findByIdAndUpdate(
+    templateId,
+    { $set: { analyticsHidden: true } },
+    { new: true },
+  ).select('_id title analyticsHidden');
+  if (!tpl) { res.status(404); throw new Error('Template not found.'); }
+  res.json({ ok: true, template: { _id: tpl._id, title: tpl.title, analyticsHidden: tpl.analyticsHidden } });
+});
+
+const removeBulk = asyncHandler(async (req, res) => {
+  const role = req.user.role;
+  if (role !== 'hr' && role !== 'super_admin') {
+    res.status(403); throw new Error('Only HR / Super Admin can manage analytics entries.');
+  }
+  const { templateIds } = req.body || {};
+  if (!Array.isArray(templateIds) || templateIds.length === 0) {
+    res.status(400); throw new Error('templateIds[] is required.');
+  }
+  const validIds = templateIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+  const result = await Template.updateMany(
+    { _id: { $in: validIds } },
+    { $set: { analyticsHidden: true } },
+  );
+  res.json({
+    ok: true,
+    requested: templateIds.length,
+    matched: result.matchedCount || result.n || 0,
+    modified: result.modifiedCount || result.nModified || 0,
+  });
+});
+
+module.exports = { list, generate, remove, removeBulk };
