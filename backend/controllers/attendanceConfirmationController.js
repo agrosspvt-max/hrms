@@ -8,6 +8,15 @@ const AttendanceConfirmation = require('../models/AttendanceConfirmation');
 const { startOfDay } = require('../utils/dateHelpers');
 const { logAudit }   = require('../utils/audit');
 
+// Phase 44.4 -- shared featurePermissions[key].enabled probe.  Mirrors
+// the helper used in dailyReviewController / templateAnalyticsController.
+const _hasFeature = (req, key) => {
+  const perms = (req.user?.featurePermissions
+    && (req.user.featurePermissions.toObject
+      ? req.user.featurePermissions.toObject() : req.user.featurePermissions)) || {};
+  return !!perms[key]?.enabled;
+};
+
 /**
  * Phase 29 — Attendance Confirmation workflow (mode 2: attendance_review)
  *
@@ -169,10 +178,16 @@ const queueForDay = asyncHandler(async (req, res) => {
 
   const role = req.user.role;
   const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  const hasReviewGrant = _hasFeature(req, 'submissionReviews');
   const where = { status: 'active', attendanceMode: 'attendance_review' };
   if (role !== 'hr' && role !== 'super_admin') {
-    if (!isHOD) { res.status(403); throw new Error('Forbidden'); }
-    where.department = req.user.hodDepartment;
+    if (isHOD) {
+      where.department = req.user.hodDepartment;
+    } else if (!hasReviewGrant) {
+      res.status(403); throw new Error('Forbidden');
+    }
+    // hasReviewGrant employees see the full queue, matching what
+    // Submission Reviews shows them on the daily-review side.
   }
   const employees = await User.find(where)
     .select('_id name employeeId department')
@@ -229,8 +244,12 @@ const queueForDay = asyncHandler(async (req, res) => {
  */
 const review = asyncHandler(async (req, res) => {
   const role = req.user.role;
-  if (role !== 'hr' && role !== 'super_admin') {
-    res.status(403); throw new Error('Only HR / Super Admin may review attendance confirmations.');
+  const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  if (role !== 'hr' && role !== 'super_admin'
+    && !isHOD
+    && !_hasFeature(req, 'submissionReviews')) {
+    res.status(403);
+    throw new Error('Only HR / Super Admin or a user with Submission Reviews access may review attendance confirmations.');
   }
   const { id } = req.params;
   if (!mongoose.Types.ObjectId.isValid(id)) {

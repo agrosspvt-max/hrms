@@ -156,9 +156,14 @@ const requireRoleOrFeature = (role, feature) => (req, res, next) => {
   if (role && u.role === role) return next();
   const perms = (u.featurePermissions && (u.featurePermissions.toObject
     ? u.featurePermissions.toObject() : u.featurePermissions)) || {};
-  if (feature && perms[feature]?.enabled) return next();
+  // Phase 44.4 -- accept either a single feature key or an array; any
+  // enabled key in the list satisfies the gate.  Lets shared directory
+  // endpoints (e.g. /employees) be granted to any feature page that
+  // needs an employee picker without leaking the rest of HR's surface.
+  const keys = Array.isArray(feature) ? feature : (feature ? [feature] : []);
+  if (keys.some((k) => perms[k]?.enabled)) return next();
   res.status(403);
-  return next(new Error(`Forbidden: ${role || 'admin'} role or ${feature || ''} feature permission required.`));
+  return next(new Error(`Forbidden: ${role || 'admin'} role or ${(keys.join('/') || '')} feature permission required.`));
 };
 
 module.exports = { protect, authorize, requireHOD, requireReviewer, requireAnalyticsAccess, requireRoleOrFeature };
