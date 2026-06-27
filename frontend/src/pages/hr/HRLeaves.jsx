@@ -97,7 +97,7 @@ export default function HRLeaves() {
           items.length === 0 ? <EmptyState title="No leave requests" /> :
           <table className="table">
             <thead><tr>
-              <th>Employee</th><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Reason</th><th>Status</th><th></th>
+              <th>Employee</th><th>Applied</th><th>Type</th><th>From</th><th>To</th><th>Days</th><th>Reason</th><th>Status</th><th></th>
             </tr></thead>
             <tbody>
               {items.map((lv) => (
@@ -107,6 +107,18 @@ export default function HRLeaves() {
                     {lv.employee?.role === 'hr' && <span className="ml-1 badge-blue">HR</span>}
                     {lv.employee?.role === 'super_admin' && <span className="ml-1 badge-amber">Super Admin</span>}
                     <div className="text-[11px] text-slate-500">{lv.employee?.employeeId}</div>
+                  </td>
+                  {/* Phase 40.1 -- exact submission timestamp.  The Leave
+                      model has timestamps:true so this is just `createdAt`. */}
+                  <td className="text-[12px] whitespace-nowrap">
+                    {lv.createdAt ? (
+                      <>
+                        {fmtDate(lv.createdAt)}
+                        <div className="text-[11px] text-slate-500">
+                          {new Date(lv.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}
+                        </div>
+                      </>
+                    ) : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="capitalize">{lv.leaveType}</td>
                   <td>{fmtDate(lv.fromDate)}</td>
@@ -200,6 +212,18 @@ function LeaveDetailsModal({ lv, onClose }) {
           <div>
             <div className="text-[11px] uppercase tracking-wide text-slate-500">Days</div>
             <div className="text-slate-900">{lv.days}{lv.dayType === 'half' ? ' (half-day)' : ''}</div>
+          </div>
+          {/* Phase 40.1 -- exact submission timestamp */}
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-slate-500">Applied</div>
+            <div className="text-slate-900">
+              {lv.createdAt ? (
+                <>
+                  {fmtDate(lv.createdAt)}
+                  <span className="text-slate-500"> · {new Date(lv.createdAt).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true })}</span>
+                </>
+              ) : '—'}
+            </div>
           </div>
           <div>
             <div className="text-[11px] uppercase tracking-wide text-slate-500">Status</div>

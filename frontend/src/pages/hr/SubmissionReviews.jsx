@@ -506,7 +506,11 @@ function CallingReportPanel({ sub }) {
   // Pull every customResponses field by key into one map.
   const m = Object.fromEntries((sub.customResponses || []).map((r) => [r.key, r.value]));
   const n = (k) => Number(m[k]) || 0;
-  const pct = (a, b) => (b > 0 ? Math.round((a / b) * 1000) / 10 : 0);
+  // Phase 40.3 -- helper used for every percentage display in this
+  // panel.  Calculation is unchanged; this is a pure display formatter.
+  // Rule: at most 2 decimals, never more (e.g. 84.123456 → 84.12,
+  // 92 → 92.00, 13.1 → 13.10).
+  const pct = (a, b) => (b > 0 ? Math.round((a / b) * 10000) / 100 : 0);
   const dialed = n('dialedCalls') || n('totalCallsCompleted');
   return (
     <div className="space-y-3">
@@ -524,15 +528,37 @@ function CallingReportPanel({ sub }) {
         <KPI label="Total Pending"     value={n('totalPending')}     accent="red" />
         <KPI label="Yesterday Pending" value={n('yesterdayPending')} />
       </div>
-      {/* Rate strip */}
+      {/* Rate strip -- every rate now goes through fmtPct2 so a long
+          stored decimal like 84.123456789 renders as 84.12%. */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <KPI label="Connection Rate"        value={`${n('connectionRate')        || pct(n('attendedCalls'), dialed)}%`} accent="blue" />
-        <KPI label="Conversion Rate"        value={`${n('conversionRate')        || pct(n('totalConversions'), n('attendedCalls'))}%`} accent="green" />
-        <KPI label="Pending Rate"           value={`${n('pendingRate')           || pct(n('totalPending'), n('assignedCalls'))}%`}   accent="red" />
-        <KPI label="Call Completion Rate"   value={`${n('callCompletionRate')    || pct(n('totalCallsCompleted'), n('assignedCalls'))}%`} accent="green" />
+        <KPI label="Connection Rate"        value={`${fmtPct2(n('connectionRate')        || pct(n('attendedCalls'), dialed))}%`} accent="blue" />
+        <KPI label="Conversion Rate"        value={`${fmtPct2(n('conversionRate')        || pct(n('totalConversions'), n('attendedCalls')))}%`} accent="green" />
+        <KPI label="Pending Rate"           value={`${fmtPct2(n('pendingRate')           || pct(n('totalPending'), n('assignedCalls')))}%`}   accent="red" />
+        <KPI label="Call Completion Rate"   value={`${fmtPct2(n('callCompletionRate')    || pct(n('totalCallsCompleted'), n('assignedCalls')))}%`} accent="green" />
       </div>
     </div>
   );
+}
+
+/* =====================================================================
+ * Phase 40.3 — Display-only decimal formatter
+ *
+ * Caps any numeric value to at most 2 decimal places when rendered.
+ * Whole numbers render as integers (with two trailing zeros to keep
+ * column alignment consistent with the spec example "13.1 → 13.10").
+ * This is pure formatting -- nothing about how the value was
+ * calculated or stored changes.
+ *
+ *   84.123456789  → "84.12"
+ *   91.999999     → "92.00"
+ *   13.1          → "13.10"
+ *   13            → "13.00"
+ *   null / NaN    → "0.00"
+ * ===================================================================== */
+function fmtPct2(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '0.00';
+  return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 /* ----------------- Product Sales + Farmer Records panel ----------------- */
@@ -561,19 +587,21 @@ function ProductFarmerPanel({ sub }) {
                 </tr>
               </thead>
               <tbody>
+                {/* Phase 40.3 -- 2-decimal display formatting on all
+                    computed values (quantity / sales / NBV). */}
                 {sales.map((r, i) => (
                   <tr key={i} className="border-t border-slate-100">
                     <td className="px-3 py-1.5">{r.productName || '—'} <span className="text-[11px] text-slate-400">({r.productUnit || ''})</span></td>
-                    <td className="px-3 py-1.5 text-right">{Number(r.quantity ?? r.quantityValue) || 0}</td>
-                    <td className="px-3 py-1.5 text-right text-green-700 font-semibold">{Math.round((Number(r.salesValue) || 0) * 100) / 100}</td>
-                    <td className="px-3 py-1.5 text-right">{Math.round((Number(r.nbvValue) || 0) * 100) / 100}</td>
+                    <td className="px-3 py-1.5 text-right">{fmtPct2(Number(r.quantity ?? r.quantityValue) || 0)}</td>
+                    <td className="px-3 py-1.5 text-right text-green-700 font-semibold">{fmtPct2(Number(r.salesValue) || 0)}</td>
+                    <td className="px-3 py-1.5 text-right">{fmtPct2(Number(r.nbvValue) || 0)}</td>
                   </tr>
                 ))}
                 <tr className="bg-slate-50 border-t-2 border-slate-200 font-semibold">
                   <td className="px-3 py-1.5 text-right">Total</td>
-                  <td className="px-3 py-1.5 text-right">{Math.round(totQty * 100) / 100}</td>
-                  <td className="px-3 py-1.5 text-right text-green-700">{Math.round(totSales * 100) / 100}</td>
-                  <td className="px-3 py-1.5 text-right">{Math.round(totNbv * 100) / 100}</td>
+                  <td className="px-3 py-1.5 text-right">{fmtPct2(totQty)}</td>
+                  <td className="px-3 py-1.5 text-right text-green-700">{fmtPct2(totSales)}</td>
+                  <td className="px-3 py-1.5 text-right">{fmtPct2(totNbv)}</td>
                 </tr>
               </tbody>
             </table>

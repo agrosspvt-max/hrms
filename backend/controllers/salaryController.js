@@ -397,7 +397,14 @@ const generateAll = asyncHandler(async (req, res) => {
  * GET /api/salary/mine
  */
 const mySlips = asyncHandler(async (req, res) => {
-  const items = await SalarySlip.find({ employee: req.user._id }).sort({ month: -1 });
+  // Phase 40.2 -- retracted slips must be completely invisible to the
+  // employee.  HR / Super Admin retain access via /api/salary with
+  // ?includeRetracted=true for audit; the employee's own list now
+  // behaves exactly as if the slip was never generated.
+  const items = await SalarySlip.find({
+    employee: req.user._id,
+    status: { $ne: 'retracted' },
+  }).sort({ month: -1 });
   res.json(items);
 });
 
@@ -441,6 +448,12 @@ const downloadPdf = asyncHandler(async (req, res) => {
   const isOwner = String(slip.employee) === String(req.user._id);
   if (!isAdmin && !isOwner) {
     res.status(403); throw new Error('Forbidden');
+  }
+  // Phase 40.2 -- retracted slips must be unreachable from the
+  // employee side, including the PDF endpoint.  HR / Super Admin keep
+  // PDF access for audit (e.g. proving what was retracted and when).
+  if (slip.status === 'retracted' && !isAdmin) {
+    res.status(404); throw new Error('Slip not found');
   }
 
   const employee = (await User.findById(slip.employee)
