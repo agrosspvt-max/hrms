@@ -119,10 +119,46 @@ const requireReviewer = (req, res, next) => {
 const requireAnalyticsAccess = (req, res, next) => {
   const u = req.user;
   if (!u) { res.status(401); throw new Error('Not authorized'); }
-  const ok = u.role === 'hr' || u.role === 'super_admin' || u.isHOD === true;
+  // Phase 44.2 -- also allow employees who hold a relevant feature
+  // permission.  `performance` covers /performance and the Performance
+  // sub-tabs; `templateAnalytics` covers /template-analytics + its
+  // detail pages.  HR / SA / HOD access is unchanged.
+  const perms = (u.featurePermissions && (u.featurePermissions.toObject
+    ? u.featurePermissions.toObject() : u.featurePermissions)) || {};
+  const ok = u.role === 'hr' || u.role === 'super_admin' || u.isHOD === true
+    || !!perms.performance?.enabled
+    || !!perms.templateAnalytics?.enabled;
   if (ok) return next();
   res.status(403);
-  throw new Error('Forbidden: analytics access requires HR, Super Admin, or HOD.');
+  throw new Error('Forbidden: analytics access requires HR, Super Admin, HOD, or the matching feature permission.');
 };
 
-module.exports = { protect, authorize, requireHOD, requireReviewer, requireAnalyticsAccess };
+/* ====================================================================
+ * Phase 44.2 — requireRoleOrFeature
+ *
+ * Combines authorize(role) with an employee feature-permission gate.
+ * Usage:
+ *   router.get('/contacts', requireRoleOrFeature('hr', 'contacts'), c.list);
+ *
+ * HR + Super Admin pass via the role check exactly as before.
+ * Employees pass when featurePermissions[feature].enabled is true.
+ * Everyone else is rejected.  This is the backend twin of the
+ * ProtectedRoute feature= prop on the frontend, so the two layers stay
+ * in lock-step and a manually-crafted API call from an unauthorised
+ * account is rejected with 403 even when the sidebar would have shown
+ * the module.
+ * ================================================================== */
+const requireRoleOrFeature = (role, feature) => (req, res, next) => {
+  const u = req.user;
+  if (!u) { res.status(401); return next(new Error('Not authorized')); }
+  if (u.role === 'super_admin') return next();
+  if (role === 'hr' && u.role === 'hr') return next();
+  if (role && u.role === role) return next();
+  const perms = (u.featurePermissions && (u.featurePermissions.toObject
+    ? u.featurePermissions.toObject() : u.featurePermissions)) || {};
+  if (feature && perms[feature]?.enabled) return next();
+  res.status(403);
+  return next(new Error(`Forbidden: ${role || 'admin'} role or ${feature || ''} feature permission required.`));
+};
+
+module.exports = { protect, authorize, requireHOD, requireReviewer, requireAnalyticsAccess, requireRoleOrFeature };

@@ -70,6 +70,23 @@ const safePct = (num, den) => (den > 0 ? round1((num / den) * 100) : 0);
 /* Lightweight list of every analytics-eligible template + a HOD scope */
 /* clamp so the sidebar / picker only shows what the caller can see.   */
 /* ------------------------------------------------------------------ */
+// Phase 44.2 — pull the templateAnalytics feature config off the caller
+// so list / generate can apply per-employee `allowedTemplateIds`
+// filtering.  Returns { hasFeature, allowedTemplateIds | null } where
+// `null` means "no scope -- all templates allowed".
+const _templateAnalyticsScope = (req) => {
+  const u = req.user || {};
+  if (u.role === 'hr' || u.role === 'super_admin' || u.isHOD === true) {
+    return { hasFeature: true, allowedTemplateIds: null };
+  }
+  const perms = (u.featurePermissions && (u.featurePermissions.toObject
+    ? u.featurePermissions.toObject() : u.featurePermissions)) || {};
+  const cfg = perms.templateAnalytics;
+  if (!cfg?.enabled) return { hasFeature: false, allowedTemplateIds: [] };
+  const ids = Array.isArray(cfg.allowedTemplateIds) ? cfg.allowedTemplateIds.map(String) : [];
+  return { hasFeature: true, allowedTemplateIds: ids.length > 0 ? ids : null };
+};
+
 const list = asyncHandler(async (req, res) => {
   // Phase 41.1 -- backfill legacy templates.  Older Template documents
   // that pre-date the `isActive` field carry it as `undefined`, which
@@ -93,6 +110,13 @@ const list = asyncHandler(async (req, res) => {
   const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
   if (role !== 'hr' && role !== 'super_admin' && isHOD) {
     where.$or = [{ department: null }, { department: req.user.hodDepartment }];
+  }
+  // Phase 44.2 -- per-employee Template Analytics scope.  When HR has
+  // narrowed an employee's templateAnalytics permission to a specific
+  // set of templates, only those _ids surface in the picker.
+  const scope = _templateAnalyticsScope(req);
+  if (scope.allowedTemplateIds && scope.allowedTemplateIds.length > 0) {
+    where._id = { $in: scope.allowedTemplateIds };
   } else if (role !== 'hr' && role !== 'super_admin') {
     res.status(403);
     throw new Error('Template analytics is restricted to HR / Super Admin / HOD.');
@@ -133,6 +157,15 @@ const generate = asyncHandler(async (req, res) => {
   // template (`isActive === false`).
   if (!tpl || tpl.isActive === false) {
     res.status(404); throw new Error('Template not found or inactive.');
+  }
+  // Phase 44.2 -- enforce per-employee templateAnalytics scope.  If
+  // HR has narrowed an employee's `allowedTemplateIds`, the API
+  // refuses to serve any template not in that list even if someone
+  // tries to type the URL directly.  HR / SA / HOD bypass.
+  const scope = _templateAnalyticsScope(req);
+  if (!scope.hasFeature) { res.status(403); throw new Error('Forbidden: Template Analytics access not granted.'); }
+  if (scope.allowedTemplateIds && !scope.allowedTemplateIds.includes(String(tpl._id))) {
+    res.status(403); throw new Error('Forbidden: this template is not in your Template Analytics scope.');
   }
 
   const { from, to } = resolveRange(req.query);

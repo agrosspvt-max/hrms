@@ -65,10 +65,17 @@ function HomeRouter() {
  * (an employee with isHOD=true).  Backend enforces the per-HOD
  * department clamp so a HOD can never see another department's data.
  */
-function PerformanceGate({ children }) {
+function PerformanceGate({ children, feature = 'performance' }) {
   const { user } = useAuth();
   if (!user) return <Navigate to="/login" replace />;
-  const ok = user.role === 'hr' || user.role === 'super_admin' || user.isHOD === true;
+  // Phase 44.2 -- also let employees with the named feature permission
+  // pass (defaults to 'performance' but template-analytics routes pass
+  // feature='templateAnalytics').  Existing HR / SA / HOD access is
+  // unchanged.
+  const perms = (user.featurePermissions && typeof user.featurePermissions === 'object')
+    ? user.featurePermissions : {};
+  const ok = user.role === 'hr' || user.role === 'super_admin' || user.isHOD === true
+    || (feature && perms[feature]?.enabled);
   if (!ok) return <Navigate to="/" replace />;
   return children;
 }
@@ -87,29 +94,31 @@ export default function App() {
         <Route path="/employees" element={<ProtectedRoute role="hr"><Employees /></ProtectedRoute>} />
         <Route path="/employees/:id" element={<ProtectedRoute role="hr"><EmployeeDetail /></ProtectedRoute>} />
         <Route path="/my-tasks" element={<ProtectedRoute role="hr"><MyTasks /></ProtectedRoute>} />
-        <Route path="/organization" element={<ProtectedRoute role="hr"><Organization /></ProtectedRoute>} />
+        {/* Phase 44.2 -- the `feature` prop lets an employee with the
+            matching featurePermissions entry through the role gate
+            without changing existing HR / Super Admin / HOD access. */}
+        <Route path="/organization" element={<ProtectedRoute role="hr" feature="departments"><Organization /></ProtectedRoute>} />
         {/* Legacy routes kept working; both now render the unified module. */}
-        <Route path="/departments" element={<ProtectedRoute role="hr"><Organization /></ProtectedRoute>} />
-        <Route path="/designations" element={<ProtectedRoute role="hr"><Organization /></ProtectedRoute>} />
+        <Route path="/departments" element={<ProtectedRoute role="hr" feature="departments"><Organization /></ProtectedRoute>} />
+        <Route path="/designations" element={<ProtectedRoute role="hr" feature="departments"><Organization /></ProtectedRoute>} />
         {/* Unified Work Assignment Management module - both legacy routes
             render the same tabbed page so existing deep links keep working. */}
-        <Route path="/assignments" element={<ProtectedRoute role="hr"><WorkAssignments /></ProtectedRoute>} />
-        <Route path="/templates" element={<ProtectedRoute role="hr"><WorkAssignments /></ProtectedRoute>} />
-        <Route path="/products" element={<ProtectedRoute role="hr"><Products /></ProtectedRoute>} />
+        <Route path="/assignments" element={<ProtectedRoute role="hr" feature="assignments"><WorkAssignments /></ProtectedRoute>} />
+        <Route path="/templates" element={<ProtectedRoute role="hr" feature="assignments"><WorkAssignments /></ProtectedRoute>} />
+        <Route path="/products" element={<ProtectedRoute role="hr" feature="products"><Products /></ProtectedRoute>} />
         {/*
           Performance dashboard.  HR + Super Admin (existing) AND any
           HOD (employee with isHOD=true).  Backend enforces dept clamp
           for HODs so the route can stay permissive on the frontend.
         */}
-        <Route path="/backlog" element={<ProtectedRoute role="hr"><GlobalBacklog /></ProtectedRoute>} />
-        <Route path="/reviews" element={<ProtectedRoute role="hr"><SubmissionReviews /></ProtectedRoute>} />
-        <Route path="/submission-control" element={<ProtectedRoute role="hr"><SubmissionControl /></ProtectedRoute>} />
-        {/* Phase 11: Dynamic Analytics Engine.  Picker view at /template-analytics,
-            per-template auto-generated dashboards at /template-analytics/:id.  HOD
-            access permitted (backend clamps to their department). */}
-        <Route path="/template-analytics"      element={<PerformanceGate><TemplateAnalytics /></PerformanceGate>} />
-        <Route path="/template-analytics/:templateId" element={<PerformanceGate><TemplateAnalytics /></PerformanceGate>} />
-        <Route path="/sent-alerts" element={<ProtectedRoute role="hr"><SentAlerts /></ProtectedRoute>} />
+        <Route path="/backlog" element={<ProtectedRoute role="hr" feature="globalPendency"><GlobalBacklog /></ProtectedRoute>} />
+        <Route path="/reviews" element={<ProtectedRoute role="hr" feature="submissionReviews"><SubmissionReviews /></ProtectedRoute>} />
+        <Route path="/submission-control" element={<ProtectedRoute role="hr" feature="submissionControl"><SubmissionControl /></ProtectedRoute>} />
+        {/* Phase 11: Dynamic Analytics Engine.  Phase 44.2: also opens
+            for employees with `templateAnalytics` feature permission. */}
+        <Route path="/template-analytics"      element={<PerformanceGate feature="templateAnalytics"><TemplateAnalytics /></PerformanceGate>} />
+        <Route path="/template-analytics/:templateId" element={<PerformanceGate feature="templateAnalytics"><TemplateAnalytics /></PerformanceGate>} />
+        <Route path="/sent-alerts" element={<ProtectedRoute role="hr" feature="sendAlerts"><SentAlerts /></ProtectedRoute>} />
         <Route path="/reset-requests" element={<ProtectedRoute role="hr"><ResetRequests /></ProtectedRoute>} />
 
         {/* Super Admin only */}
@@ -117,12 +126,12 @@ export default function App() {
         <Route path="/manage-access" element={<ProtectedRoute role="super_admin"><ManageAccess /></ProtectedRoute>} />
         {/* Phase 43 -- Feature Access management.  HR also gets in. */}
         <Route path="/feature-access" element={<ProtectedRoute role="hr"><FeatureAccess /></ProtectedRoute>} />
-        <Route path="/audit" element={<ProtectedRoute role="super_admin"><AuditLog /></ProtectedRoute>} />
-        <Route path="/performance" element={<PerformanceGate><Performance /></PerformanceGate>} />
-        <Route path="/leaves" element={<ProtectedRoute role="hr"><HRLeaves /></ProtectedRoute>} />
-        <Route path="/attendance" element={<ProtectedRoute role="hr"><EmployeeAttendance /></ProtectedRoute>} />
-        <Route path="/holidays" element={<ProtectedRoute role="hr"><HRHolidays /></ProtectedRoute>} />
-        <Route path="/salary" element={<ProtectedRoute role="hr"><HRSalary /></ProtectedRoute>} />
+        <Route path="/audit" element={<ProtectedRoute role="super_admin" feature="auditLog"><AuditLog /></ProtectedRoute>} />
+        <Route path="/performance" element={<PerformanceGate feature="performance"><Performance /></PerformanceGate>} />
+        <Route path="/leaves" element={<ProtectedRoute role="hr" feature="leaveApprovals"><HRLeaves /></ProtectedRoute>} />
+        <Route path="/attendance" element={<ProtectedRoute role="hr" feature="attendance"><EmployeeAttendance /></ProtectedRoute>} />
+        <Route path="/holidays" element={<ProtectedRoute role="hr" feature="eventsHolidays"><HRHolidays /></ProtectedRoute>} />
+        <Route path="/salary" element={<ProtectedRoute role="hr" feature="salary"><HRSalary /></ProtectedRoute>} />
 
         {/* HOD (Head of Department) routes - employee + isHOD */}
         <Route path="/team" element={<ProtectedRoute hod><HODEmployees /></ProtectedRoute>} />

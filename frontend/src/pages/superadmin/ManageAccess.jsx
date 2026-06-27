@@ -6,6 +6,8 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { fmtDate, errMsg } from '../../utils/helpers';
+// Phase 44.1 -- Feature Access embedded inside Manage Access as a tab.
+import FeatureAccess from './FeatureAccess.jsx';
 
 /**
  * Manage Access (Super Admin only)
@@ -46,6 +48,9 @@ export default function ManageAccess() {
   const [filterRole, setFilterRole] = useState('all');
   const [loading, setLoading] = useState(true);
   const [modal, setModal] = useState(null); // null | { kind, target?, data? }
+  // Phase 44.1 -- which tab is active.  'admins' (default) shows the
+  // admin-account list; 'feature' embeds the FeatureAccess page.
+  const [tab, setTab] = useState('admins');
 
   const load = async () => {
     setLoading(true);
@@ -106,12 +111,65 @@ export default function ManageAccess() {
           <p className="text-sm text-slate-500">Self-service administration for Super Admin &amp; HR accounts — no seed files, no DB scripts.</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          {/* Phase 43 -- Feature Access management entry point. */}
-          <a className="btn-secondary" href="/feature-access">Feature Access</a>
-          <button className="btn-primary" onClick={() => setModal({ kind: 'create', data: { ...FORM_BLANK } })}>+ Create Admin Account</button>
+          {/* Phase 44.1 -- buttons stay pinned regardless of which tab
+              is active so HR can always reach both actions. */}
+          <button
+            className={`btn-secondary ${tab === 'feature' ? 'ring-2 ring-brand-400' : ''}`}
+            onClick={() => setTab('feature')}
+          >
+            Feature Access
+          </button>
+          <button className="btn-primary" onClick={() => { setTab('admins'); setModal({ kind: 'create', data: { ...FORM_BLANK } }); }}>+ Create Admin Account</button>
         </div>
       </div>
 
+      {/* Phase 44.1 -- tab strip.  The two tabs share the same header +
+          action bar above; only the content section below swaps. */}
+      <div className="inline-flex rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/40 p-1">
+        {[['admins', 'Admin Accounts'], ['feature', 'Feature Access']].map(([k, label]) => (
+          <button
+            key={k}
+            onClick={() => setTab(k)}
+            className={`px-4 py-1.5 text-sm font-medium rounded-lg transition ${
+              tab === k
+                ? 'bg-white shadow text-brand-700 dark:bg-slate-900 dark:text-brand-300'
+                : 'text-slate-500 hover:text-slate-700 dark:text-slate-400'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'feature' ? (
+        <FeatureAccess />
+      ) : (
+        <AdminAccountsView
+          loading={loading} shown={shown} summary={summary}
+          q={q} setQ={setQ} filterRole={filterRole} setFilterRole={setFilterRole}
+          isMe={isMe} onlyOneSA={onlyOneSA} setModal={setModal} roleMeta={roleMeta}
+        />
+      )}
+
+      {modal?.kind === 'create' && <CreateModal data={modal.data} departments={depts} designations={desigs} onClose={() => setModal(null)} onSave={create} />}
+      {modal?.kind === 'edit' && <EditModal data={modal.data} departments={depts} designations={desigs} onClose={() => setModal(null)} onSave={(patch) => edit(modal.target._id, patch)} />}
+      {modal?.kind === 'view' && <ViewModal u={modal.target} onClose={() => setModal(null)} />}
+      {modal?.kind === 'status' && <ReasonModal title={modal.target.status === 'active' ? 'Deactivate Account' : 'Reactivate Account'} requireReason={modal.target.status === 'active'} u={modal.target} onClose={() => setModal(null)} onConfirm={(reason) => toggleStatus(modal.target, reason)} />}
+      {modal?.kind === 'role' && <RoleModal u={modal.target} onClose={() => setModal(null)} onConfirm={(role) => changeRole(modal.target, role)} />}
+      {modal?.kind === 'password' && <PasswordModal u={modal.target} onClose={() => setModal(null)} onConfirm={(pw) => resetPassword(modal.target, pw)} />}
+      {modal?.kind === 'delete' && <ReasonModal title="Delete Account" requireReason confirmCls="!bg-red-600" u={modal.target} body={<>This permanently deletes <b>{modal.target.name}</b>. This cannot be undone.</>} onClose={() => setModal(null)} onConfirm={(reason) => remove(modal.target, reason)} />}
+    </div>
+  );
+}
+
+/* =====================================================================
+ * Phase 44.1 — Admin Accounts view extracted into a component so the
+ * parent can swap between this and FeatureAccess via the tab strip
+ * without losing the action bar or destroying modal state.
+ * ===================================================================== */
+function AdminAccountsView({ loading, shown, summary, q, setQ, filterRole, setFilterRole, isMe, onlyOneSA, setModal, roleMeta }) {
+  return (
+    <>
       {/* Summary cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="Super Admins" value={summary.totalSuperAdmins} accent="brand" />
@@ -173,14 +231,7 @@ export default function ManageAccess() {
         </div>
       )}
 
-      {modal?.kind === 'create' && <CreateModal data={modal.data} departments={depts} designations={desigs} onClose={() => setModal(null)} onSave={create} />}
-      {modal?.kind === 'edit' && <EditModal data={modal.data} departments={depts} designations={desigs} onClose={() => setModal(null)} onSave={(patch) => edit(modal.target._id, patch)} />}
-      {modal?.kind === 'view' && <ViewModal u={modal.target} onClose={() => setModal(null)} />}
-      {modal?.kind === 'status' && <ReasonModal title={modal.target.status === 'active' ? 'Deactivate Account' : 'Reactivate Account'} requireReason={modal.target.status === 'active'} u={modal.target} onClose={() => setModal(null)} onConfirm={(reason) => toggleStatus(modal.target, reason)} />}
-      {modal?.kind === 'role' && <RoleModal u={modal.target} onClose={() => setModal(null)} onConfirm={(role) => changeRole(modal.target, role)} />}
-      {modal?.kind === 'password' && <PasswordModal u={modal.target} onClose={() => setModal(null)} onConfirm={(pw) => resetPassword(modal.target, pw)} />}
-      {modal?.kind === 'delete' && <ReasonModal title="Delete Account" requireReason confirmCls="!bg-red-600" u={modal.target} body={<>This permanently deletes <b>{modal.target.name}</b>. This cannot be undone.</>} onClose={() => setModal(null)} onConfirm={(reason) => remove(modal.target, reason)} />}
-    </div>
+    </>
   );
 }
 
