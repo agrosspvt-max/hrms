@@ -1,6 +1,9 @@
 const router = require('express').Router();
 const multer = require('multer');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, requireRoleOrFeature } = require('../middleware/auth');
+
+// Phase 44.3 -- HR + Super Admin OR employee with `products` permission.
+const gate = requireRoleOrFeature('hr', 'products');
 const c = require('../controllers/productController');
 const d = require('../controllers/dealerController');
 
@@ -19,32 +22,32 @@ router.get('/quantities', c.listQuantities);
 
 // Sample + export downloads (HR / SA).  These are GETs so the existing
 // authUrl() helper (query-string token) works for anchor downloads.
-router.get('/products/import-sample', authorize('hr'), c.importSample);
-router.get('/products/export',        authorize('hr'), c.exportProducts);
+router.get('/products/import-sample', gate, c.importSample);
+router.get('/products/export',        gate, c.exportProducts);
 
 // Bulk import (HR / SA, multipart upload field name "file").
-router.post('/products/import', authorize('hr'), upload.single('file'), c.importBulk);
+router.post('/products/import', gate, upload.single('file'), c.importBulk);
 
 // Write endpoints: HR / Super Admin only.
-router.post('/products',           authorize('hr'), c.createProduct);
-router.put('/products/:id',        authorize('hr'), c.updateProduct);
-router.delete('/products/:id',     authorize('hr'), c.deactivateProduct);
-router.post('/quantities',         authorize('hr'), c.createQuantity);
-router.put('/quantities/:id',      authorize('hr'), c.updateQuantity);
-router.delete('/quantities/:id',   authorize('hr'), c.deactivateQuantity);
+router.post('/products',           gate, c.createProduct);
+router.put('/products/:id',        gate, c.updateProduct);
+router.delete('/products/:id',     gate, c.deactivateProduct);
+router.post('/quantities',         gate, c.createQuantity);
+router.put('/quantities/:id',      gate, c.updateQuantity);
+router.delete('/quantities/:id',   gate, c.deactivateQuantity);
 
 // Dealer Master.  Reads open to any authenticated user (employees need
 // the dropdown when filing a Farmer Record); writes HR / Super Admin only.
 router.get('/dealers',         d.listDealers);
 // Bulk: download sample + export full catalogue (HR / SA).  GETs so the
 // existing authUrl() anchor-download helper works.
-router.get('/dealers/import-sample', authorize('hr'), d.importSample);
-router.get('/dealers/export',        authorize('hr'), d.exportDealers);
+router.get('/dealers/import-sample', gate, d.importSample);
+router.get('/dealers/export',        gate, d.exportDealers);
 // Bulk import (HR / SA, multipart "file").  Reuses the Products multer
 // instance defined at the top of this file (memory storage, 5 MB cap).
-router.post('/dealers/import',  authorize('hr'), upload.single('file'), d.importBulk);
-router.post('/dealers',         authorize('hr'), d.createDealer);
-router.put('/dealers/:id',      authorize('hr'), d.updateDealer);
-router.delete('/dealers/:id',   authorize('hr'), d.deactivateDealer);
+router.post('/dealers/import',  gate, upload.single('file'), d.importBulk);
+router.post('/dealers',         gate, d.createDealer);
+router.put('/dealers/:id',      gate, d.updateDealer);
+router.delete('/dealers/:id',   gate, d.deactivateDealer);
 
 module.exports = router;

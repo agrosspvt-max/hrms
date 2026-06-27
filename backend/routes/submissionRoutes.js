@@ -1,6 +1,9 @@
 const router = require('express').Router();
-const { protect, authorize, requireReviewer } = require('../middleware/auth');
+const { protect, authorize, requireReviewer, requireRoleOrFeature } = require('../middleware/auth');
 const c = require('../controllers/submissionController');
+
+// Phase 44.3 -- HR + Super Admin OR employee with `submissionReviews`.
+const reviewGate = requireRoleOrFeature('hr', 'submissionReviews');
 
 router.use(protect);
 
@@ -21,10 +24,10 @@ router.put('/:id/draft', c.saveDraft);
 router.post('/backlog/complete', c.completeBacklogTask);
 
 // HR review panel
-router.get('/reviews', authorize('hr'), c.listForReview);
-router.post('/:id/review', authorize('hr'), c.reviewSubmission);
+router.get('/reviews', reviewGate, c.listForReview);
+router.post('/:id/review', reviewGate, c.reviewSubmission);
 // Bulk discipline + innovation marks (HR / SA only).  Always declared
 // BEFORE any param-suffixed POST so '/review/bulk' is matched verbatim.
-router.post('/review/bulk', authorize('hr'), c.bulkReview);
+router.post('/review/bulk', reviewGate, c.bulkReview);
 
 module.exports = router;

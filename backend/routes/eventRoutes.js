@@ -1,6 +1,9 @@
 const router = require('express').Router();
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, requireRoleOrFeature } = require('../middleware/auth');
 const c = require('../controllers/eventController');
+
+// Phase 44.3 -- HR + Super Admin OR employee with `eventsHolidays` permission.
+const gate = requireRoleOrFeature('hr', 'eventsHolidays');
 
 router.use(protect);
 
@@ -8,7 +11,7 @@ router.use(protect);
 router.get('/', c.list);
 router.get('/upcoming', c.upcoming);
 router.get('/birthdays/today', c.birthdaysToday);
-router.get('/analytics', authorize('hr'), c.analytics);
+router.get('/analytics', gate, c.analytics);
 router.get('/:id', c.get);
 
 // Idempotent notification firing — dashboards call this on load so birthday
@@ -16,8 +19,8 @@ router.get('/:id', c.get);
 router.post('/process-due', c.processDue);
 
 // HR / Super Admin manage events.
-router.post('/', authorize('hr'), c.create);
-router.put('/:id', authorize('hr'), c.update);
-router.delete('/:id', authorize('hr'), c.remove);
+router.post('/', gate, c.create);
+router.put('/:id', gate, c.update);
+router.delete('/:id', gate, c.remove);
 
 module.exports = router;

@@ -1,8 +1,10 @@
 const router = require('express').Router();
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, requireRoleOrFeature } = require('../middleware/auth');
 const c = require('../controllers/auditController');
 
-router.use(protect, authorize('super_admin'));
+// Phase 44.3 -- Super Admin OR employee with `auditLog` permission.
+router.use(protect);
+router.use(requireRoleOrFeature('super_admin', 'auditLog'));
 router.get('/', c.list);
 
 module.exports = router;

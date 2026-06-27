@@ -1,6 +1,9 @@
 const router = require('express').Router();
 const multer = require('multer');
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, requireRoleOrFeature } = require('../middleware/auth');
+
+// Phase 44.3 -- HR + Super Admin OR employee with `assignments` permission.
+const gate = requireRoleOrFeature('hr', 'assignments');
 const c = require('../controllers/templateController');
 
 // In-memory upload, capped at 5 MB.  We never persist the file - we
@@ -12,13 +15,13 @@ const upload = multer({
 
 router.use(protect);
 router.get('/', c.list);
-router.post('/excel/parse', authorize('hr'), upload.single('file'), c.excelParse);
-router.post('/sheet/parse', authorize('hr'), upload.single('file'), c.sheetParse);
+router.post('/excel/parse', gate, upload.single('file'), c.excelParse);
+router.post('/sheet/parse', gate, upload.single('file'), c.sheetParse);
 router.get('/:id', c.get);
-router.post('/', authorize('hr'), c.create);
-router.put('/:id', authorize('hr'), c.update);
-router.delete('/:id', authorize('hr'), c.remove);
+router.post('/', gate, c.create);
+router.put('/:id', gate, c.update);
+router.delete('/:id', gate, c.remove);
 // Phase 12: clone a template (duplicates fields + sub-templates + metadata).
-router.post('/:id/clone', authorize('hr'), c.clone);
+router.post('/:id/clone', gate, c.clone);
 
 module.exports = router;

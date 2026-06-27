@@ -1,12 +1,15 @@
 const router = require('express').Router();
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, requireRoleOrFeature } = require('../middleware/auth');
 const c = require('../controllers/holidayController');
+
+// Phase 44.3 -- HR + Super Admin OR employee with `eventsHolidays` permission.
+const gate = requireRoleOrFeature('hr', 'eventsHolidays');
 
 router.use(protect);
 
 router.get('/', c.list);                               // everyone can read
-router.post('/', authorize('hr'), c.create);
-router.put('/:id', authorize('hr'), c.update);
-router.delete('/:id', authorize('hr'), c.remove);
+router.post('/', gate, c.create);
+router.put('/:id', gate, c.update);
+router.delete('/:id', gate, c.remove);
 
 module.exports = router;

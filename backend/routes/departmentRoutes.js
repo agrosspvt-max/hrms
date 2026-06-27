@@ -1,12 +1,15 @@
 const router = require('express').Router();
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, requireRoleOrFeature } = require('../middleware/auth');
 const c = require('../controllers/departmentController');
 
+// Phase 44.3 -- HR + Super Admin OR employee with `departments` permission.
+const gate = requireRoleOrFeature('hr', 'departments');
+
 router.use(protect);
-router.get('/org-structure', authorize('hr'), c.orgStructure);
+router.get('/org-structure', gate, c.orgStructure);
 router.get('/', c.list);
-router.post('/', authorize('hr'), c.create);
-router.put('/:id', authorize('hr'), c.update);
-router.delete('/:id', authorize('hr'), c.remove);
+router.post('/', gate, c.create);
+router.put('/:id', gate, c.update);
+router.delete('/:id', gate, c.remove);
 
 module.exports = router;

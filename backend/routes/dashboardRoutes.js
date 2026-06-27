@@ -1,20 +1,24 @@
 const router = require('express').Router();
-const { protect, authorize, requireAnalyticsAccess } = require('../middleware/auth');
+const { protect, authorize, requireAnalyticsAccess, requireRoleOrFeature } = require('../middleware/auth');
 const c = require('../controllers/dashboardController');
 const analytics = require('../controllers/analyticsController');
+
+// Phase 44.3 -- per-feature gates for grantable endpoints.
+const backlogGate     = requireRoleOrFeature('hr', 'globalPendency');
+const assignmentsGate = requireRoleOrFeature('hr', 'assignments');
 
 router.use(protect);
 
 router.get('/employee/summary', c.employeeSummary);
 
 router.get('/hr/today', authorize('hr'), c.hrToday);
-router.get('/hr/backlog', authorize('hr'), c.hrBacklog);
+router.get('/hr/backlog', backlogGate, c.hrBacklog);
 router.get('/hr/performance', authorize('hr'), c.hrPerformance);
 // Pendency + Completion analytics: HR / Super Admin see everything,
 // HOD is auto-clamped to their own department inside the controller.
 router.get('/hr/pendency',   requireAnalyticsAccess, analytics.pendency);
 router.get('/hr/completion', requireAnalyticsAccess, analytics.completion);
-router.get('/hr/assignment-analytics', authorize('hr'), analytics.assignmentAnalytics);
+router.get('/hr/assignment-analytics', assignmentsGate, analytics.assignmentAnalytics);
 router.get('/hr/summary', authorize('hr'), c.hrSummary);
 
 // Calling Analytics (HR / SA / HOD; the controller enforces the

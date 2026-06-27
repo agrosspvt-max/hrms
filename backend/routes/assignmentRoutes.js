@@ -1,8 +1,10 @@
 const router = require('express').Router();
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, requireRoleOrFeature } = require('../middleware/auth');
 const c = require('../controllers/assignmentController');
 
-router.use(protect, authorize('hr'));
+// Phase 44.3 -- HR + Super Admin OR employee with `assignments` permission.
+router.use(protect);
+router.use(requireRoleOrFeature('hr', 'assignments'));
 
 router.get('/', c.list);
 router.get('/:id/stats', c.stats);

@@ -1,11 +1,10 @@
 const router = require('express').Router();
-const { protect, authorize } = require('../middleware/auth');
+const { protect, authorize, requireRoleOrFeature } = require('../middleware/auth');
 const c = require('../controllers/submissionControlController');
 
 router.use(protect);
-// Every endpoint is HR / Super Admin only.  `authorize('hr')` already
-// admits Super Admin (super_admin is a superset role in this codebase).
-router.use(authorize('hr'));
+// Phase 44.3 -- HR + Super Admin OR employee with `submissionControl`.
+router.use(requireRoleOrFeature('hr', 'submissionControl'));
 
 // Filter dropdown options for the page header.
 router.get('/filter-options', c.filterOptions);

@@ -111,15 +111,19 @@ const list = asyncHandler(async (req, res) => {
   if (role !== 'hr' && role !== 'super_admin' && isHOD) {
     where.$or = [{ department: null }, { department: req.user.hodDepartment }];
   }
-  // Phase 44.2 -- per-employee Template Analytics scope.  When HR has
-  // narrowed an employee's templateAnalytics permission to a specific
-  // set of templates, only those _ids surface in the picker.
+  // Phase 44.2 / 44.3 -- per-employee Template Analytics scope.
+  //   HR / SA / HOD          : full picker (HOD-scope already applied
+  //                             via where.$or above).
+  //   Employee + feature on  : full picker OR narrowed picker if
+  //                             allowedTemplateIds was configured.
+  //   Anyone else            : 403.
   const scope = _templateAnalyticsScope(req);
+  if (!scope.hasFeature) {
+    res.status(403);
+    throw new Error('Template analytics requires HR, Super Admin, HOD, or the Template Analytics feature permission.');
+  }
   if (scope.allowedTemplateIds && scope.allowedTemplateIds.length > 0) {
     where._id = { $in: scope.allowedTemplateIds };
-  } else if (role !== 'hr' && role !== 'super_admin') {
-    res.status(403);
-    throw new Error('Template analytics is restricted to HR / Super Admin / HOD.');
   }
   const items = await Template.find(where)
     .select('title analyticsName templateType customKind department reviewFlow')
@@ -172,14 +176,25 @@ const generate = asyncHandler(async (req, res) => {
   const flags = readReqFlags(req);
 
   // ----- Employee scope (role-aware) -----
+  // Phase 44.3 -- employees granted the templateAnalytics feature
+  // permission get HR-equivalent visibility into this endpoint.  HOD
+  // still gets the department clamp; HR / SA see the org by default
+  // and may filter by ?department.
   const empWhere = { status: 'active' };
   const role = req.user.role;
   const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
   if (role !== 'hr' && role !== 'super_admin') {
     if (isHOD) {
       empWhere.department = req.user.hodDepartment;
+    } else if (scope.hasFeature) {
+      // Feature-granted employee: respect optional ?department filter
+      // exactly like HR (no automatic clamp).
+      if (req.query.department && mongoose.Types.ObjectId.isValid(req.query.department)) {
+        empWhere.department = req.query.department;
+      }
     } else {
-      res.status(403); throw new Error('Template analytics is restricted to HR / Super Admin / HOD.');
+      res.status(403);
+      throw new Error('Template analytics requires HR, Super Admin, HOD, or the Template Analytics feature permission.');
     }
   } else {
     if (req.query.department && mongoose.Types.ObjectId.isValid(req.query.department)) {

@@ -85,6 +85,15 @@ const _attachDependencies = async (submissions) => {
 
 const _resolveDay = (raw) => startOfDay(raw ? new Date(raw) : new Date());
 
+// Phase 44.3 -- helper used by every role gate in this controller so an
+// employee granted the named feature passes through the same path as
+// HR / Super Admin / HOD without needing parallel branches.
+const _hasFeature = (req, key) => {
+  const perms = (req.user?.featurePermissions && (req.user.featurePermissions.toObject
+    ? req.user.featurePermissions.toObject() : req.user.featurePermissions)) || {};
+  return !!perms[key]?.enabled;
+};
+
 /* ------------------------------------------------------------------ */
 /* Grouped review feed                                                 */
 /* ------------------------------------------------------------------ */
@@ -114,9 +123,18 @@ const listGrouped = asyncHandler(async (req, res) => {
     }
   } else if (isHOD) {
     empWhere.department = req.user.hodDepartment;
+  } else if (_hasFeature(req, 'submissionReviews')) {
+    // Phase 44.3 -- employees granted the Submission Reviews feature
+    // permission get HR-equivalent visibility.  HR may further narrow
+    // via ?department; the feature-granted employee has the same
+    // capability.  No department clamp is applied -- that's the HOD
+    // path's job and isn't appropriate here.
+    if (req.query.department && mongoose.Types.ObjectId.isValid(req.query.department)) {
+      empWhere.department = req.query.department;
+    }
   } else {
     res.status(403);
-    throw new Error('Grouped review is restricted to HR / Super Admin / HOD.');
+    throw new Error('Grouped review is restricted to HR / Super Admin / HOD / Submission Reviews feature.');
   }
 
   // ----- Submissions for the day -----
@@ -414,8 +432,8 @@ const saveReflection = asyncHandler(async (req, res) => {
 const finalizeDay = asyncHandler(async (req, res) => {
   const role = req.user.role;
   const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
-  if (role !== 'hr' && role !== 'super_admin' && !isHOD) {
-    res.status(403); throw new Error('Only HR / Super Admin / HOD may finalise a daily review.');
+  if (role !== 'hr' && role !== 'super_admin' && !isHOD && !_hasFeature(req, 'submissionReviews')) {
+    res.status(403); throw new Error('Only HR / Super Admin / HOD / Submission Reviews feature may finalise a daily review.');
   }
   const { employeeId, date } = req.body || {};
   if (!mongoose.Types.ObjectId.isValid(employeeId)) {
@@ -622,8 +640,8 @@ const editTaskStatus = asyncHandler(async (req, res) => {
   // their own department's submissions.
   const role = req.user.role;
   const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
-  if (role !== 'hr' && role !== 'super_admin' && !isHOD) {
-    res.status(403); throw new Error('Only HR / Super Admin / HOD may edit task status.');
+  if (role !== 'hr' && role !== 'super_admin' && !isHOD && !_hasFeature(req, 'submissionReviews')) {
+    res.status(403); throw new Error('Only HR / Super Admin / HOD / Submission Reviews feature may edit task status.');
   }
   if (String(sub.employee) === String(req.user._id)) {
     res.status(403); throw new Error('You cannot edit your own submission.');
@@ -744,8 +762,8 @@ const editTaskMarks = asyncHandler(async (req, res) => {
 
   const role = req.user.role;
   const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
-  if (role !== 'hr' && role !== 'super_admin' && !isHOD) {
-    res.status(403); throw new Error('Only HR / Super Admin / HOD may edit task marks.');
+  if (role !== 'hr' && role !== 'super_admin' && !isHOD && !_hasFeature(req, 'submissionReviews')) {
+    res.status(403); throw new Error('Only HR / Super Admin / HOD / Submission Reviews feature may edit task marks.');
   }
   if (String(sub.employee) === String(req.user._id)) {
     res.status(403); throw new Error('You cannot edit your own submission.');
@@ -835,8 +853,8 @@ const editTaskMarks = asyncHandler(async (req, res) => {
 const bulkFinalize = asyncHandler(async (req, res) => {
   const role = req.user.role;
   const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
-  if (role !== 'hr' && role !== 'super_admin' && !isHOD) {
-    res.status(403); throw new Error('Only HR / Super Admin / HOD may finalise daily reviews.');
+  if (role !== 'hr' && role !== 'super_admin' && !isHOD && !_hasFeature(req, 'submissionReviews')) {
+    res.status(403); throw new Error('Only HR / Super Admin / HOD / Submission Reviews feature may finalise daily reviews.');
   }
 
   const items = Array.isArray(req.body.items) ? req.body.items : [];

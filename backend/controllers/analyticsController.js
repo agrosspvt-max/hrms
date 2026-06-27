@@ -10,6 +10,34 @@ const { startOfDay, addDays, parseDay, formatYMD } = require('../utils/dateHelpe
 // and test-marked submissions never reach a leaderboard / KPI / trend.
 const { liveSubmissionFilter, readReqFlags } = require('../utils/submissionFilter');
 
+// Phase 44.3 -- read a featurePermissions[key].enabled flag from req.user.
+// Mirrors the helper used in dailyReviewController and templateAnalyticsController.
+const _hasFeature = (req, key) => {
+  const perms =
+    (req.user?.featurePermissions &&
+      (req.user.featurePermissions.toObject
+        ? req.user.featurePermissions.toObject()
+        : req.user.featurePermissions)) || {};
+  return !!perms[key]?.enabled;
+};
+// Calling Analytics is a sub-permission of `performance`; honor either
+// top-level `performance.enabled` or the `calling` sub-key.
+const _hasCallingAnalytics = (req) => {
+  const perms =
+    (req.user?.featurePermissions &&
+      (req.user.featurePermissions.toObject
+        ? req.user.featurePermissions.toObject()
+        : req.user.featurePermissions)) || {};
+  const perf = perms.performance || {};
+  if (!perf.enabled) return false;
+  // If the row has a `sub` map and `calling` is explicitly false, deny.
+  // Otherwise, an enabled performance grant implies calling visibility.
+  if (perf.sub && Object.prototype.hasOwnProperty.call(perf.sub, 'calling')) {
+    return !!perf.sub.calling;
+  }
+  return true;
+};
+
 /**
  * analyticsController
  *
@@ -747,12 +775,17 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   // ---- Role-scoped employee filter ----
   const empWhere = { status: 'active' };
   const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  const hasCalling = _hasCallingAnalytics(req);
   if (req.user.role === 'super_admin') {
     // full org
   } else if (req.user.role === 'hr') {
     // full org (HR may filter via query)
   } else if (isHOD) {
     empWhere.department = req.user.hodDepartment;
+  } else if (hasCalling) {
+    // Phase 44.3 -- employees granted Performance > Calling Analytics see
+    // the full org just like HR (HOD clamp does NOT apply since this is a
+    // direct grant rather than a department-scoped role).
   } else {
     res.status(403);
     throw new Error('Calling analytics is restricted to HR / Super Admin / HOD.');
