@@ -125,7 +125,13 @@ const generate = asyncHandler(async (req, res) => {
     res.status(400); throw new Error('Valid templateId is required.');
   }
   const tpl = await Template.findById(templateId).lean();
-  if (!tpl || !tpl.isActive) {
+  // Phase 42 -- mirror the picker filter (`isActive: { $ne: false }`).
+  // Legacy Template documents that pre-date the `isActive` field carry
+  // it as `undefined` on disk, which the previous `!tpl.isActive`
+  // check treated as "inactive" -> 404 -> frontend stuck on Loader.
+  // We only refuse the request when HR explicitly deactivated the
+  // template (`isActive === false`).
+  if (!tpl || tpl.isActive === false) {
     res.status(404); throw new Error('Template not found or inactive.');
   }
 

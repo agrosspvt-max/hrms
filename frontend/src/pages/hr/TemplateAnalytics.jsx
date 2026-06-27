@@ -34,6 +34,10 @@ export default function TemplateAnalytics() {
   const [employees, setEmployees] = useState([]);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Phase 42 -- capture fetch errors so the analytics page renders an
+  // explicit error fallback instead of leaving the Loader forever when
+  // the backend returns 404 / 500.
+  const [loadError, setLoadError] = useState(null);
   // Phase 30 -- drill-down state.  `extra` carries metric-specific
   // payload (status filter, taskTitle, fieldKey, employeeId, etc) so
   // the Breakdown component projects the right rows from data.detail.
@@ -64,9 +68,19 @@ export default function TemplateAnalytics() {
     if (employee)   params.employee = employee;
     if (includeTest) params.includeTest = 'true';
     setLoading(true);
+    setLoadError(null);
     api.get(`/template-analytics/${templateId}`, { params })
       .then(({ data }) => { setData(data); setLoading(false); })
-      .catch(() => { setData(null); setLoading(false); });
+      .catch((err) => {
+        setData(null);
+        // Phase 42 -- surface the backend error message so HR isn't
+        // left staring at a perpetual loading spinner.  Most commonly
+        // this is a 404 because a legacy template's `isActive` field
+        // is missing on disk; the boot migration handles that on
+        // restart but this fallback covers the in-session case too.
+        setLoadError(err?.response?.data?.message || err?.message || 'Failed to load analytics for this template.');
+        setLoading(false);
+      });
   }, [templateId, range, from, to, department, employee, includeTest]);
 
   // Picker view (no templateId in URL).
@@ -141,7 +155,17 @@ export default function TemplateAnalytics() {
         )}
       </div>
 
-      {loading || !data ? <Loader /> : (
+      {loading ? <Loader /> : loadError ? (
+        // Phase 42 -- explicit error state instead of perpetual Loader.
+        <div className="card card-body">
+          <EmptyState
+            title="Couldn't load analytics for this template"
+            subtitle={loadError + ' If this is a legacy template, restart the server so the boot-time backfill runs, or pick another template.'}
+          />
+        </div>
+      ) : !data ? (
+        <Loader />
+      ) : (
         <div className="space-y-6">
           {/* Phase 30: every section accepts an onDrill prop so every
               card / row can route into the same Breakdown modal. */}
