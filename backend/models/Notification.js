@@ -50,14 +50,35 @@ const notificationSchema = new mongoose.Schema(
 
     // Phase 45 — Priority Notices.  HR / Super Admin may flag broadcasts
     // as 'important' or 'urgent'; the Employee Dashboard surfaces those
-    // in a dedicated panel that the employee cannot dismiss until read.
-    // 'normal' (default) behaves exactly as before -- inbox-only.
+    // in a dedicated panel that the employee cannot dismiss until read
+    // ('important') or resolved ('urgent').  'normal' (default) behaves
+    // exactly as before — inbox-only.
     priority: {
       type: String,
       enum: ['normal', 'important', 'urgent'],
       default: 'normal',
       index: true,
     },
+
+    // Phase 46 — Urgent / time-bound notices carry a hard deadline.  HR
+    // sets a date + time; the employee sees it prominently on both the
+    // Dashboard panel and the Notifications inbox.  Optional for
+    // 'important' / 'normal'; the controller enforces required-ness on
+    // 'urgent'.  Stored as a Date so timezone math is unambiguous.
+    deadline: { type: Date },
+
+    // Phase 46 — Time-bound resolution.  The employee clicks "Resolve"
+    // AFTER finishing the requested work.  Distinct from `read` (which
+    // just means "opened").  HR sees Sent / Read / Resolved / Status
+    // columns on the Sent Alerts page.
+    resolvedAt: { type: Date },
+
+    // Phase 46 — Dashboard dismissal is separate from inbox deletion.
+    // Clearing a notice from the Dashboard panel sets this timestamp so
+    // the Dashboard hides the row; the underlying Notification document
+    // STAYS in the inbox as permanent proof of delivery.  Employees can
+    // no longer delete notifications outright (see controller.remove).
+    dismissedFromDashboardAt: { type: Date },
 
     read: { type: Boolean, default: false, index: true },
     readAt: { type: Date },

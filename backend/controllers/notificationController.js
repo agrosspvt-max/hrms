@@ -20,7 +20,7 @@ const send = asyncHandler(async (req, res) => {
   const {
     recipients = [], title, message, type,
     relatedTaskIds = [], relatedTitles = [],
-    priority,
+    priority, deadline,
   } = req.body;
   if (!recipients.length) {
     res.status(400);
@@ -34,6 +34,25 @@ const send = asyncHandler(async (req, res) => {
   // back to 'normal' so legacy callers (no field) behave unchanged.
   const allowedPriority = new Set(['normal', 'important', 'urgent']);
   const priorityNorm = allowedPriority.has(priority) ? priority : 'normal';
+
+  // Phase 46 -- urgent notices REQUIRE a deadline (date + time).  We
+  // accept anything Date() can parse so the frontend can post an ISO
+  // string built from <input type="date"> + <input type="time">.  The
+  // field is ignored for non-urgent notices to keep the inbox model
+  // clean (no stray deadlines on Normal/Important rows).
+  let deadlineDate;
+  if (priorityNorm === 'urgent') {
+    if (!deadline) {
+      res.status(400);
+      throw new Error('A deadline (date + time) is required for time-bound notices.');
+    }
+    deadlineDate = new Date(deadline);
+    if (Number.isNaN(deadlineDate.getTime())) {
+      res.status(400);
+      throw new Error('Deadline is not a valid date/time.');
+    }
+  }
+
   const docs = recipients.map((r) => ({
     recipient: r,
     sender: req.user._id,
@@ -43,6 +62,7 @@ const send = asyncHandler(async (req, res) => {
     relatedTaskIds,
     relatedTitles,
     priority: priorityNorm,
+    deadline: deadlineDate,
   }));
   const created = await Notification.insertMany(docs);
   res.status(201).json({ count: created.length, notifications: created });
@@ -61,6 +81,10 @@ const myPriority = asyncHandler(async (req, res) => {
   const items = await Notification.find({
     recipient: req.user._id,
     priority: { $in: ['important', 'urgent'] },
+    // Phase 46 -- dashboard panel hides notices the employee has
+    // already cleared from the dashboard.  The Notification document
+    // itself stays in their inbox (permanent history).
+    dismissedFromDashboardAt: { $in: [null, undefined] },
   })
     .populate('sender', 'name role')
     .sort({ createdAt: -1 });
@@ -117,19 +141,86 @@ const markAllRead = asyncHandler(async (req, res) => {
 /**
  * DELETE /api/notifications/:id
  *
- * Phase 45 -- Important / Urgent notices may only be cleared after the
- * employee has actually opened them.  Normal notifications keep their
- * previous behaviour (delete at any time) so the inbox doesn't change.
+ * Phase 46 -- Notifications are permanent history.  Employees can no
+ * longer delete a notification: the route returns 403 with an
+ * explanatory message so any stale frontend that still attempts a
+ * delete fails loudly instead of silently breaking the audit trail.
+ * Dashboard dismissal lives on a separate endpoint (see dismissDashboard).
+ *
+ * HR / Super Admin keep the ability to prune their own sent records via
+ * future admin tooling -- not exposed here yet, but the route stays a
+ * single source of truth for "can this be deleted?".
  */
 const remove = asyncHandler(async (req, res) => {
   const n = await Notification.findOne({ _id: req.params.id, recipient: req.user._id });
   if (!n) { res.status(404); throw new Error('Notification not found'); }
-  if (n.priority && n.priority !== 'normal' && !n.read) {
-    res.status(400);
-    throw new Error('Open the notice before clearing it.');
+  if (req.user.role !== 'super_admin') {
+    res.status(403);
+    throw new Error('Notifications are permanent history and cannot be deleted. Use Clear on the Dashboard to dismiss a priority notice.');
   }
   await n.deleteOne();
   res.json({ message: 'Deleted' });
+});
+
+/**
+ * Phase 46 -- POST /api/notifications/:id/resolve
+ *
+ * Marks a Time-bound (urgent) notice as resolved.  Idempotent: a
+ * second call is a no-op.  The employee must have read the notice
+ * first -- this mirrors the spec: Read = opened, Resolved = work done.
+ * Only urgent notices can be resolved; calling resolve on an important
+ * / normal notice returns 400 so the action is unambiguous.
+ */
+const resolve = asyncHandler(async (req, res) => {
+  const n = await Notification.findOne({ _id: req.params.id, recipient: req.user._id });
+  if (!n) { res.status(404); throw new Error('Notification not found'); }
+  if (n.priority !== 'urgent') {
+    res.status(400);
+    throw new Error('Only time-bound notices can be resolved.');
+  }
+  if (!n.resolvedAt) {
+    n.resolvedAt = new Date();
+    // Resolving without first opening is allowed by some workflows, but
+    // we also stamp readAt so HR's "Read" receipt reflects reality.
+    if (!n.read) { n.read = true; n.readAt = n.resolvedAt; }
+    await n.save();
+  }
+  res.json(n);
+});
+
+/**
+ * Phase 46 -- POST /api/notifications/:id/dismiss-dashboard
+ *
+ * Removes a priority notice from the employee's Dashboard panel
+ * without deleting the underlying Notification.  The Notification
+ * stays in the inbox as permanent proof of delivery.
+ *
+ * Gating mirrors the spec:
+ *   important -> must be read
+ *   urgent    -> must be resolved
+ *   normal    -> not surfaced on the dashboard; rejected so the call
+ *                is treated as a programming error rather than silent.
+ */
+const dismissDashboard = asyncHandler(async (req, res) => {
+  const n = await Notification.findOne({ _id: req.params.id, recipient: req.user._id });
+  if (!n) { res.status(404); throw new Error('Notification not found'); }
+  if (n.priority === 'normal') {
+    res.status(400);
+    throw new Error('Normal notices are inbox-only and have nothing to dismiss from the dashboard.');
+  }
+  if (n.priority === 'important' && !n.read) {
+    res.status(400);
+    throw new Error('Open the notice before clearing it from the dashboard.');
+  }
+  if (n.priority === 'urgent' && !n.resolvedAt) {
+    res.status(400);
+    throw new Error('Resolve this time-bound notice before clearing it from the dashboard.');
+  }
+  if (!n.dismissedFromDashboardAt) {
+    n.dismissedFromDashboardAt = new Date();
+    await n.save();
+  }
+  res.json(n);
 });
 
 /**
@@ -143,4 +234,7 @@ const sentByMe = asyncHandler(async (req, res) => {
   res.json(items);
 });
 
-module.exports = { send, myInbox, myPriority, unreadCount, markRead, markAllRead, remove, sentByMe };
+module.exports = {
+  send, myInbox, myPriority, unreadCount, markRead, markAllRead,
+  remove, resolve, dismissDashboard, sentByMe,
+};

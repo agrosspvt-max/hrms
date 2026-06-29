@@ -69,19 +69,10 @@ export default function Notifications() {
     }
   };
 
-  const remove = async (id) => {
-    if (!confirm('Delete this notification?')) return;
-    const prevItems = items;
-    setItems((cur) => cur.filter((n) => n._id !== id));
-    window.dispatchEvent(new Event('hrms:notifications-changed'));
-    try {
-      await api.delete(`/notifications/${id}`);
-    } catch (err) {
-      setItems(prevItems);
-      window.dispatchEvent(new Event('hrms:notifications-changed'));
-      toast.error(errMsg(err));
-    }
-  };
+  // Phase 46 -- Notifications are permanent history.  No delete button
+  // is exposed on the inbox; the dashboard's Clear action dismisses the
+  // dashboard row only.  Kept as a deleted reference so future
+  // maintainers see why the call is gone.
 
   const unread = items.filter((i) => !i.read).length;
 
@@ -109,7 +100,7 @@ export default function Notifications() {
         items.length === 0 ? <EmptyState title="No notifications" subtitle={filter === 'unread' ? 'Nothing unread.' : 'Your inbox is empty.'} /> :
         <div className="space-y-2">
           {items.map((n) => (
-            <NotificationCard key={n._id} n={n} onRead={() => markRead(n._id)} onDelete={() => remove(n._id)} />
+            <NotificationCard key={n._id} n={n} onRead={() => markRead(n._id)} />
           ))}
         </div>}
     </div>
@@ -125,7 +116,7 @@ export default function Notifications() {
  * automatically fires the mark-as-read API call -- the explicit "Mark
  * read" button is no longer needed.
  */
-function NotificationCard({ n, onRead, onDelete }) {
+function NotificationCard({ n, onRead }) {
   const [expanded, setExpanded] = useState(false);
   const autoReadFiredRef = useRef(false);
   const isBacklog = n.type === 'backlog_alert';
@@ -171,6 +162,12 @@ function NotificationCard({ n, onRead, onDelete }) {
                   matches the Dashboard "Priority Notices" panel. */}
               {n.priority === 'urgent'    && <span className="badge-red">Urgent</span>}
               {n.priority === 'important' && <span className="badge-amber">Important</span>}
+              {/* Phase 46 -- resolution badge for time-bound notices. */}
+              {n.priority === 'urgent' && (
+                n.resolvedAt
+                  ? <span className="badge-green text-[10px]">RESOLVED</span>
+                  : <span className="badge-amber text-[10px]">PENDING</span>
+              )}
             </div>
             <div className="text-[11px] text-slate-500 mt-1 pl-6">
               From {n.sender?.name || 'System'}
@@ -178,6 +175,22 @@ function NotificationCard({ n, onRead, onDelete }) {
               {' • '}
               {new Date(n.createdAt).toLocaleString()}
             </div>
+            {/* Phase 46 -- deadline ribbon for time-bound notices.
+                Mirrors the Dashboard panel so the same information
+                shows up wherever the employee sees the notice. */}
+            {n.priority === 'urgent' && n.deadline && (
+              <div className="mt-2 pl-6">
+                <span className="inline-flex items-center gap-2 rounded-md bg-red-100 text-red-800 text-[11px] font-semibold px-2 py-1">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10" />
+                    <polyline points="12 6 12 12 16 14" />
+                  </svg>
+                  Complete Before: {new Date(n.deadline).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })}
+                  {' · '}
+                  {new Date(n.deadline).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+            )}
           </div>
           <div className="text-[11px] text-slate-400 hidden sm:block whitespace-nowrap">
             {expanded ? 'Click to collapse' : 'Click to read'}
@@ -202,14 +215,20 @@ function NotificationCard({ n, onRead, onDelete }) {
           )}
 
           <div className="mt-3 flex items-center justify-between flex-wrap gap-2">
-            <div className="text-[11px] text-slate-400">
+            <div className="text-[11px] text-slate-400 space-y-0.5">
               {n.read && n.readAt
-                ? <>Read at {new Date(n.readAt).toLocaleString()}</>
-                : <>Marking as read…</>}
+                ? <div>Read at {new Date(n.readAt).toLocaleString()}</div>
+                : <div>Marking as read…</div>}
+              {n.priority === 'urgent' && n.resolvedAt && (
+                <div className="text-green-700">Resolved at {new Date(n.resolvedAt).toLocaleString()}</div>
+              )}
             </div>
-            <button className="btn-ghost text-xs text-red-600" onClick={(e) => { e.stopPropagation(); onDelete(); }}>
-              Delete
-            </button>
+            {/* Phase 46 -- Notifications are permanent history.  The
+                Delete button has been removed; employees dismiss
+                Dashboard rows from the Dashboard panel via Clear. */}
+            <div className="text-[11px] text-slate-400 italic">
+              Permanent record · cannot be deleted
+            </div>
           </div>
         </div>
       )}

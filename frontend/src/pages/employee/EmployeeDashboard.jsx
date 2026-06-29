@@ -171,13 +171,35 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     }
   };
 
+  // Phase 46 -- Resolve fires for urgent (time-bound) notices.  Read
+  // happens automatically on open; Resolve is the explicit "work done"
+  // gesture HR/SA's Sent Alerts page reports as the Resolved column.
+  const resolveNotice = async (n) => {
+    if (n.priority !== 'urgent') return;
+    try {
+      const { data } = await api.post(`/notifications/${n._id}/resolve`);
+      setPriorityNotices((list) => list.map((x) =>
+        x._id === n._id ? { ...x, resolvedAt: data?.resolvedAt || new Date().toISOString(), read: true, readAt: x.readAt || data?.readAt || new Date().toISOString() } : x,
+      ));
+    } catch (err) { toast.error(errMsg(err)); }
+  };
+
+  // Phase 46 -- Clear from the Dashboard panel.  Calls the dedicated
+  // dismiss-dashboard endpoint so the underlying Notification stays in
+  // the inbox as permanent proof of delivery; only the Dashboard row
+  // disappears.  Gating mirrors the spec: Important needs Read; Urgent
+  // needs Resolve.
   const clearNotice = async (n) => {
-    if (!n.read) {
+    if (n.priority === 'important' && !n.read) {
       toast.error('Open the notice before clearing it.');
       return;
     }
+    if (n.priority === 'urgent' && !n.resolvedAt) {
+      toast.error('Resolve this time-bound notice before clearing it.');
+      return;
+    }
     try {
-      await api.delete(`/notifications/${n._id}`);
+      await api.post(`/notifications/${n._id}/dismiss-dashboard`);
       setPriorityNotices((list) => list.filter((x) => x._id !== n._id));
     } catch (err) { toast.error(errMsg(err)); }
   };
@@ -697,10 +719,23 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                 {priorityNotices.map((n) => {
                   const open = openedNoticeIds.has(n._id);
                   const isUrgent = n.priority === 'urgent';
+                  const resolved = !!n.resolvedAt;
+                  // Phase 46 -- urgent cards switch their accent to
+                  // green once resolved so the panel reads as a small
+                  // to-do queue.
                   const cardCls = isUrgent
-                    ? 'border-red-200 bg-red-50/40'
+                    ? (resolved ? 'border-green-200 bg-green-50/40' : 'border-red-200 bg-red-50/40')
                     : 'border-amber-200 bg-amber-50/40';
                   const badgeCls = isUrgent ? 'badge-red' : 'badge-amber';
+                  // Clear gate per spec:
+                  //   important -> after Read
+                  //   urgent    -> after Resolve
+                  const canClear = isUrgent ? resolved : n.read;
+                  const clearTitle = canClear
+                    ? 'Clear from dashboard (notification stays in your inbox)'
+                    : (isUrgent
+                        ? 'Resolve this time-bound notice before clearing it'
+                        : 'Open the notice before clearing it');
                   return (
                     <div key={n._id} className={`rounded-lg border ${cardCls} p-3`}>
                       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -714,6 +749,11 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                               {isUrgent ? 'Urgent' : 'Important'}
                             </span>
                             {!n.read && <span className="badge-red text-[10px]">UNREAD</span>}
+                            {isUrgent && (
+                              resolved
+                                ? <span className="badge-green text-[10px]">RESOLVED</span>
+                                : <span className="badge-amber text-[10px]">PENDING</span>
+                            )}
                             <span className={`text-sm font-semibold ${n.read ? 'text-slate-700' : 'text-slate-900'}`}>
                               {n.title}
                             </span>
@@ -721,11 +761,27 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                           <div className="text-[11px] text-slate-500 mt-0.5">
                             {n.sender?.name ? `From ${n.sender.name}` : 'From HR'}
                             {' · '}
-                            {new Date(n.createdAt).toLocaleString()}
+                            Sent {new Date(n.createdAt).toLocaleString()}
                             {n.read && n.readAt && (
                               <> · <span className="text-green-700">Read {new Date(n.readAt).toLocaleString()}</span></>
                             )}
+                            {resolved && (
+                              <> · <span className="text-green-700">Resolved {new Date(n.resolvedAt).toLocaleString()}</span></>
+                            )}
                           </div>
+                          {/* Phase 46 -- prominent deadline ribbon for
+                              urgent / time-bound notices. */}
+                          {isUrgent && n.deadline && (
+                            <div className="mt-2 inline-flex items-center gap-2 rounded-md bg-red-100 text-red-800 text-[11px] font-semibold px-2 py-1">
+                              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <circle cx="12" cy="12" r="10" />
+                                <polyline points="12 6 12 12 16 14" />
+                              </svg>
+                              Complete Before: {new Date(n.deadline).toLocaleDateString(undefined, { day: '2-digit', month: 'short', year: 'numeric' })}
+                              {' · '}
+                              {new Date(n.deadline).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </div>
+                          )}
                         </button>
                         <div className="flex items-center gap-2 shrink-0">
                           <button
@@ -735,11 +791,21 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                           >
                             {open ? 'Hide' : (n.read ? 'View' : 'Open')}
                           </button>
+                          {isUrgent && !resolved && (
+                            <button
+                              type="button"
+                              className="btn-primary !py-1 !text-xs"
+                              title="Mark this time-bound work as completed"
+                              onClick={() => resolveNotice(n)}
+                            >
+                              ✓ Resolve
+                            </button>
+                          )}
                           <button
                             type="button"
-                            className={`btn-ghost !py-1 !text-xs ${n.read ? 'text-red-600' : 'text-slate-300 cursor-not-allowed'}`}
-                            title={n.read ? 'Clear from dashboard' : 'Open the notice before clearing it'}
-                            disabled={!n.read}
+                            className={`btn-ghost !py-1 !text-xs ${canClear ? 'text-red-600' : 'text-slate-300 cursor-not-allowed'}`}
+                            title={clearTitle}
+                            disabled={!canClear}
                             onClick={() => clearNotice(n)}
                           >
                             Clear

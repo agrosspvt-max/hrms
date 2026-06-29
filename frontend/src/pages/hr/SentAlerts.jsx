@@ -107,6 +107,8 @@ export default function SentAlerts() {
                 <th>Subject</th>
                 <th>Status</th>
                 <th>Read At</th>
+                <th>Deadline</th>
+                <th>Resolved At</th>
               </tr>
             </thead>
             <tbody>
@@ -166,9 +168,18 @@ function Row({ n, expanded, onToggle }) {
         </td>
         <td className="max-w-xs truncate">{n.title}</td>
         <td>
-          {n.read
-            ? <span className="badge-green">Read</span>
-            : <span className="badge-red">Unread</span>}
+          {/* Phase 46 -- for Urgent notices, surface Pending / Resolved
+              instead of just Read / Unread.  Read is shown alongside
+              so HR can tell "they saw it but haven't done the work". */}
+          {n.priority === 'urgent' ? (
+            n.resolvedAt
+              ? <span className="badge-green">Resolved</span>
+              : <span className="badge-amber">Pending</span>
+          ) : (
+            n.read
+              ? <span className="badge-green">Read</span>
+              : <span className="badge-red">Unread</span>
+          )}
         </td>
         <td className="text-xs whitespace-nowrap">
           {n.readAt
@@ -178,10 +189,26 @@ function Row({ n, expanded, onToggle }) {
               </>
             : <span className="text-slate-400">—</span>}
         </td>
+        <td className="text-xs whitespace-nowrap">
+          {n.priority === 'urgent' && n.deadline
+            ? <>
+                {new Date(n.deadline).toLocaleDateString()}
+                <div className="text-[10px] text-slate-500">{new Date(n.deadline).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+              </>
+            : <span className="text-slate-400">—</span>}
+        </td>
+        <td className="text-xs whitespace-nowrap">
+          {n.resolvedAt
+            ? <>
+                {new Date(n.resolvedAt).toLocaleDateString()}
+                <div className="text-[10px] text-slate-500">{new Date(n.resolvedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+              </>
+            : <span className="text-slate-400">—</span>}
+        </td>
       </tr>
       {expanded && (
         <tr>
-          <td colSpan="8" className="bg-slate-50 p-5">
+          <td colSpan="10" className="bg-slate-50 p-5">
             <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
               <div>
                 <div className="text-[11px] uppercase text-slate-500 font-semibold mb-1">Message</div>
@@ -204,6 +231,17 @@ function Row({ n, expanded, onToggle }) {
                 <Field label="Recipient email" value={n.recipient?.email || '-'} />
                 <Field label="Read" value={n.read ? 'Yes' : 'No'} cls={n.read ? 'text-green-700' : 'text-red-700'} />
                 <Field label="Read at" value={n.readAt ? new Date(n.readAt).toLocaleString() : '-'} />
+                {n.priority === 'urgent' && (
+                  <>
+                    <Field label="Deadline" value={n.deadline ? new Date(n.deadline).toLocaleString() : '-'} cls="text-red-700" />
+                    <Field
+                      label="Resolution"
+                      value={n.resolvedAt ? 'Resolved' : 'Pending'}
+                      cls={n.resolvedAt ? 'text-green-700' : 'text-amber-700'}
+                    />
+                    <Field label="Resolved at" value={n.resolvedAt ? new Date(n.resolvedAt).toLocaleString() : '-'} />
+                  </>
+                )}
               </div>
             </div>
           </td>
@@ -232,6 +270,12 @@ function BroadcastModal({ onClose, onSent }) {
   // Important / Urgent additionally surface on the Employee Dashboard
   // "Priority Notices" panel until the employee opens them.
   const [priority, setPriority] = useState('normal');
+  // Phase 46 -- Time-bound deadline (date + time).  Required only when
+  // priority === 'urgent'.  Stored as two separate inputs so the date
+  // picker and time picker render natively; combined into an ISO
+  // string at submit time.
+  const [deadlineDate, setDeadlineDate] = useState('');
+  const [deadlineTime, setDeadlineTime] = useState('');
   const [audience, setAudience] = useState('all'); // 'all' | 'department' | 'designation' | 'custom'
   const [selectedDepts, setSelectedDepts] = useState([]);
   const [selectedDesigs, setSelectedDesigs] = useState([]);
@@ -301,6 +345,23 @@ function BroadcastModal({ onClose, onSent }) {
       toast.error('Select at least one recipient');
       return;
     }
+    // Phase 46 -- urgent (time-bound) notices need a deadline.  Build
+    // the ISO timestamp client-side from <input type="date"> +
+    // <input type="time"> so the user sees their local clock and the
+    // server gets unambiguous UTC.
+    let deadlineISO;
+    if (priority === 'urgent') {
+      if (!deadlineDate || !deadlineTime) {
+        toast.error('Time-bound notices require a deadline date and time.');
+        return;
+      }
+      const composed = new Date(`${deadlineDate}T${deadlineTime}`);
+      if (Number.isNaN(composed.getTime())) {
+        toast.error('Deadline date/time is invalid.');
+        return;
+      }
+      deadlineISO = composed.toISOString();
+    }
     setBusy(true);
     try {
       const { data } = await api.post('/notifications', {
@@ -309,6 +370,7 @@ function BroadcastModal({ onClose, onSent }) {
         message: message.trim(),
         type: 'general',
         priority,
+        deadline: deadlineISO,
       });
       toast.success(`Broadcast sent to ${data.count} employee${data.count !== 1 ? 's' : ''}`);
       onSent();
@@ -395,6 +457,41 @@ function BroadcastModal({ onClose, onSent }) {
             ))}
           </div>
         </div>
+
+        {/* Phase 46 -- Deadline picker.  Renders ONLY when priority
+            is Urgent.  Both date and time are required; the modal's
+            Send handler combines them into an ISO timestamp and posts
+            as `deadline`. */}
+        {priority === 'urgent' && (
+          <div className="bg-red-50/60 border border-red-200 rounded-lg p-3 space-y-2">
+            <div className="text-xs font-semibold text-red-800">
+              Complete Before <span className="text-red-500">*</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="label text-[10px] uppercase">Date</label>
+                <input
+                  type="date"
+                  className="input"
+                  value={deadlineDate}
+                  onChange={(e) => setDeadlineDate(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="label text-[10px] uppercase">Time</label>
+                <input
+                  type="time"
+                  className="input"
+                  value={deadlineTime}
+                  onChange={(e) => setDeadlineTime(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="text-[11px] text-red-700">
+              Employees must click <b>Resolve</b> after finishing the work; until then this notice stays on their Dashboard.
+            </div>
+          </div>
+        )}
 
         <div>
           <label className="label">Send to</label>
