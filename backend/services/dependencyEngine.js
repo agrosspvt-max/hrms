@@ -69,15 +69,9 @@ const createDependencyTask = async ({
     waitingSince: new Date(),
   });
 
-  // In-app notification (non-fatal).
-  await Notification.create({
-    recipient: assignee._id,
-    sender: assignedBy._id,
-    type: 'dependency_assigned',
-    title: 'Dependency work assigned to you',
-    message: `${assignedBy.name || 'A colleague'} assigned dependency work to you${originalTaskName ? `: "${originalTaskName}"` : ''}.`,
-    relatedTitles: originalTaskName ? [originalTaskName] : [],
-  }).catch(() => {});
+  // Phase 45 -- DISABLED.  Dependency hand-off was reclassified as
+  // assignment-progress noise; the recipient sees it in their
+  // Dependency Work dashboard panel.  No in-app notification fires.
 
   return depTask;
 };
@@ -116,15 +110,9 @@ const resolveDependencyTask = async (depTask, byUser, note = '') => {
     console.error('[dependency] source reflect failed:', e.message);
   }
 
-  // Notify the original assigner that their blocker is cleared.
-  await Notification.create({
-    recipient: depTask.assignedBy,
-    sender: byUser._id,
-    type: 'dependency_resolved',
-    title: 'Dependency work resolved',
-    message: `${byUser.name || 'A colleague'} resolved the dependency work${depTask.originalTaskName ? `: "${depTask.originalTaskName}"` : ''}.`,
-    relatedTitles: depTask.originalTaskName ? [depTask.originalTaskName] : [],
-  }).catch(() => {});
+  // Phase 45 -- DISABLED.  Dependency resolution is assignment-progress
+  // noise; the assigner sees the cleared blocker in their dashboard
+  // pendency / dependency lists.
 
   return depTask;
 };

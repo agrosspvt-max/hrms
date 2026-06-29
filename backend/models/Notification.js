@@ -48,6 +48,17 @@ const notificationSchema = new mongoose.Schema(
     // same reminder is not sent twice (e.g. on repeated dashboard loads).
     eventKey: { type: String, default: '', index: true },
 
+    // Phase 45 — Priority Notices.  HR / Super Admin may flag broadcasts
+    // as 'important' or 'urgent'; the Employee Dashboard surfaces those
+    // in a dedicated panel that the employee cannot dismiss until read.
+    // 'normal' (default) behaves exactly as before -- inbox-only.
+    priority: {
+      type: String,
+      enum: ['normal', 'important', 'urgent'],
+      default: 'normal',
+      index: true,
+    },
+
     read: { type: Boolean, default: false, index: true },
     readAt: { type: Date },
   },

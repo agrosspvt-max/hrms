@@ -103,6 +103,7 @@ export default function SentAlerts() {
                 <th>Sent</th>
                 <th>Recipient</th>
                 <th>Type</th>
+                <th>Priority</th>
                 <th>Subject</th>
                 <th>Status</th>
                 <th>Read At</th>
@@ -156,6 +157,13 @@ function Row({ n, expanded, onToggle }) {
             ? <span className="badge-amber">Pendency</span>
             : <span className="badge-gray">General</span>}
         </td>
+        <td>
+          {n.priority === 'urgent'
+            ? <span className="badge-red">Urgent</span>
+            : n.priority === 'important'
+              ? <span className="badge-amber">Important</span>
+              : <span className="badge-gray">Normal</span>}
+        </td>
         <td className="max-w-xs truncate">{n.title}</td>
         <td>
           {n.read
@@ -173,7 +181,7 @@ function Row({ n, expanded, onToggle }) {
       </tr>
       {expanded && (
         <tr>
-          <td colSpan="7" className="bg-slate-50 p-5">
+          <td colSpan="8" className="bg-slate-50 p-5">
             <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
               <div>
                 <div className="text-[11px] uppercase text-slate-500 font-semibold mb-1">Message</div>
@@ -220,6 +228,10 @@ const Field = ({ label, value, cls = '' }) => (
 function BroadcastModal({ onClose, onSent }) {
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
+  // Phase 45 -- priority defaults to Normal (legacy behaviour).
+  // Important / Urgent additionally surface on the Employee Dashboard
+  // "Priority Notices" panel until the employee opens them.
+  const [priority, setPriority] = useState('normal');
   const [audience, setAudience] = useState('all'); // 'all' | 'department' | 'designation' | 'custom'
   const [selectedDepts, setSelectedDepts] = useState([]);
   const [selectedDesigs, setSelectedDesigs] = useState([]);
@@ -296,6 +308,7 @@ function BroadcastModal({ onClose, onSent }) {
         title: title.trim(),
         message: message.trim(),
         type: 'general',
+        priority,
       });
       toast.success(`Broadcast sent to ${data.count} employee${data.count !== 1 ? 's' : ''}`);
       onSent();
@@ -350,6 +363,37 @@ function BroadcastModal({ onClose, onSent }) {
             onChange={(e) => setMessage(e.target.value)}
             placeholder="Type your announcement..."
           />
+        </div>
+
+        {/* Phase 45 -- Priority selector.  Important / Urgent notices
+            also appear on the Employee Dashboard until opened. */}
+        <div>
+          <label className="label">Priority</label>
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { v: 'normal',    l: 'Normal',    desc: 'Inbox only' },
+              { v: 'important', l: 'Important', desc: 'Also on dashboard' },
+              { v: 'urgent',    l: 'Urgent',    desc: 'Time-bound · dashboard' },
+            ].map((opt) => (
+              <button
+                key={opt.v}
+                type="button"
+                onClick={() => setPriority(opt.v)}
+                className={`px-3 py-2 rounded-lg text-xs border text-left transition ${
+                  priority === opt.v
+                    ? (opt.v === 'urgent'
+                        ? 'bg-red-600 text-white border-red-600'
+                        : opt.v === 'important'
+                          ? 'bg-amber-500 text-white border-amber-500'
+                          : 'bg-brand-600 text-white border-brand-600')
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                <div className="font-semibold">{opt.l}</div>
+                <div className={`text-[10px] mt-0.5 ${priority === opt.v ? 'opacity-90' : 'text-slate-400'}`}>{opt.desc}</div>
+              </button>
+            ))}
+          </div>
         </div>
 
         <div>

@@ -716,16 +716,9 @@ const submitOne = asyncHandler(async (req, res) => {
     console.error('[attendance] auto half-day failed:', e.message);
   }
 
-  // Notify the HOD that a submission is waiting for their review.
-  if (hod) {
-    await Notification.create({
-      recipient: hod._id,
-      sender: req.user._id,
-      type: 'review_pending',
-      title: 'Submission awaiting your review',
-      message: `${req.user.name} submitted a report that needs your review.`,
-    }).catch(() => {});
-  }
+  // Phase 45 -- DISABLED.  "Submission awaiting review" was
+  // reclassified as a daily-submission update; the HOD sees pending
+  // reviews on their Submission Reviews page directly.
 
   res.json(sub);
 });

@@ -9,6 +9,8 @@ const { streamSalarySlipPdf } = require('../utils/pdfGenerator');
 const { sendCSV } = require('../utils/csvExporter');
 const { computePayroll } = require('../utils/payroll');
 const { logAudit } = require('../utils/audit');
+// Phase 45 -- salary slip generated -> employee notification.
+const notify = require('../services/notifyEvents');
 
 /**
  * Normalise an array of { amount, note } objects coming from the API
@@ -350,6 +352,9 @@ const generate = asyncHandler(async (req, res) => {
     },
   });
 
+  // Phase 45 -- meaningful event: notify the employee their slip is ready.
+  notify.notifySalarySlipGenerated({ employeeId, slip, generatedBy: req.user });
+
   res.status(201).json(slip);
 });
 
@@ -372,6 +377,10 @@ const generateAll = asyncHandler(async (req, res) => {
     try {
       const { slip } = await computeSlip(emp._id, startDate, endDate, { generatedBy: req.user._id });
       slips.push(slip);
+      // Phase 45 -- one notification per generated slip.  Fire-and-forget;
+      // notifyEvents swallows its own errors so a notification failure
+      // never breaks the payroll batch.
+      notify.notifySalarySlipGenerated({ employeeId: emp._id, slip, generatedBy: req.user });
     } catch (err) {
       console.error('[salary] failed for', emp.employeeId, err.message);
     }
@@ -733,6 +742,8 @@ const bulkGenerateForEmployees = asyncHandler(async (req, res) => {
       const { slip } = await computeSlip(empId, startDate, endDate, { generatedBy: req.user._id });
       if (priorRetracted) regeneratedCount += 1;
       succeeded.push(slip);
+      // Phase 45 -- notify each employee whose slip was generated.
+      notify.notifySalarySlipGenerated({ employeeId: empId, slip, generatedBy: req.user });
     } catch (err) {
       failed.push({ employeeId: empId, error: err.message });
     }

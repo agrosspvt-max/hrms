@@ -214,12 +214,13 @@ const resolveAudience = async (ev) => {
   return users.map((u) => String(u._id));
 };
 
-const fireOnce = async (recipient, type, eventKey, payload) => {
-  if (!recipient) return;
-  const existing = await Notification.findOne({ recipient, type, eventKey }).select('_id');
-  if (existing) return;
-  await Notification.create({ recipient, type, eventKey, ...payload }).catch(() => {});
-};
+// Phase 45 -- DISABLED.  Birthday / event reminders were reclassified
+// as reminder spam; the dedicated Upcoming Events widget on the
+// Employee Dashboard already surfaces them.  Keeping the function as a
+// no-op so callers (sweepDailyNotifications, birthday emitter) compile
+// without changes.
+// eslint-disable-next-line no-unused-vars
+const fireOnce = async (_recipient, _type, _eventKey, _payload) => {};
 
 const analytics = asyncHandler(async (_req, res) => {
   const today = startOfDay(new Date());

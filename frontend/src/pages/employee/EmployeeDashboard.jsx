@@ -126,6 +126,15 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
 
   const [myDeps, setMyDeps] = useState([]); // dependency work assigned to me
 
+  // Phase 45 -- Priority Notices (Important + Urgent broadcasts).  Each
+  // item carries { _id, title, message, sender, priority, read, readAt,
+  // createdAt }.  Read/clear state mirrors the existing inbox endpoints
+  // so HR's Read receipts on the Sent Alerts page keep working untouched.
+  const [priorityNotices, setPriorityNotices] = useState([]);
+  // Which notice cards the employee currently has expanded.  Opening
+  // one fires PATCH /:id/read so the read receipt is recorded.
+  const [openedNoticeIds, setOpenedNoticeIds] = useState(() => new Set());
+
   // Roster of accounts a dependency can be handed to (any active user).
   useEffect(() => {
     api.get('/dependencies/assignable').then((r) => setAssignable(r.data || [])).catch(() => {});
@@ -134,6 +143,44 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const loadDeps = () =>
     api.get('/dependencies/mine', { params: { status: 'all' } }).then((r) => setMyDeps(r.data || [])).catch(() => {});
   useEffect(() => { loadDeps(); }, []);
+
+  // Initial + on-demand load of priority notices.
+  const loadPriorityNotices = () =>
+    api.get('/notifications/priority')
+      .then((r) => setPriorityNotices(r.data || []))
+      .catch(() => {});
+  useEffect(() => { loadPriorityNotices(); }, []);
+
+  const openNotice = async (id) => {
+    setOpenedNoticeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+    // Already-read notices don't need another PATCH (the backend
+    // endpoint is idempotent, but skipping saves a round-trip on
+    // toggle-close).
+    const target = priorityNotices.find((n) => n._id === id);
+    if (target && !target.read) {
+      try {
+        const { data } = await api.patch(`/notifications/${id}/read`);
+        setPriorityNotices((list) => list.map((n) =>
+          n._id === id ? { ...n, read: true, readAt: data?.readAt || new Date().toISOString() } : n,
+        ));
+      } catch (_) { /* non-fatal */ }
+    }
+  };
+
+  const clearNotice = async (n) => {
+    if (!n.read) {
+      toast.error('Open the notice before clearing it.');
+      return;
+    }
+    try {
+      await api.delete(`/notifications/${n._id}`);
+      setPriorityNotices((list) => list.filter((x) => x._id !== n._id));
+    } catch (err) { toast.error(errMsg(err)); }
+  };
 
   // Pre-load active master data so custom-template forms have ready
   // dropdowns.  Cheap (small payload), single fetch on mount, used only
@@ -620,6 +667,98 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       )}
 
       {!embedded && <UpcomingEventsWidget limit={4} days={21} />}
+
+      {/* Phase 45 -- Priority Notices.  Renders Important + Urgent
+          broadcasts from HR/Super Admin.  Defaults open when there's at
+          least one unread; collapses when empty.  Each notice expands
+          inline; opening marks it Read (which also fires the existing
+          read-receipt on HR's Send Alerts page).  Clear / archive is
+          gated on Read so urgent notices can't be silently dismissed. */}
+      {!embedded && (() => {
+        const unreadCount = priorityNotices.filter((n) => !n.read).length;
+        const totalCount  = priorityNotices.length;
+        return (
+          <Collapsible
+            title="Priority Notices"
+            subtitle={totalCount === 0
+              ? 'No important notices'
+              : `${unreadCount} unread · ${totalCount} total`}
+            right={totalCount === 0
+              ? <span className="badge-gray">0</span>
+              : unreadCount > 0
+                ? <span className="badge-red">{unreadCount}</span>
+                : <span className="badge-green">All read</span>}
+            defaultOpen={totalCount > 0}
+          >
+            {totalCount === 0 ? (
+              <div className="text-sm text-slate-500">No important or urgent notices right now.</div>
+            ) : (
+              <div className="space-y-2">
+                {priorityNotices.map((n) => {
+                  const open = openedNoticeIds.has(n._id);
+                  const isUrgent = n.priority === 'urgent';
+                  const cardCls = isUrgent
+                    ? 'border-red-200 bg-red-50/40'
+                    : 'border-amber-200 bg-amber-50/40';
+                  const badgeCls = isUrgent ? 'badge-red' : 'badge-amber';
+                  return (
+                    <div key={n._id} className={`rounded-lg border ${cardCls} p-3`}>
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <button
+                          type="button"
+                          className="flex-1 text-left min-w-0"
+                          onClick={() => openNotice(n._id)}
+                        >
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={badgeCls}>
+                              {isUrgent ? 'Urgent' : 'Important'}
+                            </span>
+                            {!n.read && <span className="badge-red text-[10px]">UNREAD</span>}
+                            <span className={`text-sm font-semibold ${n.read ? 'text-slate-700' : 'text-slate-900'}`}>
+                              {n.title}
+                            </span>
+                          </div>
+                          <div className="text-[11px] text-slate-500 mt-0.5">
+                            {n.sender?.name ? `From ${n.sender.name}` : 'From HR'}
+                            {' · '}
+                            {new Date(n.createdAt).toLocaleString()}
+                            {n.read && n.readAt && (
+                              <> · <span className="text-green-700">Read {new Date(n.readAt).toLocaleString()}</span></>
+                            )}
+                          </div>
+                        </button>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <button
+                            type="button"
+                            className="btn-secondary !py-1 !text-xs"
+                            onClick={() => openNotice(n._id)}
+                          >
+                            {open ? 'Hide' : (n.read ? 'View' : 'Open')}
+                          </button>
+                          <button
+                            type="button"
+                            className={`btn-ghost !py-1 !text-xs ${n.read ? 'text-red-600' : 'text-slate-300 cursor-not-allowed'}`}
+                            title={n.read ? 'Clear from dashboard' : 'Open the notice before clearing it'}
+                            disabled={!n.read}
+                            onClick={() => clearNotice(n)}
+                          >
+                            Clear
+                          </button>
+                        </div>
+                      </div>
+                      {open && (
+                        <div className="mt-3 bg-white border border-slate-200 rounded-md p-3 text-sm text-slate-800 whitespace-pre-wrap">
+                          {n.message}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Collapsible>
+        );
+      })()}
 
       {/* Dependency Work assigned to me - hidden in embedded mode because
           the host (e.g. MyTasks) already has a richer, filterable inbox. */}

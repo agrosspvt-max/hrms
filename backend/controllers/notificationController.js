@@ -17,7 +17,11 @@ const Notification = require('../models/Notification');
  * Creates one Notification per recipient.  Returns the number created.
  */
 const send = asyncHandler(async (req, res) => {
-  const { recipients = [], title, message, type, relatedTaskIds = [], relatedTitles = [] } = req.body;
+  const {
+    recipients = [], title, message, type,
+    relatedTaskIds = [], relatedTitles = [],
+    priority,
+  } = req.body;
   if (!recipients.length) {
     res.status(400);
     throw new Error('At least one recipient is required');
@@ -26,6 +30,10 @@ const send = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error('title and message are required');
   }
+  // Phase 45 -- accept priority on the broadcast.  Unknown values fall
+  // back to 'normal' so legacy callers (no field) behave unchanged.
+  const allowedPriority = new Set(['normal', 'important', 'urgent']);
+  const priorityNorm = allowedPriority.has(priority) ? priority : 'normal';
   const docs = recipients.map((r) => ({
     recipient: r,
     sender: req.user._id,
@@ -34,9 +42,29 @@ const send = asyncHandler(async (req, res) => {
     type: type || 'general',
     relatedTaskIds,
     relatedTitles,
+    priority: priorityNorm,
   }));
   const created = await Notification.insertMany(docs);
   res.status(201).json({ count: created.length, notifications: created });
+});
+
+/**
+ * Phase 45 -- GET /api/notifications/priority
+ *
+ * Returns the current employee's Important + Urgent notices, newest
+ * first.  Drives the "Priority Notices" panel on the Employee Dashboard.
+ * Read/unread state is the same field the inbox uses, so the existing
+ * read-receipt workflow on HR's Send Alerts page keeps working
+ * untouched.
+ */
+const myPriority = asyncHandler(async (req, res) => {
+  const items = await Notification.find({
+    recipient: req.user._id,
+    priority: { $in: ['important', 'urgent'] },
+  })
+    .populate('sender', 'name role')
+    .sort({ createdAt: -1 });
+  res.json(items);
 });
 
 /**
@@ -88,10 +116,19 @@ const markAllRead = asyncHandler(async (req, res) => {
 
 /**
  * DELETE /api/notifications/:id
+ *
+ * Phase 45 -- Important / Urgent notices may only be cleared after the
+ * employee has actually opened them.  Normal notifications keep their
+ * previous behaviour (delete at any time) so the inbox doesn't change.
  */
 const remove = asyncHandler(async (req, res) => {
-  const n = await Notification.findOneAndDelete({ _id: req.params.id, recipient: req.user._id });
+  const n = await Notification.findOne({ _id: req.params.id, recipient: req.user._id });
   if (!n) { res.status(404); throw new Error('Notification not found'); }
+  if (n.priority && n.priority !== 'normal' && !n.read) {
+    res.status(400);
+    throw new Error('Open the notice before clearing it.');
+  }
+  await n.deleteOne();
   res.json({ message: 'Deleted' });
 });
 
@@ -106,4 +143,4 @@ const sentByMe = asyncHandler(async (req, res) => {
   res.json(items);
 });
 
-module.exports = { send, myInbox, unreadCount, markRead, markAllRead, remove, sentByMe };
+module.exports = { send, myInbox, myPriority, unreadCount, markRead, markAllRead, remove, sentByMe };

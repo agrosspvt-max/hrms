@@ -91,19 +91,9 @@ const apply = asyncHandler(async (req, res) => {
     paid: isPaidRequest,
   });
 
-  // Informational copy to the department HOD (approval still rests with HR).
-  if (req.user.department) {
-    const dept = await Department.findById(req.user.department).select('hodEmployeeId');
-    if (dept?.hodEmployeeId && String(dept.hodEmployeeId) !== String(req.user._id)) {
-      await Notification.create({
-        recipient: dept.hodEmployeeId,
-        sender: req.user._id,
-        type: 'leave_info',
-        title: 'Team leave request',
-        message: `${req.user.name} applied for leave (${from.toISOString().slice(0, 10)} → ${to.toISOString().slice(0, 10)}). Approval is handled by HR.`,
-      }).catch(() => {});
-    }
-  }
+  // Phase 45 -- HOD informational copy DISABLED (reclassified as noise;
+  // HR + Super Admin still get the canonical "leave applied" alert
+  // below, and the HOD sees pending leaves in their Leave panel).
 
   // Global notification: HR + Super Admin see every new leave request.
   notify.notifyLeaveApplied({ leave: lv, employee: req.user });
@@ -323,14 +313,10 @@ const revoke = asyncHandler(async (req, res) => {
     console.error(`[leave→att] clear failed for ${lv._id}: ${e.message}`);
   }
 
-  // Notify the employee out-of-band.
-  Notification.create({
-    recipient: lv.employee,
-    sender: req.user._id,
-    type: 'leave_info',
-    title: 'Leave approval revoked',
-    message: `Your approved leave (${lv.fromDate.toISOString().slice(0, 10)} → ${lv.toDate.toISOString().slice(0, 10)}, ${lv.days} day(s)) has been revoked by HR.${reason ? ` Reason: ${reason}` : ''}`,
-  }).catch(() => {});
+  // Phase 45 -- DISABLED.  Spec keeps only "leave approved" / "leave
+  // rejected" notifications; revocation is not in that meaningful set.
+  // The leave will visibly disappear from the employee's My Leaves
+  // page, which is the canonical place to learn about it.
 
   logAudit(req, {
     action: requester?.role === 'hr' ? 'leave.revoke.hr' : 'leave.revoke.employee',

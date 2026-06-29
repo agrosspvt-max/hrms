@@ -167,6 +167,10 @@ function NotificationCard({ n, onRead, onDelete }) {
               </div>
               {!n.read && <span className="badge-blue">New</span>}
               {isBacklog && <span className="badge-amber">Pendency</span>}
+              {/* Phase 45 -- priority badges so the inbox visually
+                  matches the Dashboard "Priority Notices" panel. */}
+              {n.priority === 'urgent'    && <span className="badge-red">Urgent</span>}
+              {n.priority === 'important' && <span className="badge-amber">Important</span>}
             </div>
             <div className="text-[11px] text-slate-500 mt-1 pl-6">
               From {n.sender?.name || 'System'}

@@ -9,6 +9,10 @@ router.use(protect);
 
 // Employee inbox
 router.get('/mine', c.myInbox);
+// Phase 45 -- Priority Notices (Important + Urgent) for the Employee
+// Dashboard collapsible panel.  Same read-receipt + delete endpoints
+// power read/clear, this is just a filtered list.
+router.get('/priority', c.myPriority);
 router.get('/unread-count', c.unreadCount);
 router.patch('/read-all', c.markAllRead);
 router.patch('/:id/read', c.markRead);
