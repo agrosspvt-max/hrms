@@ -5,6 +5,7 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { fmtDate, errMsg } from '../../utils/helpers';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { subscribe } from '../../realtime';
 
 export default function MyLeaves() {
   const [items, setItems] = useState([]);
@@ -20,6 +21,8 @@ export default function MyLeaves() {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+  // Phase 47 -- HR approves / rejects -> my leave list refreshes.
+  useEffect(() => subscribe('leave:decision', load), []);
 
   const apply = async (form) => {
     try {

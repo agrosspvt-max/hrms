@@ -11,6 +11,9 @@ import SearchableSelect from '../../components/SearchableSelect.jsx';
 import useDraftAutosave from '../../hooks/useDraftAutosave';
 import { useToast } from '../../context/ToastContext.jsx';
 import { delayBadgeClass, delayLabel, errMsg, fmtDate } from '../../utils/helpers';
+// Phase 47 -- realtime subscribe helper.  Each useEffect returns the
+// unsubscribe function so React tears down listeners on unmount.
+import { subscribe } from '../../realtime';
 
 /* ------------------------------------------------------------------ */
 /* Phase 19: Draft autosave status pill + Save Draft button.          */
@@ -150,6 +153,20 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       .then((r) => setPriorityNotices(r.data || []))
       .catch(() => {});
   useEffect(() => { loadPriorityNotices(); }, []);
+
+  // Phase 47 -- realtime subscriptions.  Server-pushed events trigger
+  // a targeted re-fetch of just the affected slice; we never call
+  // window.location.reload().  Each subscribe() returns its own
+  // cleanup function so React tears the listener down on unmount.
+  useEffect(() => {
+    // New / changed priority notices land here; the panel refreshes.
+    const u1 = subscribe('notification:new', (detail) => {
+      if (!detail || detail.priority !== 'normal') loadPriorityNotices();
+    });
+    // Cleared/dismissed/resolved on another tab — keep both in sync.
+    const u2 = subscribe('notification:resolved', loadPriorityNotices);
+    return () => { u1(); u2(); };
+  }, []);
 
   const openNotice = async (id) => {
     setOpenedNoticeIds((prev) => {
@@ -377,6 +394,19 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // Phase 47 -- refresh today's tasks + summary counters whenever an
+  // event affects them.  load() re-fetches /submissions/today and
+  // /dashboard/employee/summary so the cards, backlog table and stat
+  // tiles all reflect the new state.
+  useEffect(() => {
+    const u1 = subscribe('assignment:created',      load);
+    const u2 = subscribe('leave:decision',          load);
+    const u3 = subscribe('salary:slip:generated',   load);
+    const u4 = subscribe('attendance:changed',      load);
+    return () => { u1(); u2(); u3(); u4(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (loading || !data) return <Loader />;
 
@@ -1563,6 +1593,8 @@ function AttendanceConfirmationCard() {
     } catch (_) { setState({ eligible: false, reason: 'error' }); }
   };
   useEffect(() => { load(); }, []);
+  // Phase 47 -- refresh when HR edits attendance.
+  useEffect(() => subscribe('attendance:changed', load), []);
 
   const confirm = async () => {
     setBusy(true);

@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 /**
  * Employee inbox - lists all notifications received from HR (or the system).
@@ -26,6 +27,16 @@ export default function Notifications() {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter]);
+
+  // Phase 47 -- inbox refreshes when a new notification arrives or
+  // any of its read/resolved metadata flips on another tab.
+  useEffect(() => {
+    const u1 = subscribe('notification:new',       load);
+    const u2 = subscribe('notification:read',      load);
+    const u3 = subscribe('notification:resolved',  load);
+    return () => { u1(); u2(); u3(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter]);
 
   /**
    * Optimistic mark-as-read: flip the local state FIRST so the card

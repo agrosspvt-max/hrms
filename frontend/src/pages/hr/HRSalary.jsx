@@ -4,6 +4,7 @@ import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { fmtMoney, errMsg, authUrl } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 // 'YYYY-MM-DD' (UTC) for a date - matches the backend periodKey format.
 const ymd = (d) => {
@@ -68,6 +69,8 @@ export default function HRSalary() {
     setLoading(false);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [startDate, endDate, includeRetracted]);
+  // Phase 47 -- a slip was just generated on another tab / bulk run.
+  useEffect(() => subscribe('salary:slip:generated', load), [startDate, endDate, includeRetracted]);
   // Phase 31.4 -- lazily load the employee list for the individual
   // generate modal so the page itself doesn't pay for it on every visit.
   useEffect(() => {

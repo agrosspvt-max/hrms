@@ -180,7 +180,21 @@ export default function Sidebar({ open, onClose }) {
     const handler = () => run();
     window.addEventListener('hrms:notifications-changed', handler);
     window.addEventListener('hrms:reset-requests-changed', handler);
-    return () => { alive = false; window.removeEventListener('hrms:notifications-changed', handler); window.removeEventListener('hrms:reset-requests-changed', handler); };
+    // Phase 47 -- realtime nudge so the sidebar badges (unread inbox,
+    // HOD review queue, etc.) refresh the instant the backend pushes.
+    window.addEventListener('hrms:rt:notification:new', handler);
+    window.addEventListener('hrms:rt:notification:read', handler);
+    window.addEventListener('hrms:rt:notification:resolved', handler);
+    window.addEventListener('hrms:rt:submission:submitted', handler);
+    return () => {
+      alive = false;
+      window.removeEventListener('hrms:notifications-changed', handler);
+      window.removeEventListener('hrms:reset-requests-changed', handler);
+      window.removeEventListener('hrms:rt:notification:new', handler);
+      window.removeEventListener('hrms:rt:notification:read', handler);
+      window.removeEventListener('hrms:rt:notification:resolved', handler);
+      window.removeEventListener('hrms:rt:submission:submitted', handler);
+    };
   }, [user, location.pathname]);
 
   // ---- collapsible group open state (persisted) ----

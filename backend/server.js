@@ -40,6 +40,10 @@ app.use('/api', require('./routes/productRoutes'));
 app.use('/api/submission-control', require('./routes/submissionControlRoutes'));
 app.use('/api/daily-review', require('./routes/dailyReviewRoutes'));
 app.use('/api/template-analytics', require('./routes/templateAnalyticsRoutes'));
+// Phase 47 — Server-Sent Events stream that pushes cross-user updates
+// (notifications, leave requests, salary slips, attendance edits, etc.)
+// to the affected user(s) so the UI updates without a manual refresh.
+app.use('/api/realtime', require('./routes/realtimeRoutes'));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date() }));
 

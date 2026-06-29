@@ -1,5 +1,9 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import api from '../api/axios';
+// Phase 47 -- single SSE connection per session so cross-user updates
+// land without a manual refresh.  Opens on login + on app boot when a
+// token already exists; closes on logout.
+import { connectRealtime, disconnectRealtime } from '../realtime';
 
 const AuthContext = createContext(null);
 
@@ -15,10 +19,13 @@ export const AuthProvider = ({ children }) => {
     localStorage.setItem('hrms_token', data.token);
     localStorage.setItem('hrms_user', JSON.stringify(data.user));
     setUser(data.user);
+    // Phase 47 -- open realtime as soon as we have a token.
+    connectRealtime(data.token);
     return data.user;
   };
 
   const logout = () => {
+    disconnectRealtime();
     localStorage.removeItem('hrms_token');
     localStorage.removeItem('hrms_user');
     setUser(null);
@@ -28,10 +35,15 @@ export const AuthProvider = ({ children }) => {
   useEffect(() => {
     const token = localStorage.getItem('hrms_token');
     if (!token) return;
+    // Phase 47 -- bootstrap the realtime stream on app reload (the user
+    // is already logged in via persisted token).  Safe to call before
+    // /me returns; the server doesn't need user metadata to fan out.
+    connectRealtime(token);
     api.get('/auth/me').then(({ data }) => {
       localStorage.setItem('hrms_user', JSON.stringify(data));
       setUser(data);
     }).catch(() => {});
+    return () => disconnectRealtime();
   }, []);
 
   return (

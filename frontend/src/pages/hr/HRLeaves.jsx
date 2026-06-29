@@ -5,6 +5,7 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { fmtDate, errMsg } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 export default function HRLeaves() {
   const { user } = useAuth();
@@ -33,6 +34,14 @@ export default function HRLeaves() {
     setLoading(false);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter, audience]);
+  // Phase 47 -- new leave application or a decision made on another
+  // tab refreshes the list immediately.
+  useEffect(() => {
+    const u1 = subscribe('leave:applied',  load);
+    const u2 = subscribe('leave:decision', load);
+    return () => { u1(); u2(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filter, audience]);
 
   const decide = async (id, decision) => {
     try {

@@ -12,6 +12,8 @@ const { ensureDailySubmissions, getBacklog, isWeeklyOff } = require('../services
 const { createDependencyTask } = require('../services/dependencyEngine');
 const { startOfDay } = require('../utils/dateHelpers');
 const { liveSubmissionFilter } = require('../utils/submissionFilter');
+// Phase 47 -- realtime fan-out to HR/SA/HOD reviewers.
+const rt = require('../services/realtime');
 
 /**
  * Validate + stamp dependency fields onto a scorable unit (task / excel
@@ -719,6 +721,23 @@ const submitOne = asyncHandler(async (req, res) => {
   // Phase 45 -- DISABLED.  "Submission awaiting review" was
   // reclassified as a daily-submission update; the HOD sees pending
   // reviews on their Submission Reviews page directly.
+
+  // Phase 47 -- realtime: tell HR, Super Admin and the matching HOD
+  // their review queue has a new card.  No notification row created;
+  // this is purely a UI-refresh signal so the open Submission Reviews
+  // page re-fetches without a manual reload.
+  try {
+    const reviewers = await User.find({
+      role: { $in: ['hr', 'super_admin'] },
+      status: 'active',
+    }).select('_id').lean();
+    const reviewerIds = reviewers.map((u) => u._id);
+    if (hod?._id) reviewerIds.push(hod._id);
+    rt.publishMany(reviewerIds, 'submission:submitted', {
+      submissionId: String(sub._id),
+      employeeId: String(req.user._id),
+    });
+  } catch (_) { /* never blocks the response */ }
 
   res.json(sub);
 });

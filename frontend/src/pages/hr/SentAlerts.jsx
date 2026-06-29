@@ -5,6 +5,7 @@ import Modal from '../../components/Modal.jsx';
 import StatCard from '../../components/StatCard.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 /**
  * HR Sent Alerts
@@ -33,6 +34,13 @@ export default function SentAlerts() {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); }, []);
+  // Phase 47 -- recipient reads / resolves a notice -> the Sent
+  // Alerts read-receipt + resolved columns update without a refresh.
+  useEffect(() => {
+    const u1 = subscribe('notification:read',     load);
+    const u2 = subscribe('notification:resolved', load);
+    return () => { u1(); u2(); };
+  }, []);
 
   const filtered = useMemo(() => {
     return items.filter((n) => {

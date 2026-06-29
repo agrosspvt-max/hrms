@@ -5,6 +5,7 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, monthKey } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 /**
  * HR Employee Attendance
@@ -101,6 +102,17 @@ export default function EmployeeAttendance() {
     openIds.forEach((id) => fetchAttendance(id));
     // eslint-disable-next-line
   }, [month]);
+
+  // Phase 47 -- attendance edit happens on another tab / by bulk; for
+  // every currently-open employee card refresh its data.  Closed cards
+  // simply pick up fresh data the next time HR expands them.
+  useEffect(() => {
+    return subscribe('attendance:changed', () => {
+      const openIds = Object.keys(openMap).filter((id) => openMap[id]);
+      openIds.forEach((id) => fetchAttendance(id));
+    });
+    // eslint-disable-next-line
+  }, [month, openMap]);
 
   const fetchAttendance = async (employeeId) => {
     const [year, m] = month.split('-').map(Number);

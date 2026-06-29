@@ -2,14 +2,19 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { fmtMoney, authUrl } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 export default function MySalary() {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  // Phase 47 -- single load() reused by initial mount AND by the
+  // realtime subscription so HR's salary generation lands instantly.
+  const load = () =>
     api.get('/salary/mine').then(({ data }) => { setItems(data); setLoading(false); });
-  }, []);
+
+  useEffect(() => { load(); }, []);
+  useEffect(() => subscribe('salary:slip:generated', load), []);
 
   if (loading) return <Loader />;
 

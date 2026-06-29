@@ -6,6 +6,7 @@ import ScheduleTag from '../../components/ScheduleTag.jsx';
 import UpcomingEventsWidget from '../../components/UpcomingEventsWidget.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { delayBadgeClass, delayLabel, fmtDate } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 export default function HRDashboard() {
   const [summary, setSummary] = useState(null);
@@ -23,6 +24,18 @@ export default function HRDashboard() {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+  // Phase 47 -- HR dashboard counters reflect cross-user activity, so
+  // any meaningful event re-fetches the summary + today snapshot.
+  useEffect(() => {
+    const subs = [
+      subscribe('leave:applied',          load),
+      subscribe('leave:decision',         load),
+      subscribe('submission:submitted',   load),
+      subscribe('attendance:changed',     load),
+      subscribe('salary:slip:generated',  load),
+    ];
+    return () => subs.forEach((u) => u());
+  }, []);
 
   if (loading) return <Loader />;
 

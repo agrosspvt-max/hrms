@@ -1,5 +1,8 @@
 const asyncHandler = require('express-async-handler');
 const Notification = require('../models/Notification');
+// Phase 47 -- realtime fan-out so recipients (and the sender) see
+// updates without a manual refresh.
+const rt = require('../services/realtime');
 
 /**
  * POST /api/notifications
@@ -65,6 +68,10 @@ const send = asyncHandler(async (req, res) => {
     deadline: deadlineDate,
   }));
   const created = await Notification.insertMany(docs);
+  // Phase 47 -- push notification:new to every recipient.  Priority
+  // matters on the client (the Dashboard panel re-fetches separately
+  // from the inbox), so include it in the payload.
+  rt.publishMany(recipients, 'notification:new', { priority: priorityNorm });
   res.status(201).json({ count: created.length, notifications: created });
 });
 
@@ -123,6 +130,8 @@ const markRead = asyncHandler(async (req, res) => {
     n.read = true;
     n.readAt = new Date();
     await n.save();
+    // Phase 47 -- the sender's Sent Alerts page updates its Read column.
+    if (n.sender) rt.publish(n.sender, 'notification:read', { notificationId: String(n._id) });
   }
   res.json(n);
 });
@@ -131,10 +140,17 @@ const markRead = asyncHandler(async (req, res) => {
  * PATCH /api/notifications/read-all
  */
 const markAllRead = asyncHandler(async (req, res) => {
+  // Phase 47 -- need senders of the rows we're about to mark so we can
+  // tell each sender's Sent Alerts page to refresh.  One query + a set
+  // keeps it O(senders) instead of one publish per row.
+  const senders = await Notification.find(
+    { recipient: req.user._id, read: false },
+  ).distinct('sender');
   const r = await Notification.updateMany(
     { recipient: req.user._id, read: false },
     { $set: { read: true, readAt: new Date() } },
   );
+  if (senders?.length) rt.publishMany(senders, 'notification:read', { bulk: true });
   res.json({ updated: r.modifiedCount });
 });
 
@@ -184,6 +200,8 @@ const resolve = asyncHandler(async (req, res) => {
     // we also stamp readAt so HR's "Read" receipt reflects reality.
     if (!n.read) { n.read = true; n.readAt = n.resolvedAt; }
     await n.save();
+    // Phase 47 -- HR's Sent Alerts page sees Resolved status update.
+    if (n.sender) rt.publish(n.sender, 'notification:resolved', { notificationId: String(n._id) });
   }
   res.json(n);
 });

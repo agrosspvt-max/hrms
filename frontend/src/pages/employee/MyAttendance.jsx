@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import { Loader } from '../../components/Loader.jsx';
 import StatCard from '../../components/StatCard.jsx';
 import { monthKey } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 const STATUS_STYLE = {
   present: 'bg-green-500',
@@ -36,12 +37,16 @@ export default function MyAttendance() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  // Phase 47 -- extracted so the realtime subscription can reuse it.
+  const load = () => {
     setLoading(true);
     const [y, mo] = m.split('-').map(Number);
     api.get('/attendance/mine', { params: { year: y, month: mo } })
       .then(({ data }) => { setData(data); setLoading(false); });
-  }, [m]);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [m]);
+  // HR edits or clears an attendance row -> the visible month refreshes.
+  useEffect(() => subscribe('attendance:changed', load), [m]);
 
   if (loading || !data) return <Loader />;
 

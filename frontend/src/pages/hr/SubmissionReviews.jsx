@@ -4,6 +4,7 @@ import api from '../../api/axios';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, fmtDate } from '../../utils/helpers';
+import { subscribe } from '../../realtime';
 
 /**
  * HR Submission Reviews -- Phase 5 grouped layout.
@@ -70,6 +71,8 @@ export default function SubmissionReviews() {
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [date, status]);
+  // Phase 47 -- new submission lands -> review queue refreshes live.
+  useEffect(() => subscribe('submission:submitted', load), [date, status]);
 
   // Phase 23.5: derive a card's HOD bucket from its submissions.  A
   // card may hold multiple submissions on the same day -- the rule is:
@@ -1273,6 +1276,10 @@ function AttendanceReviewsSection({ date }) {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [date]);
+  // Phase 47 -- HR's attendance edits trigger an attendance:changed
+  // push; the confirmation queue is the same dataset (one row per
+  // attendance-review employee) so refresh whenever those land too.
+  useEffect(() => subscribe('attendance:changed', load), [date]);
 
   const act = async (row, action) => {
     if (!row.confirmation) {

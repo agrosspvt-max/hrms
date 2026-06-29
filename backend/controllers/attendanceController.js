@@ -4,6 +4,9 @@ const Attendance = require('../models/Attendance');
 const { deriveAttendance } = require('../services/dailyEngine');
 const { monthRange, startOfDay, addDays } = require('../utils/dateHelpers');
 const { logAudit } = require('../utils/audit');
+// Phase 47 -- realtime fan-out so the affected employee's Attendance
+// page re-fetches without a manual refresh.
+const rt = require('../services/realtime');
 const {
   leaveUnitsForStatus,
   approvedPaidLeaveUnitsForDay,
@@ -135,7 +138,10 @@ const setStatus = asyncHandler(async (req, res) => {
     },
   });
 
-  // Notify the employee that HR changed their attendance.
+  // Notify the employee that HR changed their attendance.  The
+  // notifyEvents helper is a Phase-45 no-op (notification row no longer
+  // created — too noisy), but we still emit a realtime push so the
+  // employee's My Attendance page and Dashboard counters re-fetch.
   try {
     const notify = require('../services/notifyEvents');
     notify.notifyAttendanceChanged({
@@ -144,7 +150,8 @@ const setStatus = asyncHandler(async (req, res) => {
       status,
       changedBy: req.user,
     });
-  } catch (_) { /* notify never blocks */ }
+    rt.publish(employee._id, 'attendance:changed', { date: day, status });
+  } catch (_) { /* never blocks */ }
 
   res.json({
     record,
@@ -201,6 +208,9 @@ const clearStatus = asyncHandler(async (req, res) => {
       newStatus: revertedStatus,
     },
   });
+
+  // Phase 47 -- realtime push to the employee whose override was cleared.
+  rt.publish(employee._id, 'attendance:changed', { date: day, status: revertedStatus });
 
   res.json({ cleared: true, revertedStatus, leaveBalance: employee.leaveBalance });
 });
@@ -286,6 +296,9 @@ const bulkSetStatus = asyncHandler(async (req, res) => {
       });
 
       succeeded.push({ id: String(employee._id), name: employee.name });
+      // Phase 47 -- per-employee realtime push so each affected user's
+      // My Attendance / Dashboard refreshes.
+      rt.publish(employee._id, 'attendance:changed', { date: day, status });
     } catch (err) {
       failed.push({ id, name: '(error)', reason: err.message });
     }
