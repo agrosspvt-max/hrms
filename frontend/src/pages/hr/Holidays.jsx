@@ -4,6 +4,7 @@ import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, fmtDate, monthKey } from '../../utils/helpers';
+import MonthPicker from '../../components/MonthPicker.jsx';
 
 /**
  * HR Holiday Calendar
@@ -105,11 +106,9 @@ export default function Holidays() {
           </p>
         </div>
         <div className="flex gap-2 items-center">
-          <input
-            className="input max-w-[180px]"
-            type="month"
+          <MonthPicker
             value={month}
-            onChange={(e) => { setMonth(e.target.value); setYear(Number(e.target.value.split('-')[0])); }}
+            onChange={(v) => { setMonth(v); setYear(Number(v.split('-')[0])); }}
           />
           <button className="btn-primary" onClick={() => setModal({
             mode: 'create',

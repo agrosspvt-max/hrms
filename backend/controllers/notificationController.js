@@ -1,5 +1,7 @@
 const asyncHandler = require('express-async-handler');
+const mongoose     = require('mongoose');
 const Notification = require('../models/Notification');
+const User         = require('../models/User');
 // Phase 47 -- realtime fan-out so recipients (and the sender) see
 // updates without a manual refresh.
 const rt = require('../services/realtime');
@@ -72,6 +74,19 @@ const send = asyncHandler(async (req, res) => {
   // matters on the client (the Dashboard panel re-fetches separately
   // from the inbox), so include it in the payload.
   rt.publishMany(recipients, 'notification:new', { priority: priorityNorm });
+  // Phase 48 -- Send Alerts is now a SHARED admin history.  Tell every
+  // active HR / Super Admin to re-fetch their Sent Alerts list so the
+  // new broadcast appears even on tabs owned by other admins.
+  try {
+    const admins = await User.find({
+      role: { $in: ['hr', 'super_admin'] },
+      status: 'active',
+    }).select('_id').lean();
+    rt.publishMany(admins.map((u) => u._id), 'notification:sent', {
+      senderId: String(req.user._id),
+      count: created.length,
+    });
+  } catch (_) { /* realtime never blocks the response */ }
   res.status(201).json({ count: created.length, notifications: created });
 });
 
@@ -242,17 +257,66 @@ const dismissDashboard = asyncHandler(async (req, res) => {
 });
 
 /**
- * GET /api/notifications/sent  (HR)
- * History of notifications HR has sent (most recent first).
+ * GET /api/notifications/sent  (HR / Super Admin / sendAlerts grant)
+ *
+ * Phase 48 -- shared admin history.  By default every HR + Super Admin
+ * sees every alert any admin has sent (so admins can audit / avoid
+ * duplicate broadcasts).  The optional `?sender=` query narrows the
+ * list:
+ *
+ *   ?sender=me           — only my own sends (legacy "Sent by me" view)
+ *   ?sender=<userId>     — pick a specific admin from the dropdown
+ *   (omitted)            — every admin's sends (default)
+ *
+ * The list is always clamped to senders who currently hold an admin
+ * role; a former HR who has been demoted does not leak into the feed.
+ * Read receipts / priority / deadline / resolve fields are returned
+ * unchanged so the existing SentAlerts UI keeps working.
  */
-const sentByMe = asyncHandler(async (req, res) => {
-  const items = await Notification.find({ sender: req.user._id })
+const sentList = asyncHandler(async (req, res) => {
+  const where = {};
+  const raw = (req.query.sender || '').toString().trim();
+  if (raw === 'me') {
+    where.sender = req.user._id;
+  } else if (raw && mongoose.Types.ObjectId.isValid(raw)) {
+    where.sender = raw;
+  } else {
+    // Default: every admin's sends.  Look up admins once and constrain
+    // the query so demoted accounts never appear.
+    const admins = await User.find({
+      role: { $in: ['hr', 'super_admin'] },
+    }).select('_id').lean();
+    where.sender = { $in: admins.map((u) => u._id) };
+  }
+  const items = await Notification.find(where)
     .populate('recipient', 'name employeeId email')
+    .populate('sender', 'name role employeeId')
     .sort({ createdAt: -1 });
   res.json(items);
 });
 
+/**
+ * GET /api/notifications/senders  (HR / Super Admin / sendAlerts grant)
+ *
+ * Powers the "Sent By" dropdown on the SentAlerts page.  Returns every
+ * active admin (HR + Super Admin) — including those who haven't sent
+ * anything yet — sorted by name.  Tiny payload (`_id`, `name`, `role`).
+ */
+const listSenders = asyncHandler(async (req, res) => {
+  const admins = await User.find({
+    role: { $in: ['hr', 'super_admin'] },
+    status: 'active',
+  })
+    .select('_id name role')
+    .sort({ name: 1 })
+    .lean();
+  res.json(admins);
+});
+
 module.exports = {
   send, myInbox, myPriority, unreadCount, markRead, markAllRead,
-  remove, resolve, dismissDashboard, sentByMe,
+  remove, resolve, dismissDashboard,
+  // Phase 48 -- shared sent history + admin-roster dropdown.  Old name
+  // kept as an alias for backward compatibility with any callers.
+  sentList, sentByMe: sentList, listSenders,
 };

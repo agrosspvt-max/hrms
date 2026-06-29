@@ -4,6 +4,7 @@ import { Loader } from '../../components/Loader.jsx';
 import StatCard from '../../components/StatCard.jsx';
 import { monthKey } from '../../utils/helpers';
 import { subscribe } from '../../realtime';
+import MonthPicker from '../../components/MonthPicker.jsx';
 
 const STATUS_STYLE = {
   present: 'bg-green-500',
@@ -54,7 +55,7 @@ export default function MyAttendance() {
     <div className="space-y-4">
       <div className="flex justify-between items-center flex-wrap gap-2">
         <h1 className="text-2xl font-bold">My Attendance</h1>
-        <input className="input max-w-[180px]" type="month" value={m} onChange={(e) => setM(e.target.value)} />
+        <MonthPicker value={m} onChange={setM} />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

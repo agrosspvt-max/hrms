@@ -30,6 +30,11 @@ router.delete('/:id', c.remove);
 
 // HR sending -- also granted by `sendAlerts` feature permission.
 router.post('/', sendGate, c.send);
-router.get('/sent', sendGate, c.sentByMe);
+// Phase 48 -- /sent now returns the SHARED admin sent history (every
+// HR + Super Admin sees every admin's broadcasts).  ?sender=me|<id>
+// narrows it; absence = all.
+router.get('/sent', sendGate, c.sentList);
+// Phase 48 -- roster of admins who can appear in the Sent By dropdown.
+router.get('/senders', sendGate, c.listSenders);
 
 module.exports = router;

@@ -10,10 +10,14 @@ import { subscribe } from '../../realtime';
 /**
  * HR Sent Alerts
  *
- * Audit-log style view of every notification the current HR user has
- * sent.  Each row shows recipient, type, subject and a clear read /
- * unread badge along with the read-at timestamp.  Rows are expandable
- * to show the full message body and any referenced backlog tasks.
+ * Audit-log style view.  Phase 48 -- shared admin history: every HR +
+ * Super Admin sees every admin's broadcasts (so they can audit
+ * communications and avoid duplicates).  A "Sent By" dropdown narrows
+ * the list to a single sender (or "Me").
+ *
+ * Each row shows sender, recipient, type, subject and read receipt;
+ * rows are expandable to show the full message body and any
+ * referenced backlog tasks.
  */
 export default function SentAlerts() {
   const [items, setItems] = useState([]);
@@ -21,6 +25,9 @@ export default function SentAlerts() {
   const [status, setStatus] = useState('');     // '' | 'read' | 'unread'
   const [type, setType] = useState('');         // '' | 'backlog_alert' | 'general'
   const [q, setQ] = useState('');               // recipient name / employeeId / email
+  // Phase 48 -- '' = all admins, 'me' = current user, or an admin _id.
+  const [senderFilter, setSenderFilter] = useState('');
+  const [senders, setSenders] = useState([]);   // [{ _id, name, role }]
   const [openId, setOpenId] = useState(null);
   const [broadcastOpen, setBroadcastOpen] = useState(false);
   const toast = useToast();
@@ -28,19 +35,33 @@ export default function SentAlerts() {
   const load = async () => {
     setLoading(true);
     try {
-      const { data } = await api.get('/notifications/sent');
+      const params = senderFilter ? { sender: senderFilter } : {};
+      const { data } = await api.get('/notifications/sent', { params });
       setItems(data);
     } catch (err) { toast.error(errMsg(err)); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [senderFilter]);
+
+  // Phase 48 -- roster for the Sent By dropdown.  Loaded once on
+  // mount; admins rarely change mid-session.
+  useEffect(() => {
+    api.get('/notifications/senders')
+      .then(({ data }) => setSenders(data || []))
+      .catch(() => setSenders([]));
+  }, []);
+
   // Phase 47 -- recipient reads / resolves a notice -> the Sent
   // Alerts read-receipt + resolved columns update without a refresh.
+  // Phase 48 -- another admin sends a new broadcast -> our list
+  // refreshes too so the shared history stays live.
   useEffect(() => {
     const u1 = subscribe('notification:read',     load);
     const u2 = subscribe('notification:resolved', load);
-    return () => { u1(); u2(); };
-  }, []);
+    const u3 = subscribe('notification:sent',     load);
+    return () => { u1(); u2(); u3(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [senderFilter]);
 
   const filtered = useMemo(() => {
     return items.filter((n) => {
@@ -72,7 +93,9 @@ export default function SentAlerts() {
       <div className="flex justify-between items-end flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Sent Alerts</h1>
-          <p className="text-sm text-slate-500">All notifications you've sent to employees, with read receipts.</p>
+          <p className="text-sm text-slate-500">
+            Shared admin history — every HR + Super Admin can see every broadcast, with full read receipts.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <button className="btn-secondary" onClick={load}>Refresh</button>
@@ -87,7 +110,7 @@ export default function SentAlerts() {
         <StatCard label="Pendency Alerts" value={totals.backlog} accent="red" />
       </div>
 
-      <div className="card card-body grid md:grid-cols-3 gap-3">
+      <div className="card card-body grid md:grid-cols-4 gap-3">
         <input className="input" placeholder="Search recipient / subject..." value={q} onChange={(e) => setQ(e.target.value)} />
         <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">All statuses</option>
@@ -99,6 +122,18 @@ export default function SentAlerts() {
           <option value="backlog_alert">Pendency alerts</option>
           <option value="general">General</option>
         </select>
+        {/* Phase 48 -- Sent By filter.  Default 'All Senders', then
+            'Me' as a shortcut, then every active admin (HR + SA). */}
+        <select className="input" value={senderFilter} onChange={(e) => setSenderFilter(e.target.value)}>
+          <option value="">All Senders</option>
+          <option value="me">Me</option>
+          {senders.length > 0 && <option disabled>──────────</option>}
+          {senders.map((s) => (
+            <option key={s._id} value={s._id}>
+              {s.name}{s.role === 'super_admin' ? ' (Super Admin)' : ' (HR)'}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="card overflow-x-auto">
@@ -109,6 +144,8 @@ export default function SentAlerts() {
               <tr>
                 <th className="w-10"></th>
                 <th>Sent</th>
+                {/* Phase 48 -- new column: which admin sent the broadcast. */}
+                <th>Sent By</th>
                 <th>Recipient</th>
                 <th>Type</th>
                 <th>Priority</th>
@@ -157,6 +194,18 @@ function Row({ n, expanded, onToggle }) {
         <td className="text-xs whitespace-nowrap">
           {new Date(n.createdAt).toLocaleDateString()}
           <div className="text-[10px] text-slate-500">{new Date(n.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+        </td>
+        {/* Phase 48 -- show which admin sent this broadcast.  Falls
+            back to '(System)' if the sender record is gone (defensive). */}
+        <td className="text-xs">
+          <div className="font-medium text-slate-800">
+            {n.sender?.name || <em className="text-slate-400">(System)</em>}
+          </div>
+          {n.sender?.role && (
+            <div className="text-[10px] text-slate-500">
+              {n.sender.role === 'super_admin' ? 'Super Admin' : n.sender.role.toUpperCase()}
+            </div>
+          )}
         </td>
         <td className="font-medium">
           {n.recipient?.name || <em className="text-slate-400">Deleted user</em>}
@@ -216,7 +265,7 @@ function Row({ n, expanded, onToggle }) {
       </tr>
       {expanded && (
         <tr>
-          <td colSpan="10" className="bg-slate-50 p-5">
+          <td colSpan="11" className="bg-slate-50 p-5">
             <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
               <div>
                 <div className="text-[11px] uppercase text-slate-500 font-semibold mb-1">Message</div>

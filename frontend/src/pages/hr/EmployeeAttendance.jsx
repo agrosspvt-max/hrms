@@ -3,6 +3,10 @@ import api from '../../api/axios';
 import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
+// Phase 48 -- cross-browser month picker replaces the native
+// <input type="month"> which degraded to a plain text input in
+// Firefox and Safari (Isha's account was on Firefox).
+import MonthPicker from '../../components/MonthPicker.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, monthKey } from '../../utils/helpers';
 import { subscribe } from '../../realtime';
@@ -297,12 +301,7 @@ export default function EmployeeAttendance() {
               placeholder="All departments"
             />
           </div>
-          <input
-            className="input max-w-[180px]"
-            type="month"
-            value={month}
-            onChange={(e) => setMonth(e.target.value)}
-          />
+          <MonthPicker value={month} onChange={setMonth} />
           <button className="btn-secondary" onClick={expandAll}>Expand all</button>
           <button className="btn-secondary" onClick={collapseAll}>Collapse all</button>
         </div>

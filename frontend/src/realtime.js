@@ -51,6 +51,10 @@ const _wire = (source) => {
   const TYPED = [
     'ready',
     'notification:new', 'notification:read', 'notification:resolved',
+    // Phase 48 -- broadcast that fires for every active HR / Super
+    // Admin when ANY admin sends a new alert.  Powers live refresh of
+    // the shared Sent Alerts history page.
+    'notification:sent',
     'leave:applied', 'leave:decision',
     'assignment:created',
     'salary:slip:generated',
