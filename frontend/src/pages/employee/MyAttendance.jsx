@@ -100,11 +100,20 @@ export default function MyAttendance() {
       </div>
 
       <div className="card card-body">
-        <h2 className="text-sm font-semibold mb-3 flex items-center justify-between">
+        <h2 className="text-sm font-semibold mb-3 flex items-center justify-between gap-2 flex-wrap">
           <span>Daily Status</span>
-          <span className="text-[11px] font-normal text-slate-500">
-            Click any date to view / add notes
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-normal text-slate-500">
+              Click any date — past, today, or future — to plan notes
+            </span>
+            <button
+              type="button"
+              className="btn-primary !py-1 !text-xs"
+              onClick={() => setNoteModalDate(new Date().toISOString().slice(0, 10))}
+            >
+              + New Note
+            </button>
+          </div>
         </h2>
         <div className="grid grid-cols-7 gap-2 text-xs text-slate-500 mb-2">
           {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => <div key={d} className="text-center font-medium">{d}</div>)}

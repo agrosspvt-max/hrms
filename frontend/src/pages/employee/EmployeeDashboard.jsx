@@ -166,15 +166,17 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const _ymd = (d) => new Date(d).toISOString().slice(0, 10);
   const loadNotes = () => {
     const todayISO = _ymd(new Date());
-    const in14 = new Date(); in14.setDate(in14.getDate() + 14);
-    const upcomingToISO = _ymd(in14);
+    // Phase 51 -- widened lookahead from 14 to 90 days so long-range
+    // planning notes actually surface in Upcoming.  Employees can
+    // create notes for ANY date, so the panel needs headroom.
+    const in90 = new Date(); in90.setDate(in90.getDate() + 90);
+    const upcomingToISO = _ymd(in90);
     // Today's notes — one small call.
     api.get('/attendance-notes', { params: { date: todayISO, archived: 'false' } })
       .then(({ data }) => setTodayNotes(data || []))
       .catch(() => setTodayNotes([]));
-    // Upcoming — next 14 days from tomorrow, pending only.  Keeps the
-    // panel focused ("what's coming up") without dragging in every
-    // completed reminder in the future.
+    // Upcoming — next 90 days from tomorrow, pending only.  Completed
+    // notes stay out of the panel so it reflects "what's coming up".
     const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
     api.get('/attendance-notes', {
       params: {
@@ -901,10 +903,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       {/* Phase 50 — Today's Notes.  Silent reminders on the employee's
           attendance calendar (no notifications).  Each card supports
           Complete / Archive / Edit; Edit opens the shared modal on the
-          note's date. */}
+          note's date.  Phase 51 -- "+ New Note" opens the modal with
+          today prefilled, but the date is editable so users can plan
+          for any day (past / present / future). */}
       {!embedded && (() => {
         const pending = todayNotes.filter((n) => !n.completed);
         const total   = todayNotes.length;
+        const todayISO = _ymd(new Date());
         return (
           <Collapsible
             title="Today's Notes"
@@ -916,9 +921,18 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                 : <span className="badge-green">All done</span>}
             defaultOpen={total > 0}
           >
+            <div className="flex justify-end mb-2">
+              <button
+                className="btn-primary !py-1 !text-xs"
+                onClick={() => setNotesModalDate(todayISO)}
+                title="Create a note for any date"
+              >
+                + New Note
+              </button>
+            </div>
             {total === 0 ? (
               <div className="text-sm text-slate-500">
-                No notes for today. Add one from the{' '}
+                No notes for today. Use <b>+ New Note</b> above to plan one for any date, or open the{' '}
                 <a href="/my-attendance" className="text-brand-600 hover:underline">Attendance calendar</a>.
               </div>
             ) : (
@@ -978,9 +992,10 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         );
       })()}
 
-      {/* Phase 50 — Upcoming Notes.  Groups the next 14 days into
-          Tomorrow / rest of this week / next week / later.  Pending
-          only; completed notes stay silent. */}
+      {/* Phase 50 — Upcoming Notes.  Phase 51 widens the lookahead to
+          90 days and groups into Tomorrow / rest of this week / Next
+          Week / This Month / Later.  Pending only; completed notes
+          stay silent. */}
       {!embedded && (() => {
         const total = upcomingNotes.length;
         // Bucket by day-offset relative to today (UTC-day granularity).
@@ -996,6 +1011,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
             return wd;
           }
           if (diff <= 14) return 'Next Week';
+          if (diff <= 30) return 'This Month';
           return 'Later';
         };
         for (const n of upcomingNotes) {
@@ -1006,12 +1022,12 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         return (
           <Collapsible
             title="Upcoming Notes"
-            subtitle={total === 0 ? 'Nothing scheduled in the next two weeks' : `${total} note${total === 1 ? '' : 's'} coming up`}
+            subtitle={total === 0 ? 'Nothing scheduled in the next 90 days' : `${total} note${total === 1 ? '' : 's'} coming up`}
             right={total === 0 ? <span className="badge-gray">0</span> : <span className="badge-blue">{total}</span>}
             defaultOpen={total > 0}
           >
             {total === 0 ? (
-              <div className="text-sm text-slate-500">Nothing scheduled in the next two weeks.</div>
+              <div className="text-sm text-slate-500">Nothing scheduled in the next 90 days.</div>
             ) : (
               <div className="space-y-3">
                 {buckets.map((label) => (

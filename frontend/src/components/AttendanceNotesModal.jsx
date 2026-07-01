@@ -37,18 +37,35 @@ export default function AttendanceNotesModal({
   const [notes, setNotes] = useState([]);
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [form, setForm] = useState({
-    title: '', description: '', priority: 'normal', reminderTime: '',
-    // HR/SA lock is only settable by HR/SA — controlled below.
-    locked: false,
-  });
-
+  // Phase 51 -- the compose form now carries its own `date` so users
+  // can plan notes for ANY day (past / present / future) regardless of
+  // whether an attendance record exists for that day.  The modal opens
+  // "on" the incoming `date` prop but the picker is fully editable.
   const emptyForm = {
-    title: '', description: '', priority: 'normal', reminderTime: '', locked: false,
+    title: '', description: '', priority: 'normal', reminderTime: '',
+    date: date || new Date().toISOString().slice(0, 10),
+    locked: false,
   };
+  const [form, setForm] = useState(emptyForm);
+  // If the parent opens the modal on a different day, or opens it
+  // freshly, reset the compose form's date to match.  We only reset
+  // the DATE (not the other in-progress fields) so a half-typed title
+  // survives a parent re-render.
+  useEffect(() => {
+    setForm((f) => ({
+      ...f,
+      date: date || new Date().toISOString().slice(0, 10),
+    }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date]);
 
   const load = async () => {
-    if (!open || !date) return;
+    // Phase 51 -- Notes are planning data.  The list is scoped to the
+    // day the modal was opened on; if `date` is missing (e.g. the
+    // dashboard "New Note" quick action), we skip the list read but
+    // still let the user compose and submit for any date.
+    if (!open) return;
+    if (!date) { setNotes([]); return; }
     setLoading(true);
     try {
       const params = { date };
@@ -65,7 +82,10 @@ export default function AttendanceNotesModal({
 
   const startNew = () => {
     setEditingId(null);
-    setForm(emptyForm);
+    setForm({
+      ...emptyForm,
+      date: date || new Date().toISOString().slice(0, 10),
+    });
   };
 
   const startEdit = (n) => {
@@ -75,12 +95,21 @@ export default function AttendanceNotesModal({
       description: n.description || '',
       priority: n.priority || 'normal',
       reminderTime: n.reminderTime || '',
+      // Phase 51 -- edit preserves the note's own date and lets the
+      // user reschedule to a different day (past or future).
+      date: n.date
+        ? new Date(n.date).toISOString().slice(0, 10)
+        : (date || new Date().toISOString().slice(0, 10)),
       locked: !!n.locked,
     });
   };
 
   const submit = async () => {
     if (!form.title.trim()) { toast.error('Title is required'); return; }
+    // Phase 51 -- date is always chosen in the compose form so any
+    // day (past / present / future) is valid; there is no attendance
+    // dependency on the selected date.
+    const targetDate = form.date || date || new Date().toISOString().slice(0, 10);
     try {
       if (editingId) {
         const body = {
@@ -88,13 +117,14 @@ export default function AttendanceNotesModal({
           description: form.description,
           priority: form.priority,
           reminderTime: form.reminderTime,
+          date: targetDate,
         };
         if (isAdmin) body.locked = form.locked;
         await api.patch(`/attendance-notes/${editingId}`, body);
         toast.success('Note updated');
       } else {
         const body = {
-          date,
+          date: targetDate,
           title: form.title,
           description: form.description,
           priority: form.priority,
@@ -104,18 +134,22 @@ export default function AttendanceNotesModal({
         await api.post('/attendance-notes', body);
         // If HR/SA chose to lock at creation time, patch immediately.
         if (isAdmin && form.locked) {
-          // We need the new note's id; refetch and lock the most recent
-          // matching row.  Simpler than parsing the create response
-          // twice, still correct because we just inserted it.
+          // We need the new note's id; refetch on the target date and
+          // lock the most recent matching row.  Simpler than parsing
+          // the create response twice, still correct because we just
+          // inserted it.
           const { data } = await api.get('/attendance-notes', {
-            params: { date, employee: employeeId },
+            params: { date: targetDate, employee: employeeId },
           });
           const latest = (data || []).find((n) => n.title === form.title.trim());
           if (latest) await api.patch(`/attendance-notes/${latest._id}`, { locked: true });
         }
         toast.success('Note added');
       }
-      setForm(emptyForm);
+      setForm({
+        ...emptyForm,
+        date: date || new Date().toISOString().slice(0, 10),
+      });
       setEditingId(null);
       await load();
       onChanged?.();
@@ -151,16 +185,28 @@ export default function AttendanceNotesModal({
       open={open}
       onClose={onClose}
       size="lg"
-      title={<>Notes · <span className="text-slate-500 font-normal">{fmtDate(date)}</span>{employeeName ? <span className="text-slate-400 font-normal"> · {employeeName}</span> : null}</>}
+      title={
+        <>
+          Notes
+          {date && <> · <span className="text-slate-500 font-normal">{fmtDate(date)}</span></>}
+          {employeeName && <span className="text-slate-400 font-normal"> · {employeeName}</span>}
+        </>
+      }
       footer={<button className="btn-secondary" onClick={onClose}>Close</button>}
     >
       <div className="space-y-4">
         {/* ---------- Existing notes ---------- */}
         <div>
           <div className="text-[11px] uppercase text-slate-500 font-semibold mb-2">
-            {loading ? 'Loading…' : `${notes.length} note${notes.length === 1 ? '' : 's'} on this day`}
+            {date
+              ? (loading ? 'Loading…' : `${notes.length} note${notes.length === 1 ? '' : 's'} on this day`)
+              : 'New note'}
           </div>
-          {notes.length === 0 ? (
+          {!date ? (
+            <div className="text-xs text-slate-500 italic bg-slate-50 dark:bg-slate-800/40 rounded p-3">
+              Pick a date below to schedule this note. Any date is allowed — past, present, or future.
+            </div>
+          ) : notes.length === 0 ? (
             <div className="text-xs text-slate-500 italic bg-slate-50 dark:bg-slate-800/40 rounded p-3">
               No notes on this day yet. Add one below.
             </div>
@@ -245,7 +291,20 @@ export default function AttendanceNotesModal({
             value={form.description}
             onChange={(e) => setForm({ ...form, description: e.target.value })}
           />
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
+            {/* Phase 51 -- date is fully editable so notes can be
+                planned for any day (past / present / future).  Notes
+                are pure planning data; no attendance record is
+                required on the selected day. */}
+            <div>
+              <label className="label text-[10px] uppercase">Date</label>
+              <input
+                type="date"
+                className="input"
+                value={form.date}
+                onChange={(e) => setForm({ ...form, date: e.target.value })}
+              />
+            </div>
             <div>
               <label className="label text-[10px] uppercase">Priority</label>
               <select className="input" value={form.priority} onChange={(e) => setForm({ ...form, priority: e.target.value })}>
@@ -263,6 +322,15 @@ export default function AttendanceNotesModal({
               />
             </div>
           </div>
+          {/* Phase 51 -- inline hint when the user is planning a
+              future note or moving one to a different day. */}
+          {form.date && date && form.date !== date && (
+            <div className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded-md px-2 py-1">
+              {editingId
+                ? <>This note will be moved to {fmtDate(form.date)}.</>
+                : <>Note will be scheduled for {fmtDate(form.date)} (not the calendar day you opened).</>}
+            </div>
+          )}
           {isAdmin && (
             <label className="text-[11px] text-slate-600 dark:text-slate-300 flex items-center gap-2">
               <input
