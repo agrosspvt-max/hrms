@@ -690,32 +690,35 @@ const Pill = ({ label, value, color }) => {
  * The employee-side calendar reads the same records.  Notes never
  * generate notifications and never touch attendance / payroll / leave.
  * ===================================================================== */
-function EmployeeNotesTab({ employee, monthDataForCalendar }) {
+function EmployeeNotesTab({ employee /* , monthDataForCalendar */ }) {
   const toast = useToast();
   const [notes, setNotes]         = useState([]);
   const [loading, setLoading]     = useState(true);
   const [q, setQ]                 = useState('');
   const [priority, setPriority]   = useState('');   // '' | 'normal' | 'important'
   const [completed, setCompleted] = useState('');   // '' | 'true' | 'false'
+  // Phase 52 -- track "modal open" independently of "which date" so
+  // the +Assign Note button can open the modal with NO preset date
+  // (letting the compose form's date picker own the choice).
   const [modalDate, setModalDate] = useState(null);
-
-  // Derive the month range from the attendance calendar so the notes
-  // tab always mirrors the month HR is looking at above.  Fallback to
-  // the current month if the calendar hasn't been fetched yet.
-  const perDay = monthDataForCalendar?.perDay || [];
-  const fromISO = perDay[0]?.date
-    ? new Date(perDay[0].date).toISOString().slice(0, 10)
-    : new Date(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1).toISOString().slice(0, 10);
-  const toISO = perDay[perDay.length - 1]?.date
-    ? new Date(perDay[perDay.length - 1].date).toISOString().slice(0, 10)
-    : new Date().toISOString().slice(0, 10);
+  const [modalOpen, setModalOpen] = useState(false);
+  // Phase 52 -- notes are planning data, independent of attendance.  HR
+  // gets their own From/To range (default: today-30d → today+90d) so
+  // future notes they create are immediately visible and any HR/SA can
+  // schedule a note for ANY date without navigating months in the
+  // Attendance tab first.  Employees have the same freedom on their
+  // side; this brings HR up to parity.
+  const _ymd = (d) => new Date(d).toISOString().slice(0, 10);
+  const _addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const [fromDate, setFromDate] = useState(() => _ymd(_addDays(new Date(), -30)));
+  const [toDate,   setToDate]   = useState(() => _ymd(_addDays(new Date(), 90)));
 
   const load = async () => {
     setLoading(true);
     try {
       const params = {
         employee: employee._id,
-        from: fromISO, to: toISO,
+        from: fromDate, to: toDate,
         archived: 'false',
       };
       if (priority)  params.priority = priority;
@@ -726,7 +729,7 @@ function EmployeeNotesTab({ employee, monthDataForCalendar }) {
     } catch (err) { toast.error(errMsg(err)); }
     finally { setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [employee._id, fromISO, toISO, priority, completed, q]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [employee._id, fromDate, toDate, priority, completed, q]);
 
   const setStatus = async (n, patch) => {
     try { await api.patch(`/attendance-notes/${n._id}`, patch); load(); }
@@ -764,6 +767,29 @@ function EmployeeNotesTab({ employee, monthDataForCalendar }) {
             onChange={(e) => setQ(e.target.value)}
           />
         </div>
+        {/* Phase 52 -- HR/SA get an independent From/To range so they
+            can look at (and schedule notes into) any past or future
+            date without navigating months in the Attendance tab. */}
+        <div>
+          <label className="label text-[10px] uppercase">From</label>
+          <input
+            type="date"
+            className="input max-w-[150px]"
+            value={fromDate}
+            max={toDate || undefined}
+            onChange={(e) => setFromDate(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="label text-[10px] uppercase">To</label>
+          <input
+            type="date"
+            className="input max-w-[150px]"
+            value={toDate}
+            min={fromDate || undefined}
+            onChange={(e) => setToDate(e.target.value)}
+          />
+        </div>
         <div>
           <label className="label text-[10px] uppercase">Priority</label>
           <select className="input max-w-[150px]" value={priority} onChange={(e) => setPriority(e.target.value)}>
@@ -780,16 +806,21 @@ function EmployeeNotesTab({ employee, monthDataForCalendar }) {
             <option value="true">Completed</option>
           </select>
         </div>
+        {/* Phase 52 -- open the modal with no date prop so the modal
+            treats it as "new note" and the compose form's own date
+            picker owns the choice.  HR/SA can then plan for ANY date
+            (past / present / future) exactly like the employee flow. */}
         <button
           className="btn-primary !text-xs"
-          onClick={() => setModalDate(new Date().toISOString().slice(0, 10))}
+          onClick={() => { setModalDate(null); setModalOpen(true); }}
+          title="Assign a note for any date — past, present, or future"
         >
           + Assign Note
         </button>
       </div>
 
       <div className="text-[11px] text-slate-500">
-        Showing notes from {fromISO} to {toISO}. Assigned notes are reminders only — they don't affect performance, tasks, or analytics.
+        Showing notes from {fromDate} to {toDate}. Assigned notes are reminders only — they don't affect performance, tasks, or analytics.
       </div>
 
       {loading ? <Loader /> :
@@ -847,7 +878,7 @@ function EmployeeNotesTab({ employee, monthDataForCalendar }) {
                           {!n.completed
                             ? <button className="btn-secondary !py-1 !text-xs" onClick={() => setStatus(n, { completed: true })}>Complete</button>
                             : <button className="btn-ghost !py-1 !text-xs" onClick={() => setStatus(n, { completed: false })}>Undo</button>}
-                          <button className="btn-ghost !py-1 !text-xs" onClick={() => setModalDate(d)}>Open</button>
+                          <button className="btn-ghost !py-1 !text-xs" onClick={() => { setModalDate(d); setModalOpen(true); }}>Open</button>
                           <button className="btn-ghost !py-1 !text-xs" onClick={() => toggleLock(n)}>{n.locked ? 'Unlock' : 'Lock'}</button>
                           <button className="btn-ghost !py-1 !text-xs text-red-600" onClick={() => remove(n)}>Delete</button>
                         </div>
@@ -861,11 +892,11 @@ function EmployeeNotesTab({ employee, monthDataForCalendar }) {
         )}
 
       <AttendanceNotesModal
-        open={!!modalDate}
+        open={modalOpen}
         date={modalDate}
         employeeId={employee._id}
         employeeName={employee.name}
-        onClose={() => setModalDate(null)}
+        onClose={() => { setModalOpen(false); setModalDate(null); }}
         onChanged={load}
       />
     </div>

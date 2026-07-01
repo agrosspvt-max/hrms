@@ -476,6 +476,10 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
           subTemplateId: subStillExists ? sid : '',
           supportsStatus: !!f.supportsStatus,
           supportsRemark: f.supportsRemark !== false,
+          // Phase 52 -- keep the two remark flags consistent in the
+          // outgoing payload.  Server does the same normalisation, but
+          // this saves a round-trip when the checkbox is untouched.
+          remarkRequired: (f.supportsRemark !== false) && !!f.remarkRequired,
           dependencyType: f.dependencyType === 'dependent' ? 'dependent' : 'independent',
           isAnalyticsEligible: f.isAnalyticsEligible !== false,
         });
@@ -547,6 +551,9 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
       subTemplateId: subId || '',
       supportsStatus: false,
       supportsRemark: true,
+      // Phase 52 -- new fields default to remark-not-required; HR
+      // opts in via the checkbox when they want a hard remark gate.
+      remarkRequired: false,
       dependencyType: 'independent',
       isAnalyticsEligible: true,
     }];
@@ -925,7 +932,30 @@ function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove, error
       <div className="flex items-center gap-4 flex-wrap text-xs text-slate-700">
         <label className="flex items-center gap-1"><input type="checkbox" checked={!!f.required}             onChange={(e) => onPatch({ required: e.target.checked })} /> Required</label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={!!f.supportsStatus}       onChange={(e) => onPatch({ supportsStatus: e.target.checked })} /> Status enabled (Done / Pending / Work N/A)</label>
-        <label className="flex items-center gap-1"><input type="checkbox" checked={f.supportsRemark !== false} onChange={(e) => onPatch({ supportsRemark: e.target.checked })} /> Remark enabled</label>
+        <label className="flex items-center gap-1">
+          <input
+            type="checkbox"
+            checked={f.supportsRemark !== false}
+            onChange={(e) => onPatch({
+              supportsRemark: e.target.checked,
+              // Phase 52 -- keep the two flags consistent: turning off
+              // Remark Enabled also clears Remark Required.
+              ...(e.target.checked ? {} : { remarkRequired: false }),
+            })}
+          /> Remark enabled
+        </label>
+        {/* Phase 52 -- Remark Required only makes sense when Remark
+            Enabled is on.  We render it disabled + coerced to false
+            when supportsRemark is false so HR can't accidentally
+            configure a field that requires an unrendered remark. */}
+        <label className={`flex items-center gap-1 ${f.supportsRemark === false ? 'opacity-40 cursor-not-allowed' : ''}`}>
+          <input
+            type="checkbox"
+            disabled={f.supportsRemark === false}
+            checked={!!f.remarkRequired && f.supportsRemark !== false}
+            onChange={(e) => onPatch({ remarkRequired: e.target.checked })}
+          /> Remark required
+        </label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={f.isAnalyticsEligible !== false} onChange={(e) => onPatch({ isAnalyticsEligible: e.target.checked })} /> Show on analytics</label>
       </div>
       {f.fieldType === 'auto' && (

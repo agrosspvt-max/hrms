@@ -577,6 +577,19 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
             return;
           }
         }
+        // Phase 52 -- per-field "Remark Required".  Only applies when
+        // Remark Enabled (supportsRemark) is on.  Mirrors the backend
+        // guard so the user sees the error before the round-trip.
+        for (const f of fields) {
+          if (!f.supportsRemark || !f.remarkRequired) continue;
+          if (f.systemGenerated || f.fieldType === 'auto' || f.fieldType === 'readonly') continue;
+          const m = metaForSub[f.key] || {};
+          if (!(m.remark || '').trim()) {
+            toast.error(`Remark is required for "${f.label}".`);
+            setBusy(false);
+            return;
+          }
+        }
         // Phase 21 (Issue 2): Agri-Advisor DR / Calling Report rule --
         // totalCallsCompleted must never exceed assignedCalls.  Pre-submit
         // client-side guard mirrors what HR enforces during review.  Run
@@ -1706,13 +1719,21 @@ function CustomTemplateForm({
             )}
             {f.supportsRemark && (
               <div className={f.supportsStatus ? 'md:col-span-4' : 'md:col-span-7'}>
+                {/* Phase 52 -- Remark Required marks the label with a
+                    red asterisk and pushes the input into an error
+                    border when empty.  This mirrors the existing
+                    pending-remark treatment and the backend guard. */}
                 <div className="label text-[10px] uppercase">
                   Remark
-                  {pendingNeedsRemark && <span className="text-red-500"> *</span>}
+                  {(pendingNeedsRemark || f.remarkRequired) && <span className="text-red-500"> *</span>}
                 </div>
                 <input
-                  className={`input ${pendingNeedsRemark && !(m.remark || '').trim() ? 'border-red-400' : ''}`}
-                  placeholder={pendingNeedsRemark ? 'Reason required for Pending' : 'Optional'}
+                  className={`input ${(pendingNeedsRemark || f.remarkRequired) && !(m.remark || '').trim() ? 'border-red-400' : ''}`}
+                  placeholder={
+                    f.remarkRequired ? 'Remark required'
+                    : pendingNeedsRemark ? 'Reason required for Pending'
+                    : 'Optional'
+                  }
                   value={m.remark || ''}
                   onChange={(e) => onMeta(f.key, { remark: e.target.value })}
                 />

@@ -431,6 +431,19 @@ const submitOne = asyncHandler(async (req, res) => {
         throw new Error(`Pending reason is required for "${f.label}".`);
       }
     }
+    // Phase 52 -- per-field "Remark Required".  Applies only when
+    // the field also has Remark Enabled (`supportsRemark`).  The
+    // check is per-field, not per-template: only the flagged fields
+    // must carry a non-empty remark; every other field is unaffected.
+    for (const f of tpl.customFields) {
+      if (!f.supportsRemark || !f.remarkRequired) continue;
+      if (f.systemGenerated || f.fieldType === 'auto' || f.fieldType === 'readonly') continue;
+      const meta = incomingMeta[f.key] || {};
+      if (!(meta.remark || '').trim()) {
+        res.status(400);
+        throw new Error(`Remark is required for "${f.label}".`);
+      }
+    }
     const evaluated = computeAutoFields(tpl, incoming);
     // Phase 14: re-attach status + remark per row.  computeAutoFields
     // returns the canonical [{ key, value }] shape; we layer the

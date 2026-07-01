@@ -171,6 +171,10 @@ const normalisePayload = (body) => {
       subTemplateId:       String(f.subTemplateId || '').trim(),
       supportsStatus:      !!f.supportsStatus,
       supportsRemark:      !!f.supportsRemark,
+      // Phase 52 -- Remark Required is meaningful only when Remark
+      // Enabled is on.  Coerced to false here so the two flags stay
+      // consistent in the DB regardless of what the client posts.
+      remarkRequired:      !!f.supportsRemark && !!f.remarkRequired,
       dependencyType:      DEP_TYPES.includes(f.dependencyType) ? f.dependencyType : 'independent',
       isAnalyticsEligible: f.isAnalyticsEligible !== false,
     })).filter((f) => f.key && f.label);

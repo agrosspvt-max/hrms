@@ -202,6 +202,12 @@ const customFieldSchema = new mongoose.Schema(
     subTemplateId:       { type: String, default: '' },
     supportsStatus:      { type: Boolean, default: false },
     supportsRemark:      { type: Boolean, default: false },
+    /* Phase 52 -- when supportsRemark is true, HR can additionally
+       require the employee to write a non-empty remark before the
+       submission for THIS field is accepted.  Ignored (and coerced to
+       false in the create/update controllers) when supportsRemark is
+       false so the two flags stay logically consistent. */
+    remarkRequired:      { type: Boolean, default: false },
     dependencyType:      { type: String, enum: ['independent', 'dependent'], default: 'independent' },
     isAnalyticsEligible: { type: Boolean, default: true },
   },
