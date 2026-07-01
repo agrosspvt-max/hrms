@@ -32,7 +32,20 @@ import { subscribe } from '../../realtime';
  */
 export default function SubmissionReviews() {
   const today = new Date().toISOString().slice(0, 10);
+  // Phase 49 -- Review Period mode.  'single' keeps the original UX
+  // (one <input type=date>); 'range' shows From + To pickers and
+  // fetches every card whose submission-date falls inside [from, to].
+  const [mode, setMode]     = useState('single');   // 'single' | 'range'
   const [date, setDate]     = useState(today);
+  // Range state defaults to first-of-current-month -> today, a sensible
+  // starting window HR / SA usually reach for.  Users can move both
+  // endpoints freely once they flip into range mode.
+  const [fromDate, setFromDate] = useState(() => {
+    const d = new Date();
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1))
+      .toISOString().slice(0, 10);
+  });
+  const [toDate, setToDate] = useState(today);
   const [status, setStatus] = useState('');         // '' | pending | reviewed
   // Phase 23.5: HOD review-status filter, client-side because the
   // grouped feed already returns hodReview + currentReviewStage on
@@ -55,8 +68,26 @@ export default function SubmissionReviews() {
 
   const load = async () => {
     setLoading(true);
+    // Phase 49 -- pick the right query params based on mode.  Range
+    // sends from/to; single keeps sending `date`.  Backend accepts
+    // both shapes so callers on the single path see no behaviour
+    // change at all.
+    let params;
+    if (mode === 'range') {
+      if (fromDate && toDate && toDate < fromDate) {
+        toast.error('"To" date must be on or after "From" date.');
+        setLoading(false);
+        return;
+      }
+      // "Not Submitted" is a single-day concept; the backend collapses
+      // to the end date but the UI hides it in range mode.  We pass
+      // status through unchanged in case a caller still selects it.
+      params = { from: fromDate, to: toDate, status };
+    } else {
+      params = { date, status };
+    }
     try {
-      const { data } = await api.get('/daily-review/grouped', { params: { date, status } });
+      const { data } = await api.get('/daily-review/grouped', { params });
       // Phase 28: Not Submitted returns { cards, summary }; all other
       // statuses still return a plain array.  Normalise here.
       if (data && Array.isArray(data.cards)) {
@@ -70,9 +101,13 @@ export default function SubmissionReviews() {
       toast.error(errMsg(err));
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [date, status]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [mode, date, fromDate, toDate, status]);
   // Phase 47 -- new submission lands -> review queue refreshes live.
-  useEffect(() => subscribe('submission:submitted', load), [date, status]);
+  useEffect(
+    () => subscribe('submission:submitted', load),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mode, date, fromDate, toDate, status],
+  );
 
   // Phase 23.5: derive a card's HOD bucket from its submissions.  A
   // card may hold multiple submissions on the same day -- the rule is:
@@ -141,18 +176,86 @@ export default function SubmissionReviews() {
       </div>
 
       <div className="card card-body flex flex-wrap items-end gap-3">
+        {/* Phase 49 -- Review Period mode toggle.  Single Date keeps
+            the original single input; Date Range reveals From / To
+            pickers.  Selection state is reset whenever the mode flips
+            so a stale ID from a different-day query never contaminates
+            a bulk action against a different filtered set. */}
         <div>
-          <label className="label">Date</label>
-          <input className="input max-w-[170px]" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          <label className="label">Review Period</label>
+          <div className="flex items-center gap-2 h-[38px]">
+            <label className="flex items-center gap-1 cursor-pointer text-sm">
+              <input
+                type="radio"
+                name="review-period-mode"
+                value="single"
+                checked={mode === 'single'}
+                onChange={() => {
+                  setMode('single');
+                  setSelected(new Set());
+                }}
+              />
+              Single Date
+            </label>
+            <label className="flex items-center gap-1 cursor-pointer text-sm">
+              <input
+                type="radio"
+                name="review-period-mode"
+                value="range"
+                checked={mode === 'range'}
+                onChange={() => {
+                  setMode('range');
+                  // Not Submitted is a per-day concept -- switching to
+                  // range clears it so counters and cards match the
+                  // range semantics.
+                  if (status === 'not_submitted') setStatus('');
+                  setSelected(new Set());
+                }}
+              />
+              Date Range
+            </label>
+          </div>
         </div>
+
+        {mode === 'single' ? (
+          <div>
+            <label className="label">Date</label>
+            <input className="input max-w-[170px]" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </div>
+        ) : (
+          <>
+            <div>
+              <label className="label">From</label>
+              <input
+                className="input max-w-[170px]"
+                type="date"
+                value={fromDate}
+                max={toDate || undefined}
+                onChange={(e) => setFromDate(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="label">To</label>
+              <input
+                className="input max-w-[170px]"
+                type="date"
+                value={toDate}
+                min={fromDate || undefined}
+                onChange={(e) => setToDate(e.target.value)}
+              />
+            </div>
+          </>
+        )}
         <div>
           <label className="label">Status</label>
           <select className="input max-w-[180px]" value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All</option>
             <option value="pending">Pending</option>
             <option value="reviewed">Reviewed</option>
-            {/* Phase 28 -- Not Submitted */}
-            <option value="not_submitted">Not Submitted</option>
+            {/* Phase 28 -- Not Submitted.  Phase 49 -- hidden in range
+                mode because it's a per-day concept that would either
+                collapse to a single day or explode across N days. */}
+            {mode === 'single' && <option value="not_submitted">Not Submitted</option>}
           </select>
         </div>
         {/* Phase 23.5 -- HOD review status filter */}
@@ -224,7 +327,9 @@ export default function SubmissionReviews() {
           cards.length === 0
             ? (status === 'not_submitted'
                 ? 'No employees missed their submissions on this day'
-                : 'No submissions to review on this day')
+                : (mode === 'range'
+                    ? 'No submissions to review in this date range'
+                    : 'No submissions to review on this day'))
             : 'No submissions match the current filters'
         } />
       ) : (
@@ -236,11 +341,14 @@ export default function SubmissionReviews() {
                 card={c}
               />
             ) : (
+              /* Phase 49 -- openId now uses cardKey (employeeId|date)
+                 so in Date Range mode two cards for the same employee
+                 on different days can be expanded independently. */
               <EmployeeDayCard
-                key={String(c.employee._id) + String(c.date)}
+                key={cardKey(c)}
                 card={c}
-                open={openId === String(c.employee._id)}
-                onToggle={() => setOpenId((cur) => cur === String(c.employee._id) ? null : String(c.employee._id))}
+                open={openId === cardKey(c)}
+                onToggle={() => setOpenId((cur) => cur === cardKey(c) ? null : cardKey(c))}
                 onReload={load}
                 selected={selected.has(cardKey(c))}
                 onSelectToggle={() => toggleSelected(c)}

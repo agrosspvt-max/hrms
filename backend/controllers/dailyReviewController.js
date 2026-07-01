@@ -107,8 +107,33 @@ const _hasFeature = (req, key) => {
  * own department.
  */
 const listGrouped = asyncHandler(async (req, res) => {
-  const day = _resolveDay(req.query.date);
-  const status = req.query.status; // 'pending' | 'reviewed'
+  // Phase 49 — the endpoint accepts EITHER a single ?date OR an
+  // inclusive ?from + ?to pair.  Range mode returns one card per
+  // (employee, submission-date) so a 30-day range renders as N cards
+  // per employee (one per submitting day) rather than a single merged
+  // card.  The Mongo filter is a proper $gte/$lte range so the DB
+  // never scans outside the requested window.
+  const fromRaw = req.query.from;
+  const toRaw   = req.query.to;
+  const isRange = !!(fromRaw && toRaw);
+  const dayStart = _resolveDay(isRange ? fromRaw : req.query.date);
+  const dayEnd   = _resolveDay(isRange ? toRaw   : req.query.date);
+  // Guard against a swapped from/to (e.g. user picked to before from).
+  if (isRange && dayEnd < dayStart) {
+    res.status(400);
+    throw new Error('Date range: "to" must be on or after "from".');
+  }
+  // Cap the range at 366 days so a runaway picker can't OOM the server.
+  if (isRange && (dayEnd - dayStart) / 86400000 > 366) {
+    res.status(400);
+    throw new Error('Date range cannot exceed 366 days.');
+  }
+  const status = req.query.status; // 'pending' | 'reviewed' | 'not_submitted'
+  // Convenience: the Mongo clause is reused everywhere the query joins
+  // on Submission.date / DailyReflection.date / DailyReview.date.
+  const dateClause = isRange
+    ? { $gte: dayStart, $lte: dayEnd }
+    : dayStart;
 
   // ----- Employee scope (role-aware) -----
   const empWhere = { status: 'active' };
@@ -137,10 +162,10 @@ const listGrouped = asyncHandler(async (req, res) => {
     throw new Error('Grouped review is restricted to HR / Super Admin / HOD / Submission Reviews feature.');
   }
 
-  // ----- Submissions for the day -----
+  // ----- Submissions for the day OR range -----
   const subWhere = {
     submitted: true,
-    date: day,
+    date: dateClause,
     ...liveSubmissionFilter({}),
   };
 
@@ -166,35 +191,47 @@ const listGrouped = asyncHandler(async (req, res) => {
   // Phase 23.3: enrich each submission with its dependent-task hand-offs.
   await _attachDependencies(subs);
 
-  // Pre-fetch reflections + reviews for the day for the scoped employees.
+  // Pre-fetch reflections + reviews for the range for the scoped employees.
   const empIds = [...new Set(subs.map((s) => String(s.employee)))];
   const [reflections, reviews] = await Promise.all([
-    DailyReflection.find({ employee: { $in: empIds }, date: day }).lean(),
-    DailyReview.find({ employee: { $in: empIds }, date: day })
+    DailyReflection.find({ employee: { $in: empIds }, date: dateClause }).lean(),
+    DailyReview.find({ employee: { $in: empIds }, date: dateClause })
       .populate('reviewedBy', 'name role').lean(),
   ]);
-  const refMap = new Map(reflections.map((r) => [String(r.employee), r]));
-  const revMap = new Map(reviews.map((r)     => [String(r.employee), r]));
+  // Phase 49 -- maps are keyed by (employee, date) so a range containing
+  // multiple days for the same employee doesn't collapse their days
+  // together.  ISO day-string is a stable, timezone-safe key.
+  const _dayKey = (d) => new Date(d).toISOString().slice(0, 10);
+  const refMap = new Map(reflections.map((r) => [`${String(r.employee)}__${_dayKey(r.date)}`, r]));
+  const revMap = new Map(reviews.map((r)     => [`${String(r.employee)}__${_dayKey(r.date)}`, r]));
 
-  // Group by employee.
+  // Group by (employee, date).
   const cards = new Map();
   for (const s of subs) {
     const e = empMap.get(String(s.employee));
     if (!e || !allowedOwnerRoles.includes(e.role)) continue;
     if (String(e._id) === String(req.user._id)) continue; // never review yourself
-    if (!cards.has(String(e._id))) {
-      cards.set(String(e._id), {
+    const dk = _dayKey(s.date);
+    const key = `${String(e._id)}__${dk}`;
+    if (!cards.has(key)) {
+      cards.set(key, {
         employee: { _id: e._id, name: e.name, employeeId: e.employeeId, department: e.department?.name || '' },
-        date: day,
+        date: s.date,
         submissions: [],
-        reflection: refMap.get(String(e._id)) || null,
-        review:     revMap.get(String(e._id)) || null,
+        reflection: refMap.get(key) || null,
+        review:     revMap.get(key) || null,
       });
     }
-    cards.get(String(e._id)).submissions.push(s);
+    cards.get(key).submissions.push(s);
   }
 
-  let out = [...cards.values()];
+  // Sort: newest day first, then employee name.  Single-day mode
+  // degrades to just the name ordering (all cards share the same date).
+  let out = [...cards.values()].sort((a, b) => {
+    const dd = new Date(b.date) - new Date(a.date);
+    if (dd) return dd;
+    return (a.employee.name || '').localeCompare(b.employee.name || '');
+  });
   if (status === 'pending')  out = out.filter((c) => !c.review || c.review.reviewStatus !== 'reviewed');
   if (status === 'reviewed') out = out.filter((c) =>  c.review && c.review.reviewStatus === 'reviewed');
 
@@ -218,6 +255,13 @@ const listGrouped = asyncHandler(async (req, res) => {
    * backward compatibility with the existing frontend.
    * ================================================================== */
   if (status === 'not_submitted') {
+    // Phase 49 -- "Not Submitted" is a per-day computation.  If the
+    // caller supplied a range we collapse to the end date (last day of
+    // the range) because "not submitted across N days" is a different
+    // semantic and would materially change the counters.  The frontend
+    // hides Not Submitted while in Date Range mode; this is the
+    // defensive fallback if a stale client still sends it.
+    const day = dayEnd;
     // Pull employees again with the fields the per-day check needs
     // (designation + weeklyOff + attendanceMode), within the same
     // role-scoped where.
