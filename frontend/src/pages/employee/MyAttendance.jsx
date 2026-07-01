@@ -5,6 +5,10 @@ import StatCard from '../../components/StatCard.jsx';
 import { monthKey } from '../../utils/helpers';
 import { subscribe } from '../../realtime';
 import MonthPicker from '../../components/MonthPicker.jsx';
+// Phase 50 — click a calendar day to open its notes.  The modal is
+// shared with the HR/SA "Notes" tab so a single source of truth handles
+// permissions, lock state, and priority styling.
+import AttendanceNotesModal from '../../components/AttendanceNotesModal.jsx';
 
 const STATUS_STYLE = {
   present: 'bg-green-500',
@@ -37,6 +41,9 @@ export default function MyAttendance() {
   const [m, setM] = useState(monthKey(new Date()));
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  // Phase 50 — per-day note counts for the visible month.  { 'YYYY-MM-DD': {count, importantCount, pendingCount, firstTitle} }
+  const [noteMap, setNoteMap] = useState({});
+  const [noteModalDate, setNoteModalDate] = useState(null);
 
   // Phase 47 -- extracted so the realtime subscription can reuse it.
   const load = () => {
@@ -48,6 +55,29 @@ export default function MyAttendance() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [m]);
   // HR edits or clears an attendance row -> the visible month refreshes.
   useEffect(() => subscribe('attendance:changed', load), [m]);
+
+  // Phase 50 -- refresh the note-count map whenever the visible month
+  // changes.  The backend endpoint is cheap (indexed, tiny projection),
+  // so we call it on mount + after every modal close.
+  const loadNotes = () => {
+    if (!data?.perDay?.length) return;
+    const from = data.perDay[0]?.date;
+    const to   = data.perDay[data.perDay.length - 1]?.date;
+    if (!from || !to) return;
+    api.get('/attendance-notes/day-summary', {
+      params: {
+        from: new Date(from).toISOString().slice(0, 10),
+        to:   new Date(to).toISOString().slice(0, 10),
+      },
+    })
+      .then(({ data: rows }) => {
+        const map = {};
+        for (const r of rows || []) map[r.date] = r;
+        setNoteMap(map);
+      })
+      .catch(() => setNoteMap({}));
+  };
+  useEffect(() => { loadNotes(); /* eslint-disable-next-line */ }, [data]);
 
   if (loading || !data) return <Loader />;
 
@@ -70,7 +100,12 @@ export default function MyAttendance() {
       </div>
 
       <div className="card card-body">
-        <h2 className="text-sm font-semibold mb-3">Daily Status</h2>
+        <h2 className="text-sm font-semibold mb-3 flex items-center justify-between">
+          <span>Daily Status</span>
+          <span className="text-[11px] font-normal text-slate-500">
+            Click any date to view / add notes
+          </span>
+        </h2>
         <div className="grid grid-cols-7 gap-2 text-xs text-slate-500 mb-2">
           {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => <div key={d} className="text-center font-medium">{d}</div>)}
         </div>
@@ -82,20 +117,46 @@ export default function MyAttendance() {
           })()}
           {data.perDay.map((d) => {
             const isFuture = d.status === 'future';
+            const dayKey = new Date(d.date).toISOString().slice(0, 10);
+            const noteInfo = noteMap[dayKey];
+            // Phase 50 -- tooltip merges attendance label + note info.
+            const noteTitle = noteInfo
+              ? `\n${noteInfo.count} note${noteInfo.count === 1 ? '' : 's'}${noteInfo.firstTitle ? ` — ${noteInfo.firstTitle}` : ''}`
+              : '';
             return (
-              <div
+              <button
+                type="button"
                 key={d.date}
-                className={`aspect-square rounded-lg flex flex-col items-center justify-center text-[11px] ${
+                onClick={() => setNoteModalDate(dayKey)}
+                className={`aspect-square rounded-lg flex flex-col items-center justify-center text-[11px] relative transition ${
                   isFuture ? 'border border-dashed border-slate-200 bg-slate-50/40' : 'border border-slate-100'
-                }`}
-                title={d.holidayName || STATUS_LABEL[d.status] || d.status}
+                } hover:ring-2 hover:ring-brand-200 cursor-pointer`}
+                title={`${d.holidayName || STATUS_LABEL[d.status] || d.status}${noteTitle}`}
               >
+                {/* Phase 50 -- small pin overlays the attendance dot;
+                    attendance color is untouched.  Amber for
+                    important-pending, brand for normal-pending, grey
+                    for all-completed. */}
+                {noteInfo && (
+                  <span
+                    className={`absolute top-1 right-1 inline-flex items-center justify-center min-w-[14px] h-[14px] rounded-full px-1 text-[9px] font-bold text-white ${
+                      noteInfo.importantCount > 0 && noteInfo.pendingCount > 0
+                        ? 'bg-amber-500'
+                        : noteInfo.pendingCount > 0
+                          ? 'bg-brand-500'
+                          : 'bg-slate-400'
+                    }`}
+                    aria-label={`${noteInfo.count} notes`}
+                  >
+                    {noteInfo.count}
+                  </span>
+                )}
                 <div className={`w-3 h-3 rounded-full mb-1 ${STATUS_STYLE[d.status] || 'bg-slate-200'}`} />
                 <div className={`font-semibold ${isFuture ? 'text-slate-400' : ''}`}>{new Date(d.date).getUTCDate()}</div>
                 <div className={`text-[10px] truncate w-full text-center px-1 ${isFuture ? 'text-slate-300' : 'text-slate-500'}`}>
                   {d.status === 'holiday' ? (d.holidayName || 'Holiday') : (STATUS_LABEL[d.status] || '')}
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -105,8 +166,18 @@ export default function MyAttendance() {
               <span className={`w-2.5 h-2.5 rounded-full ${c}`} /> {STATUS_LABEL[k]}
             </span>
           ))}
+          <span className="inline-flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 rounded-full bg-brand-500" /> Has notes
+          </span>
         </div>
       </div>
+
+      <AttendanceNotesModal
+        open={!!noteModalDate}
+        date={noteModalDate}
+        onClose={() => setNoteModalDate(null)}
+        onChanged={loadNotes}
+      />
     </div>
   );
 }

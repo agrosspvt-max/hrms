@@ -8,8 +8,10 @@ import SearchableSelect from '../../components/SearchableSelect.jsx';
 // Firefox and Safari (Isha's account was on Firefox).
 import MonthPicker from '../../components/MonthPicker.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
-import { errMsg, monthKey } from '../../utils/helpers';
+import { errMsg, monthKey, fmtDate } from '../../utils/helpers';
 import { subscribe } from '../../realtime';
+// Phase 50 — HR/SA "Notes" tab inside the expanded employee card.
+import AttendanceNotesModal from '../../components/AttendanceNotesModal.jsx';
 
 /**
  * HR Employee Attendance
@@ -500,6 +502,10 @@ const STATUS_EFFECT = {
 };
 
 function EmployeeCard({ employee, open, onToggle, att, onEditDay, isSelected, onSelectToggle }) {
+  // Phase 50 -- second tab inside the expanded card: attendance grid
+  // (existing) OR notes calendar (new).  Kept local to the card so
+  // each employee's tab state is independent.
+  const [tab, setTab] = useState('attendance');
   return (
     <div className={`card ${isSelected ? 'ring-2 ring-brand-200' : ''}`}>
       <button onClick={onToggle} className="w-full flex items-center justify-between px-5 py-4 text-left">
@@ -544,10 +550,37 @@ function EmployeeCard({ employee, open, onToggle, att, onEditDay, isSelected, on
       </button>
 
       {open && (
-        <div className="border-t border-slate-100 px-5 py-4">
-          {!att || att.loading ? <Loader /> :
-            att.error ? <div className="text-sm text-red-600">{att.error}</div> :
-            <AttendanceBody data={att.data} employee={employee} onEditDay={onEditDay} />}
+        <div className="border-t border-slate-100">
+          {/* Phase 50 -- tab strip.  Attendance is the default so the
+              existing HR muscle memory is preserved.  Notes shows the
+              same employee's per-day calendar reminders. */}
+          <div className="flex items-center gap-1 border-b border-slate-100 bg-slate-50/60 dark:bg-slate-800/40 px-3">
+            {[
+              { id: 'attendance', label: 'Attendance' },
+              { id: 'notes',      label: 'Notes' },
+            ].map((t) => (
+              <button
+                key={t.id}
+                onClick={() => setTab(t.id)}
+                className={`px-4 py-2 text-sm border-b-2 -mb-px ${
+                  tab === t.id
+                    ? 'border-brand-500 text-brand-700 font-semibold'
+                    : 'border-transparent text-slate-500 hover:text-slate-700'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="px-5 py-4">
+            {tab === 'attendance' ? (
+              !att || att.loading ? <Loader /> :
+                att.error ? <div className="text-sm text-red-600">{att.error}</div> :
+                <AttendanceBody data={att.data} employee={employee} onEditDay={onEditDay} />
+            ) : (
+              <EmployeeNotesTab employee={employee} monthDataForCalendar={att?.data} />
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -649,6 +682,196 @@ const Pill = ({ label, value, color }) => {
  *                  mode + (optional) per-row selection set.  Calls
  *                  onApplied(result) so the parent can refresh.
  * ===================================================================== */
+/* =====================================================================
+ * Phase 50 — HR/SA Notes tab inside the expanded employee card.
+ *
+ * Shows every note on the employee's calendar for the visible month,
+ * with search + priority/completed filters + full CRUD + optional lock.
+ * The employee-side calendar reads the same records.  Notes never
+ * generate notifications and never touch attendance / payroll / leave.
+ * ===================================================================== */
+function EmployeeNotesTab({ employee, monthDataForCalendar }) {
+  const toast = useToast();
+  const [notes, setNotes]         = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [q, setQ]                 = useState('');
+  const [priority, setPriority]   = useState('');   // '' | 'normal' | 'important'
+  const [completed, setCompleted] = useState('');   // '' | 'true' | 'false'
+  const [modalDate, setModalDate] = useState(null);
+
+  // Derive the month range from the attendance calendar so the notes
+  // tab always mirrors the month HR is looking at above.  Fallback to
+  // the current month if the calendar hasn't been fetched yet.
+  const perDay = monthDataForCalendar?.perDay || [];
+  const fromISO = perDay[0]?.date
+    ? new Date(perDay[0].date).toISOString().slice(0, 10)
+    : new Date(new Date().getUTCFullYear(), new Date().getUTCMonth(), 1).toISOString().slice(0, 10);
+  const toISO = perDay[perDay.length - 1]?.date
+    ? new Date(perDay[perDay.length - 1].date).toISOString().slice(0, 10)
+    : new Date().toISOString().slice(0, 10);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const params = {
+        employee: employee._id,
+        from: fromISO, to: toISO,
+        archived: 'false',
+      };
+      if (priority)  params.priority = priority;
+      if (completed) params.completed = completed;
+      if (q)         params.q = q;
+      const { data } = await api.get('/attendance-notes', { params });
+      setNotes(data || []);
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [employee._id, fromISO, toISO, priority, completed, q]);
+
+  const setStatus = async (n, patch) => {
+    try { await api.patch(`/attendance-notes/${n._id}`, patch); load(); }
+    catch (err) { toast.error(errMsg(err)); }
+  };
+  const remove = async (n) => {
+    if (!confirm(`Delete "${n.title}"?`)) return;
+    try { await api.delete(`/attendance-notes/${n._id}`); load(); }
+    catch (err) { toast.error(errMsg(err)); }
+  };
+  const toggleLock = async (n) => {
+    try { await api.patch(`/attendance-notes/${n._id}`, { locked: !n.locked }); load(); }
+    catch (err) { toast.error(errMsg(err)); }
+  };
+
+  // Group by ISO date for the "note calendar" list rendering.
+  const byDay = new Map();
+  for (const n of notes) {
+    const k = new Date(n.date).toISOString().slice(0, 10);
+    if (!byDay.has(k)) byDay.set(k, []);
+    byDay.get(k).push(n);
+  }
+  const days = [...byDay.keys()].sort();
+
+  return (
+    <div className="space-y-4">
+      {/* Search + filters + assign button */}
+      <div className="flex flex-wrap items-end gap-2">
+        <div className="flex-1 min-w-[200px]">
+          <label className="label text-[10px] uppercase">Search</label>
+          <input
+            className="input"
+            placeholder="Search title / description…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="label text-[10px] uppercase">Priority</label>
+          <select className="input max-w-[150px]" value={priority} onChange={(e) => setPriority(e.target.value)}>
+            <option value="">All</option>
+            <option value="normal">Normal</option>
+            <option value="important">Important</option>
+          </select>
+        </div>
+        <div>
+          <label className="label text-[10px] uppercase">Status</label>
+          <select className="input max-w-[150px]" value={completed} onChange={(e) => setCompleted(e.target.value)}>
+            <option value="">All</option>
+            <option value="false">Pending</option>
+            <option value="true">Completed</option>
+          </select>
+        </div>
+        <button
+          className="btn-primary !text-xs"
+          onClick={() => setModalDate(new Date().toISOString().slice(0, 10))}
+        >
+          + Assign Note
+        </button>
+      </div>
+
+      <div className="text-[11px] text-slate-500">
+        Showing notes from {fromISO} to {toISO}. Assigned notes are reminders only — they don't affect performance, tasks, or analytics.
+      </div>
+
+      {loading ? <Loader /> :
+        notes.length === 0 ? (
+          <div className="text-sm text-slate-500 italic bg-slate-50 dark:bg-slate-800/40 rounded p-3">
+            No notes match the current filters.
+          </div>
+        ) : (
+          <div className="space-y-3">
+            {days.map((d) => (
+              <div key={d}>
+                <div className="text-[11px] uppercase font-semibold text-slate-500 mb-1">{fmtDate(d)}</div>
+                <div className="space-y-2">
+                  {byDay.get(d).map((n) => (
+                    <div
+                      key={n._id}
+                      className={`rounded-lg border p-3 ${
+                        n.completed
+                          ? 'bg-green-50/40 border-green-200 dark:bg-green-500/10 dark:border-green-500/30'
+                          : n.priority === 'important'
+                            ? 'bg-amber-50/40 border-amber-200 dark:bg-amber-500/10 dark:border-amber-500/30'
+                            : 'bg-white border-slate-200 dark:bg-slate-800/60 dark:border-slate-700'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2 flex-wrap">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            {n.priority === 'important'
+                              ? <span className="badge-amber">Important</span>
+                              : <span className="badge-gray">Normal</span>}
+                            {n.completed && <span className="badge-green text-[10px]">DONE</span>}
+                            {n.locked   && <span className="badge bg-slate-100 text-slate-600 text-[10px]">🔒 Locked</span>}
+                            <span className={`text-sm font-semibold ${n.completed ? 'line-through text-slate-500' : 'text-slate-900 dark:text-slate-100'}`}>
+                              {n.title}
+                            </span>
+                          </div>
+                          {n.description && (
+                            <div className="text-xs text-slate-600 dark:text-slate-300 mt-1 whitespace-pre-wrap">{n.description}</div>
+                          )}
+                          <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap items-center gap-2">
+                            {n.reminderTime && <span>⏰ {n.reminderTime}</span>}
+                            <span>
+                              Created by {n.createdBy?.name || n.createdByName || 'Someone'}
+                              {n.createdByRole && ` (${n.createdByRole === 'super_admin' ? 'Super Admin' : n.createdByRole.toUpperCase()})`}
+                            </span>
+                            <span>· {new Date(n.createdAt).toLocaleString()}</span>
+                            {n.completedAt && (
+                              <span>· completed {new Date(n.completedAt).toLocaleString()}
+                                {n.completedBy?.name && ` by ${n.completedBy.name}`}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          {!n.completed
+                            ? <button className="btn-secondary !py-1 !text-xs" onClick={() => setStatus(n, { completed: true })}>Complete</button>
+                            : <button className="btn-ghost !py-1 !text-xs" onClick={() => setStatus(n, { completed: false })}>Undo</button>}
+                          <button className="btn-ghost !py-1 !text-xs" onClick={() => setModalDate(d)}>Open</button>
+                          <button className="btn-ghost !py-1 !text-xs" onClick={() => toggleLock(n)}>{n.locked ? 'Unlock' : 'Lock'}</button>
+                          <button className="btn-ghost !py-1 !text-xs text-red-600" onClick={() => remove(n)}>Delete</button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+      <AttendanceNotesModal
+        open={!!modalDate}
+        date={modalDate}
+        employeeId={employee._id}
+        employeeName={employee.name}
+        onClose={() => setModalDate(null)}
+        onChanged={load}
+      />
+    </div>
+  );
+}
+
 function BulkRangeModal({ employeeIds, onClose, onApplied }) {
   const toast = useToast();
   const [fromDate, setFromDate] = useState(new Date().toISOString().slice(0, 10));

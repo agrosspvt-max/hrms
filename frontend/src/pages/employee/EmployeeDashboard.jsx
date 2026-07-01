@@ -14,6 +14,8 @@ import { delayBadgeClass, delayLabel, errMsg, fmtDate } from '../../utils/helper
 // Phase 47 -- realtime subscribe helper.  Each useEffect returns the
 // unsubscribe function so React tears down listeners on unmount.
 import { subscribe } from '../../realtime';
+// Phase 50 -- shared notes modal + dashboard Today's / Upcoming panels.
+import AttendanceNotesModal from '../../components/AttendanceNotesModal.jsx';
 
 /* ------------------------------------------------------------------ */
 /* Phase 19: Draft autosave status pill + Save Draft button.          */
@@ -153,6 +155,46 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       .then((r) => setPriorityNotices(r.data || []))
       .catch(() => {});
   useEffect(() => { loadPriorityNotices(); }, []);
+
+  // Phase 50 — Attendance Notes (Today + Upcoming).  Two separate
+  // fetches so each panel can refresh independently; both are keyed on
+  // UTC-day strings that match the backend's startOfDay storage.
+  const [todayNotes, setTodayNotes]       = useState([]);
+  const [upcomingNotes, setUpcomingNotes] = useState([]);
+  const [notesModalDate, setNotesModalDate] = useState(null);
+
+  const _ymd = (d) => new Date(d).toISOString().slice(0, 10);
+  const loadNotes = () => {
+    const todayISO = _ymd(new Date());
+    const in14 = new Date(); in14.setDate(in14.getDate() + 14);
+    const upcomingToISO = _ymd(in14);
+    // Today's notes — one small call.
+    api.get('/attendance-notes', { params: { date: todayISO, archived: 'false' } })
+      .then(({ data }) => setTodayNotes(data || []))
+      .catch(() => setTodayNotes([]));
+    // Upcoming — next 14 days from tomorrow, pending only.  Keeps the
+    // panel focused ("what's coming up") without dragging in every
+    // completed reminder in the future.
+    const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+    api.get('/attendance-notes', {
+      params: {
+        from: _ymd(tomorrow), to: upcomingToISO,
+        archived: 'false', completed: 'false',
+      },
+    })
+      .then(({ data }) => setUpcomingNotes(data || []))
+      .catch(() => setUpcomingNotes([]));
+  };
+  useEffect(() => { loadNotes(); }, []);
+
+  // Note actions from the dashboard cards (Complete / Archive / Edit).
+  // Edit opens the modal on the note's date; the modal handles patch.
+  const setNoteStatus = async (n, patch) => {
+    try {
+      await api.patch(`/attendance-notes/${n._id}`, patch);
+      loadNotes();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
 
   // Phase 47 -- realtime subscriptions.  Server-pushed events trigger
   // a targeted re-fetch of just the affected slice; we never call
@@ -856,6 +898,153 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         );
       })()}
 
+      {/* Phase 50 — Today's Notes.  Silent reminders on the employee's
+          attendance calendar (no notifications).  Each card supports
+          Complete / Archive / Edit; Edit opens the shared modal on the
+          note's date. */}
+      {!embedded && (() => {
+        const pending = todayNotes.filter((n) => !n.completed);
+        const total   = todayNotes.length;
+        return (
+          <Collapsible
+            title="Today's Notes"
+            subtitle={total === 0 ? 'No notes for today' : `${pending.length} pending · ${total} total`}
+            right={total === 0
+              ? <span className="badge-gray">0</span>
+              : pending.length > 0
+                ? <span className="badge-amber">{pending.length}</span>
+                : <span className="badge-green">All done</span>}
+            defaultOpen={total > 0}
+          >
+            {total === 0 ? (
+              <div className="text-sm text-slate-500">
+                No notes for today. Add one from the{' '}
+                <a href="/my-attendance" className="text-brand-600 hover:underline">Attendance calendar</a>.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {todayNotes.map((n) => (
+                  <div
+                    key={n._id}
+                    className={`rounded-lg border p-3 ${
+                      n.completed
+                        ? 'bg-green-50/40 border-green-200'
+                        : n.priority === 'important'
+                          ? 'bg-amber-50/40 border-amber-200'
+                          : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2 flex-wrap">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {n.priority === 'important'
+                            ? <span className="badge-amber">Important</span>
+                            : <span className="badge-gray">Normal</span>}
+                          {n.completed && <span className="badge-green text-[10px]">DONE</span>}
+                          {n.locked   && <span className="badge bg-slate-100 text-slate-600 text-[10px]">🔒</span>}
+                          <span className={`text-sm font-semibold ${n.completed ? 'line-through text-slate-500' : 'text-slate-900'}`}>
+                            {n.title}
+                          </span>
+                        </div>
+                        {n.description && (
+                          <div className="text-xs text-slate-600 mt-1 whitespace-pre-wrap">{n.description}</div>
+                        )}
+                        <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap items-center gap-2">
+                          {n.reminderTime && <span>⏰ {n.reminderTime}</span>}
+                          <span>
+                            Created by {n.createdBy?.name || n.createdByName || 'You'}
+                            {n.createdByRole && ` (${n.createdByRole === 'super_admin' ? 'Super Admin' : n.createdByRole.toUpperCase()})`}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {!n.completed
+                          ? <button className="btn-primary !py-1 !text-xs" onClick={() => setNoteStatus(n, { completed: true })}>Mark Complete</button>
+                          : <button className="btn-ghost !py-1 !text-xs" onClick={() => setNoteStatus(n, { completed: false })}>Undo</button>}
+                        <button
+                          className="btn-secondary !py-1 !text-xs"
+                          onClick={() => setNotesModalDate(new Date(n.date).toISOString().slice(0, 10))}
+                        >
+                          Edit
+                        </button>
+                        <button className="btn-ghost !py-1 !text-xs" onClick={() => setNoteStatus(n, { archived: true })}>Archive</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Collapsible>
+        );
+      })()}
+
+      {/* Phase 50 — Upcoming Notes.  Groups the next 14 days into
+          Tomorrow / rest of this week / next week / later.  Pending
+          only; completed notes stay silent. */}
+      {!embedded && (() => {
+        const total = upcomingNotes.length;
+        // Bucket by day-offset relative to today (UTC-day granularity).
+        const today0 = new Date(); today0.setHours(0, 0, 0, 0);
+        const buckets = [];
+        const bucketMap = new Map();
+        const _bucketFor = (dateISO) => {
+          const d = new Date(dateISO);
+          const diff = Math.round((d - today0) / 86400000);
+          if (diff <= 1) return 'Tomorrow';
+          if (diff <= 7) {
+            const wd = d.toLocaleDateString(undefined, { weekday: 'long' });
+            return wd;
+          }
+          if (diff <= 14) return 'Next Week';
+          return 'Later';
+        };
+        for (const n of upcomingNotes) {
+          const label = _bucketFor(n.date);
+          if (!bucketMap.has(label)) { bucketMap.set(label, []); buckets.push(label); }
+          bucketMap.get(label).push(n);
+        }
+        return (
+          <Collapsible
+            title="Upcoming Notes"
+            subtitle={total === 0 ? 'Nothing scheduled in the next two weeks' : `${total} note${total === 1 ? '' : 's'} coming up`}
+            right={total === 0 ? <span className="badge-gray">0</span> : <span className="badge-blue">{total}</span>}
+            defaultOpen={total > 0}
+          >
+            {total === 0 ? (
+              <div className="text-sm text-slate-500">Nothing scheduled in the next two weeks.</div>
+            ) : (
+              <div className="space-y-3">
+                {buckets.map((label) => (
+                  <div key={label}>
+                    <div className="text-[11px] uppercase text-slate-500 font-semibold mb-1">{label}</div>
+                    <ul className="space-y-1">
+                      {bucketMap.get(label).map((n) => (
+                        <li
+                          key={n._id}
+                          className="flex items-center justify-between gap-2 text-sm bg-white border border-slate-200 rounded-md px-3 py-2 cursor-pointer hover:bg-slate-50"
+                          onClick={() => setNotesModalDate(new Date(n.date).toISOString().slice(0, 10))}
+                        >
+                          <span className="flex items-center gap-2 min-w-0">
+                            {n.priority === 'important'
+                              ? <span className="badge-amber text-[10px]">Important</span>
+                              : <span className="badge-gray text-[10px]">Normal</span>}
+                            <span className="font-medium text-slate-800 truncate">{n.title}</span>
+                            {n.reminderTime && <span className="text-[11px] text-slate-500 shrink-0">⏰ {n.reminderTime}</span>}
+                          </span>
+                          <span className="text-[11px] text-slate-500 shrink-0">
+                            {new Date(n.date).toLocaleDateString(undefined, { day: '2-digit', month: 'short' })}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Collapsible>
+        );
+      })()}
+
       {/* Dependency Work assigned to me - hidden in embedded mode because
           the host (e.g. MyTasks) already has a richer, filterable inbox. */}
       {!embedded && myDeps.length > 0 && (() => {
@@ -1284,6 +1473,16 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
             </div>
           )}
       </Collapsible>
+
+      {/* Phase 50 -- shared notes modal, opened from either the
+          Today's Notes panel (Edit button) or the Upcoming list
+          (click row). */}
+      <AttendanceNotesModal
+        open={!!notesModalDate}
+        date={notesModalDate}
+        onClose={() => setNotesModalDate(null)}
+        onChanged={loadNotes}
+      />
     </div>
   );
 }

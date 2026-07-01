@@ -40,6 +40,10 @@ app.use('/api', require('./routes/productRoutes'));
 app.use('/api/submission-control', require('./routes/submissionControlRoutes'));
 app.use('/api/daily-review', require('./routes/dailyReviewRoutes'));
 app.use('/api/template-analytics', require('./routes/templateAnalyticsRoutes'));
+// Phase 50 — per-employee, per-day notes on the Attendance calendar.
+// Independent of Tasks / Assignments / Submissions / Notifications so
+// nothing else in the app is affected.
+app.use('/api/attendance-notes', require('./routes/attendanceNoteRoutes'));
 // Phase 47 — Server-Sent Events stream that pushes cross-user updates
 // (notifications, leave requests, salary slips, attendance edits, etc.)
 // to the affected user(s) so the UI updates without a manual refresh.
