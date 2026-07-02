@@ -219,7 +219,7 @@ const getToday = asyncHandler(async (req, res) => {
 const VALID_FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 
 const submitOne = asyncHandler(async (req, res) => {
-  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], productSales = [], farmerRecords = [], selfRating, selfNote, idea } = req.body;
+  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], extraTasks = [], productSales = [], farmerRecords = [], selfRating, selfNote, idea } = req.body;
   const sub = await Submission.findOne({ _id: req.params.id, employee: req.user._id });
   if (!sub) { res.status(404); throw new Error('Submission not found'); }
   if (sub.submitted) { res.status(400); throw new Error('Submission already submitted for today'); }
@@ -414,6 +414,17 @@ const submitOne = asyncHandler(async (req, res) => {
     for (const f of tpl.customFields) {
       if (!f.required) continue;
       if (f.systemGenerated || f.fieldType === 'auto' || f.fieldType === 'readonly') continue;
+      // Phase 53 -- 'none' is a status-only field.  It carries no
+      // value column, so `required` applies to the status pick
+      // (validated below), not to `incoming[f.key]`.
+      if (f.fieldType === 'none') {
+        const meta = incomingMeta[f.key] || {};
+        if (!meta.status) {
+          res.status(400);
+          throw new Error(`Required status missing: ${f.label}`);
+        }
+        continue;
+      }
       const v = incoming[f.key];
       if (v === undefined || v === null || v === '') {
         res.status(400);
@@ -455,6 +466,82 @@ const submitOne = asyncHandler(async (req, res) => {
     });
     sub.customKind = tpl.customKind || sub.customKind || '';
     sub.markModified('customResponses');
+
+    /* ---- Phase 53: Extra Tasks + catalog upsert ----
+       The employee may submit ad-hoc "Extra Tasks" alongside the
+       template's predefined customFields.  Each row is normalised
+       (slugged key, trimmed label, validated responseType), and any
+       key that isn't already in tpl.extraTaskCatalog is upserted so
+       the next employee can pick it from the catalog dropdown.
+
+       Extra tasks live in their own array so predefined-task
+       analytics, scoring, and discipline flows are untouched. */
+    const _slug = (s) => String(s || '').toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 60);
+    const RESP_TYPES = new Set(['none', 'number', 'status', 'number_status']);
+    const cleanedExtras = [];
+    const catalogAdditions = [];
+    const seenKeys = new Set();
+    // Snapshot existing catalog keys ONCE so the loop is O(N).  We
+    // upsert directly on the tpl document (loaded above) and persist
+    // via the batched Template.findByIdAndUpdate call below.
+    const existingKeys = new Set((tpl.extraTaskCatalog || []).map((c) => c.key));
+    for (const raw of (extraTasks || [])) {
+      if (!raw || (!raw.label && !raw.key)) continue;
+      const label = String(raw.label || '').trim();
+      if (!label) continue;
+      const key = raw.key ? _slug(raw.key) : _slug(label);
+      if (!key || seenKeys.has(key)) continue;
+      seenKeys.add(key);
+      const responseType = RESP_TYPES.has(raw.responseType) ? raw.responseType : 'none';
+      const wantsValue  = responseType === 'number' || responseType === 'number_status';
+      const wantsStatus = responseType === 'status' || responseType === 'number_status';
+      const value = wantsValue
+        ? (raw.value === '' || raw.value === null || raw.value === undefined
+            ? '' : Number(raw.value))
+        : '';
+      const status = wantsStatus
+        ? (['done', 'ongoing', 'pending', 'work_not_available'].includes(raw.status) ? raw.status : '')
+        : '';
+      cleanedExtras.push({
+        key,
+        label,
+        description: String(raw.description || '').trim(),
+        responseType,
+        value,
+        status,
+        remark: String(raw.remark || '').trim(),
+      });
+      if (!existingKeys.has(key)) {
+        catalogAdditions.push({
+          key, label,
+          description: String(raw.description || '').trim(),
+          responseType,
+          createdBy: req.user._id,
+          createdAt: new Date(),
+        });
+        existingKeys.add(key);
+      }
+    }
+    sub.extraTasks = cleanedExtras;
+    sub.markModified('extraTasks');
+    if (catalogAdditions.length > 0) {
+      // Persist catalog additions on the parent template with an atomic
+      // $push + $each so parallel submissions from different employees
+      // don't clobber each other.  Uniqueness is guarded by our own
+      // existingKeys check + a duplicate-key skip in the model layer.
+      try {
+        await Template.findByIdAndUpdate(
+          tpl._id,
+          { $push: { extraTaskCatalog: { $each: catalogAdditions } } },
+        );
+      } catch (e) {
+        // Non-fatal: submission proceeds even if catalog write fails.
+        console.error('[extraTaskCatalog] append failed:', e.message);
+      }
+    }
 
     /* ---- Product Sales sub-table (templates that opt in) ----
        Master-data IDs are validated, fields snapshotted at submit time,
@@ -1329,7 +1416,7 @@ const saveDraft = asyncHandler(async (req, res) => {
     throw new Error('Cannot save a draft on a submission that is already submitted.');
   }
 
-  const { tasks, addedTasks, excelResponses, sheet, customResponses, productSales, farmerRecords, selfRating, selfNote, idea } = req.body || {};
+  const { tasks, addedTasks, excelResponses, sheet, customResponses, extraTasks, productSales, farmerRecords, selfRating, selfNote, idea } = req.body || {};
 
   /* ---- Tasks ---- */
   if (Array.isArray(tasks)) {
@@ -1421,6 +1508,26 @@ const saveDraft = asyncHandler(async (req, res) => {
     }).filter(Boolean);
     sub.customResponses = next;
     sub.markModified('customResponses');
+  }
+
+  /* ---- Phase 53: Extra Tasks (draft passthrough) ----
+     Raw persist so autosave doesn't lose half-typed rows.  The
+     submit endpoint is where new keys get folded into the template
+     catalog — draft only touches the submission document. */
+  if (Array.isArray(extraTasks)) {
+    const RESP = new Set(['none', 'number', 'status', 'number_status']);
+    sub.extraTasks = extraTasks
+      .filter((r) => r && (r.label || r.key))
+      .map((r) => ({
+        key: String(r.key || '').trim(),
+        label: String(r.label || '').trim(),
+        description: String(r.description || '').trim(),
+        responseType: RESP.has(r.responseType) ? r.responseType : 'none',
+        value: r.value ?? '',
+        status: ['done', 'ongoing', 'pending', 'work_not_available'].includes(r.status) ? r.status : '',
+        remark: typeof r.remark === 'string' ? r.remark : '',
+      }));
+    sub.markModified('extraTasks');
   }
 
   /* ---- Product Sales ---- */

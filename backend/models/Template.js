@@ -167,7 +167,11 @@ const customFieldSchema = new mongoose.Schema(
       // first-class display variants.  Numeric math treats currency +
       // percentage exactly like 'number'; yes_no is a 2-option
       // dropdown; time accepts HH:MM strings.
-      enum: ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date', 'currency', 'percentage', 'yes_no', 'time'],
+      // Phase 53 -- 'none' declares a status-only field: no numeric or
+      // text value, just the status picker (Done / Pending / Work N/A).
+      // Renderer skips the value control; backend skips the required-
+      // value check so `required: true` still enforces status.
+      enum: ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date', 'currency', 'percentage', 'yes_no', 'time', 'none'],
       default: 'number',
     },
     required: { type: Boolean, default: false },
@@ -254,6 +258,39 @@ const templateSchema = new mongoose.Schema(
 
     // Used when templateType === 'custom'
     customFields: { type: [customFieldSchema], default: [] },
+    /* ---- Phase 53: Extra Task Catalog ----
+       Template-scoped catalog of ad-hoc "Extra Tasks" employees have
+       ever added on a submission for this template.  Each entry is a
+       reusable definition: key (slug), label, description, and a
+       responseType that decides which inputs the employee form shows
+       ('none' | 'number' | 'status' | 'number_status').
+
+       Auto-populated by the submit endpoint: when an employee submits
+       an extra task whose key isn't already in the catalog, the
+       controller upserts it here (atomic $addToSet).  HR can also
+       curate the catalog directly if we surface an admin editor later.
+
+       Catalogs are template-isolated: one template's Sales Extra Tasks
+       never leak into an Accounts template.  Analytics groups by key
+       within a single template only. */
+    extraTaskCatalog: {
+      type: [new mongoose.Schema(
+        {
+          key:          { type: String, required: true, trim: true },
+          label:        { type: String, required: true, trim: true },
+          description:  { type: String, default: '', trim: true },
+          responseType: {
+            type: String,
+            enum: ['none', 'number', 'status', 'number_status'],
+            default: 'none',
+          },
+          createdBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          createdAt:    { type: Date, default: Date.now },
+        },
+        { _id: false },
+      )],
+      default: [],
+    },
     // Well-known kind that targeted analytics surfaces (e.g. Calling
     // Analytics) use to discover their templates.  Free-form for HR-
     // authored custom templates; the seeded Daily Calling Report uses

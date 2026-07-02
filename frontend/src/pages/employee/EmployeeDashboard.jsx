@@ -113,6 +113,12 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   // expose status + remark controls without breaking the existing
   // values shape.  Stored as { subId: { fieldKey: { status, remark } } }.
   const [customMeta, setCustomMeta] = useState({});
+  // Phase 53 -- Extra Tasks the employee added on top of the template's
+  // predefined fields.  { subId: [{ key, label, description,
+  // responseType, value, status, remark }] }.  Persisted on Save Draft
+  // and on Submit; the backend upserts new (key) rows into the parent
+  // template's extraTaskCatalog so future employees can pick them.
+  const [extraTasks, setExtraTasks] = useState({});
   // Product Sales rows per submission: { subId: [{ productId, quantityId }] }
   const [productSales, setProductSales] = useState({});
   // Farmer rows per submission: { subId: [{ name, mobile, ... }] }
@@ -302,6 +308,19 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         const m = metaForSub[key] || {};
         return { key, value, status: m.status || '', remark: m.remark || '' };
       });
+      // Phase 53 -- draft the current Extra Tasks so autosave doesn't
+      // lose half-typed ones (mirrors customResponses semantics).
+      payload.extraTasks = (extraTasks[sub._id] || [])
+        .filter((r) => (r.label || '').trim() || (r.key || '').trim())
+        .map((r) => ({
+          key: r.key || '',
+          label: r.label,
+          description: r.description || '',
+          responseType: r.responseType || 'none',
+          value: r.value ?? '',
+          status: r.status || '',
+          remark: r.remark || '',
+        }));
       const sections = sub.template?.customSections || [];
       if (sections.includes('productSales')) {
         payload.productSales = (productSales[sub._id] || [])
@@ -383,6 +402,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     const customMetaSeed = {};
     const productSalesSeed = {};
     const farmerRecordsSeed = {};
+    // Phase 53 -- reseed extra tasks so a page reload / re-open of the
+    // dashboard restores what the employee typed.
+    const extraTasksSeed = {};
     (a.data.submissions || []).forEach((s) => {
       if (s.templateType === 'sheet' && !s.submitted && s.sheet) {
         seed[s._id] = JSON.parse(JSON.stringify(s.sheet));
@@ -410,6 +432,18 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
             quantityId: r.quantityId ? String(r.quantityId) : '',
           }));
         }
+        // Phase 53 -- seed any extra tasks the employee has drafted.
+        if (Array.isArray(s.extraTasks) && s.extraTasks.length > 0) {
+          extraTasksSeed[s._id] = s.extraTasks.map((r) => ({
+            key:          r.key || '',
+            label:        r.label || '',
+            description:  r.description || '',
+            responseType: r.responseType || 'none',
+            value:        r.value ?? '',
+            status:       r.status || '',
+            remark:       r.remark || '',
+          }));
+        }
         if (Array.isArray(s.farmerRecords) && s.farmerRecords.length > 0) {
           farmerRecordsSeed[s._id] = s.farmerRecords.map((r) => ({
             name:    r.name || '',
@@ -430,6 +464,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     });
     setCustomValues((prev) => ({ ...customSeed,        ...prev }));
     setCustomMeta((prev) =>   ({ ...customMetaSeed,    ...prev }));
+    setExtraTasks((prev) =>   ({ ...extraTasksSeed,    ...prev }));
     setProductSales((prev) => ({ ...productSalesSeed,  ...prev }));
     setFarmerRecords((prev) =>({ ...farmerRecordsSeed, ...prev }));
     setSheetState(seed);
@@ -641,8 +676,33 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                   .map((p) => ({ productId: p.productId, quantity: Number(p.quantity) })),
               }))
           : [];
+        // Phase 53 -- Extra Tasks: only rows that carry BOTH a label
+        // and (if their response type demands it) a value/status make
+        // it into the submission.  Empty half-typed rows are dropped.
+        const cleanExtras = (extraTasks[sub._id] || [])
+          .filter((r) => (r.label || '').trim())
+          .map((r) => ({
+            key:          (r.key || '').trim(),
+            label:        r.label.trim(),
+            description:  (r.description || '').trim(),
+            responseType: r.responseType || 'none',
+            value:        r.value ?? '',
+            status:       r.status || '',
+            remark:       (r.remark || '').trim(),
+          }));
+        // Guard: number responses need a numeric value (matches the
+        // backend's coercion; this just gives a clearer error).
+        for (const r of cleanExtras) {
+          if ((r.responseType === 'number' || r.responseType === 'number_status')
+              && (r.value === '' || Number.isNaN(Number(r.value)))) {
+            toast.error(`Enter a number for extra task "${r.label}".`);
+            setBusy(false);
+            return;
+          }
+        }
         await api.post(`/submissions/${sub._id}/submit`, {
           customResponses: payload,
+          extraTasks: cleanExtras,
           productSales: cleanProductSales,
           farmerRecords: cleanFarmers,
           selfRating: selfRating[sub._id],
@@ -1242,6 +1302,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                       [sub._id]: typeof updater === 'function' ? updater(s[sub._id] || []) : updater,
                     }))
                   }
+                  extraTasks={extraTasks[sub._id] || []}
+                  setExtraTasks={(updater) =>
+                    setExtraTasks((s) => ({
+                      ...s,
+                      [sub._id]: typeof updater === 'function' ? updater(s[sub._id] || []) : updater,
+                    }))
+                  }
                   products={products}
                   quantities={quantities}
                   dealers={dealers}
@@ -1531,6 +1598,7 @@ function CustomTemplateForm({
   meta = {}, onMeta = () => {},
   productSales = [], setProductSales,
   farmerRecords = [], setFarmerRecords,
+  extraTasks = [], setExtraTasks = () => {},
   products = [], quantities = [], dealers = [],
   selfRating, setSelfRating, selfNote, setSelfNote, idea, setIdea,
   busy, onSubmit,
@@ -1688,7 +1756,51 @@ function CustomTemplateForm({
             symptom HR reported.  Literal conditional class strings
             below replace the template literals so the col-spans Tailwind
             DOES need are reliably generated. */}
-        {!f.supportsStatus && !f.supportsRemark ? (
+        {f.fieldType === 'none' ? (
+          /* Phase 53 -- status-only field.  No value column: only the
+              Status picker (and optional Remark) render below. */
+          (f.supportsStatus || f.supportsRemark) ? (
+            <div className="grid md:grid-cols-12 gap-2">
+              {f.supportsStatus && (
+                <div className={f.supportsRemark ? 'md:col-span-5' : 'md:col-span-12'}>
+                  <div className="label text-[10px] uppercase">Status</div>
+                  <select
+                    className="input"
+                    value={m.status || ''}
+                    onChange={(e) => onMeta(f.key, { status: e.target.value })}
+                  >
+                    <option value="">—</option>
+                    <option value="done">Done</option>
+                    <option value="pending">Pending</option>
+                    <option value="work_not_available">Work N/A</option>
+                  </select>
+                </div>
+              )}
+              {f.supportsRemark && (
+                <div className={f.supportsStatus ? 'md:col-span-7' : 'md:col-span-12'}>
+                  <div className="label text-[10px] uppercase">
+                    Remark
+                    {(pendingNeedsRemark || f.remarkRequired) && <span className="text-red-500"> *</span>}
+                  </div>
+                  <input
+                    className={`input ${(pendingNeedsRemark || f.remarkRequired) && !(m.remark || '').trim() ? 'border-red-400' : ''}`}
+                    placeholder={
+                      f.remarkRequired ? 'Remark required'
+                      : pendingNeedsRemark ? 'Reason required for Pending'
+                      : 'Optional'
+                    }
+                    value={m.remark || ''}
+                    onChange={(e) => onMeta(f.key, { remark: e.target.value })}
+                  />
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="text-[11px] italic text-slate-400">
+              Status-only task with no status enabled — nothing to record.
+            </div>
+          )
+        ) : !f.supportsStatus && !f.supportsRemark ? (
           <div>
             <div className="label text-[10px] uppercase">Value</div>
             {valueControl}
@@ -1794,11 +1906,296 @@ function CustomTemplateForm({
         />
       )}
 
+      {/* Phase 53 -- Extra Tasks.  Employee-added ad-hoc rows on top of
+          the predefined customFields.  Kept in its own section so HR
+          review + template analytics can treat predefined and extra
+          tasks as two independent buckets. */}
+      <ExtraTasksSection
+        templateId={sub.template?._id}
+        catalog={sub.template?.extraTaskCatalog || []}
+        rows={extraTasks}
+        setRows={setExtraTasks}
+      />
+
       {/* Self-observation + Idea moved to a single Daily Reflection card
           at the top of "Today's Tasks" (Phase 5 refactor). */}
 
       <div className="flex justify-end">
         <button className="btn-primary" disabled={busy} onClick={onSubmit}>Submit Report</button>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Phase 53 -- Extra Tasks section                                    */
+/*                                                                    */
+/* Employees can add ad-hoc reminders / extra work to a Custom        */
+/* Assignment submission.  Each row supports one of four response     */
+/* types: none / number / status / number_status.  The picker offers  */
+/* two flows: reuse an existing entry from the template's Extra Task  */
+/* Catalog (with type-ahead search) or create a brand-new one that    */
+/* the backend will fold into the catalog on submit.                  */
+/* ------------------------------------------------------------------ */
+const EXTRA_RESPONSE_TYPES = [
+  { value: 'none',           label: 'None (status only)' },
+  { value: 'number',         label: 'Number only' },
+  { value: 'status',         label: 'Status only' },
+  { value: 'number_status',  label: 'Number + Status' },
+];
+const _extraSlug = (s) => String(s || '').toLowerCase()
+  .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60);
+
+function ExtraTasksSection({ catalog = [], rows = [], setRows }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  return (
+    <div className="rounded-lg border border-indigo-100 bg-indigo-50/30 p-3">
+      <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+        <div>
+          <div className="text-sm font-semibold text-indigo-900">Extra Tasks</div>
+          <div className="text-[11px] text-indigo-700/80">
+            Optional. Reuse a task from the template catalog or create a new one.
+            HR review + analytics keep these separate from the predefined tasks.
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn-secondary !py-1 !text-xs"
+          onClick={() => setPickerOpen(true)}
+        >
+          + Add Extra Task
+        </button>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="text-xs text-indigo-700/60 italic">
+          No extra tasks yet. Click "+ Add Extra Task" to add one.
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((r, i) => (
+            <ExtraTaskRow
+              key={i}
+              row={r}
+              onChange={(patch) => setRows((cur) => cur.map((x, idx) => (idx === i ? { ...x, ...patch } : x)))}
+              onRemove={() => setRows((cur) => cur.filter((_, idx) => idx !== i))}
+            />
+          ))}
+        </div>
+      )}
+
+      {pickerOpen && (
+        <ExtraTaskPickerModal
+          catalog={catalog}
+          existingKeys={new Set(rows.map((r) => r.key).filter(Boolean))}
+          onClose={() => setPickerOpen(false)}
+          onPick={(row) => {
+            setRows((cur) => [...cur, row]);
+            setPickerOpen(false);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ExtraTaskRow({ row, onChange, onRemove }) {
+  const wantsValue  = row.responseType === 'number' || row.responseType === 'number_status';
+  const wantsStatus = row.responseType === 'status' || row.responseType === 'number_status';
+  return (
+    <div className="rounded-md border border-slate-200 bg-white p-3 space-y-2">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-slate-800">{row.label || <em className="text-slate-400">Unnamed</em>}</div>
+          {row.description && (
+            <div className="text-[11px] text-slate-500 mt-0.5">{row.description}</div>
+          )}
+          <div className="text-[10px] uppercase text-slate-400 mt-0.5">
+            {EXTRA_RESPONSE_TYPES.find((t) => t.value === row.responseType)?.label || 'Response'}
+          </div>
+        </div>
+        <button type="button" className="btn-ghost text-red-600 !py-0.5 !px-2 text-xs" onClick={onRemove}>Remove</button>
+      </div>
+      <div className="grid md:grid-cols-12 gap-2">
+        {wantsValue && (
+          <div className={wantsStatus ? 'md:col-span-5' : 'md:col-span-12'}>
+            <div className="label text-[10px] uppercase">Value</div>
+            <input
+              className="input"
+              type="number"
+              step="any"
+              value={row.value ?? ''}
+              onChange={(e) => onChange({ value: e.target.value === '' ? '' : Number(e.target.value) })}
+            />
+          </div>
+        )}
+        {wantsStatus && (
+          <div className={wantsValue ? 'md:col-span-3' : 'md:col-span-6'}>
+            <div className="label text-[10px] uppercase">Status</div>
+            <select
+              className="input"
+              value={row.status || ''}
+              onChange={(e) => onChange({ status: e.target.value })}
+            >
+              <option value="">—</option>
+              <option value="done">Done</option>
+              <option value="pending">Pending</option>
+              <option value="work_not_available">Work N/A</option>
+            </select>
+          </div>
+        )}
+        <div className={wantsValue && wantsStatus ? 'md:col-span-4' : wantsValue || wantsStatus ? 'md:col-span-6' : 'md:col-span-12'}>
+          <div className="label text-[10px] uppercase">Remark</div>
+          <input
+            className="input"
+            placeholder="Optional"
+            value={row.remark || ''}
+            onChange={(e) => onChange({ remark: e.target.value })}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExtraTaskPickerModal({ catalog, existingKeys, onClose, onPick }) {
+  // Two-tab modal: Select Existing (searchable) OR Create New.
+  const [tab, setTab] = useState('select');
+  const [q, setQ] = useState('');
+  const [form, setForm] = useState({ label: '', description: '', responseType: 'none' });
+
+  const filtered = (catalog || [])
+    // Hide items already added to this submission so the same key
+    // can't be added twice (backend would dedupe anyway; this keeps
+    // the UI honest).
+    .filter((c) => !existingKeys.has(c.key))
+    .filter((c) => {
+      if (!q) return true;
+      const s = q.toLowerCase();
+      return (c.label || '').toLowerCase().includes(s)
+        || (c.description || '').toLowerCase().includes(s);
+    })
+    .sort((a, b) => (a.label || '').localeCompare(b.label || ''));
+
+  const pickExisting = (c) => {
+    onPick({
+      key: c.key,
+      label: c.label,
+      description: c.description || '',
+      responseType: c.responseType || 'none',
+      value: '', status: '', remark: '',
+    });
+  };
+  const pickNew = () => {
+    if (!form.label.trim()) return;
+    const key = _extraSlug(form.label);
+    if (!key) return;
+    onPick({
+      key,
+      label: form.label.trim(),
+      description: form.description.trim(),
+      responseType: form.responseType,
+      value: '', status: '', remark: '',
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl max-w-lg w-full m-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center border-b border-slate-200">
+          {[
+            { id: 'select', label: 'Select existing' },
+            { id: 'new',    label: 'Create new' },
+          ].map((t) => (
+            <button
+              key={t.id}
+              className={`px-4 py-3 text-sm border-b-2 -mb-px ${tab === t.id ? 'border-brand-500 text-brand-700 font-semibold' : 'border-transparent text-slate-500'}`}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+          <button className="ml-auto px-4 text-slate-500 hover:text-slate-800" onClick={onClose}>✕</button>
+        </div>
+        <div className="p-4 space-y-3">
+          {tab === 'select' ? (
+            <>
+              <input
+                className="input"
+                placeholder="Search extra tasks…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                autoFocus
+              />
+              <div className="max-h-[300px] overflow-y-auto space-y-1">
+                {filtered.length === 0 ? (
+                  <div className="text-xs italic text-slate-500 p-2">
+                    {catalog.length === 0
+                      ? 'No extra tasks in this template\'s catalog yet.  Use "Create new" to add the first one.'
+                      : 'No matches — try a different search or the "Create new" tab.'}
+                  </div>
+                ) : filtered.map((c) => (
+                  <button
+                    key={c.key}
+                    type="button"
+                    className="w-full text-left border border-slate-200 rounded p-2 hover:bg-slate-50"
+                    onClick={() => pickExisting(c)}
+                  >
+                    <div className="text-sm font-medium text-slate-800">{c.label}</div>
+                    {c.description && <div className="text-[11px] text-slate-500">{c.description}</div>}
+                    <div className="text-[10px] uppercase text-slate-400 mt-0.5">
+                      {EXTRA_RESPONSE_TYPES.find((t) => t.value === c.responseType)?.label || 'Response'}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <label className="label text-[10px] uppercase">Work Name</label>
+                <input
+                  className="input"
+                  value={form.label}
+                  onChange={(e) => setForm({ ...form, label: e.target.value })}
+                  placeholder="e.g. Dealer Visit"
+                />
+              </div>
+              <div>
+                <label className="label text-[10px] uppercase">Description (optional)</label>
+                <input
+                  className="input"
+                  value={form.description}
+                  onChange={(e) => setForm({ ...form, description: e.target.value })}
+                />
+              </div>
+              <div>
+                <label className="label text-[10px] uppercase">Response Type</label>
+                <select
+                  className="input"
+                  value={form.responseType}
+                  onChange={(e) => setForm({ ...form, responseType: e.target.value })}
+                >
+                  {EXTRA_RESPONSE_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>{t.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="text-[11px] text-slate-500">
+                After you submit, this task is automatically added to this template's catalog so teammates can reuse it.
+              </div>
+              <div className="flex justify-end">
+                <button
+                  className="btn-primary !py-1 !text-xs"
+                  disabled={!form.label.trim()}
+                  onClick={pickNew}
+                >
+                  Add
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

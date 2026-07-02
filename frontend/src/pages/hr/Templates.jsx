@@ -61,6 +61,9 @@ const FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 const CUSTOM_FIELD_TYPES = [
   { value: 'number',   label: 'Number' },
   { value: 'dropdown', label: 'Dropdown' },
+  // Phase 53 -- status-only tasks (no numeric or text value).  Pair
+  // with "Status enabled" to render Done / Pending / Work N/A only.
+  { value: 'none',     label: 'None (status only)' },
 ];
 
 /* Scoring helpers shared across the sheet builder */
@@ -835,6 +838,63 @@ function FieldsGroup({ label, subId, entries, onAdd, onUpdate, onRemove, onMove,
   );
 }
 
+/**
+ * Phase 53 -- Dropdown Options editor.
+ *
+ * The previous implementation round-tripped the textarea's value
+ * through `split('\n').map(trim).filter(Boolean)` on every keystroke.
+ * That meant Enter (which creates an empty line for a moment while
+ * the user starts typing the next option) was silently swallowed,
+ * trailing spaces were eaten, and the caret jumped back when the
+ * parent re-rendered.
+ *
+ * The fix: keep a local string that drives the textarea, only
+ * commit the normalised array on blur (or when the field's options
+ * prop is updated externally, e.g. after a reset).  Enter and
+ * spaces now behave exactly like a native <textarea>.
+ */
+function DropdownOptionsEditor({ options, onCommit, hasError, errorMessage, registerRef, clearError, errCls }) {
+  const initial = Array.isArray(options) ? options.join('\n') : '';
+  const [text, setText] = useState(initial);
+  // If the parent replaces the options array (e.g. reset / clone), fold
+  // the change back into our local buffer.  We compare on the joined
+  // string so identical arrays with different references don't cause
+  // caret jumps.
+  useEffect(() => {
+    const next = Array.isArray(options) ? options.join('\n') : '';
+    setText((cur) => (cur === next ? cur : next));
+  }, [options]);
+
+  const commit = () => {
+    const normalised = text.split('\n').map((s) => s.trim()).filter(Boolean);
+    // Only push upward if the normalised list actually changed —
+    // avoids marking the form dirty on a bare focus/blur.
+    const current = Array.isArray(options) ? options : [];
+    const changed = current.length !== normalised.length
+      || current.some((v, i) => v !== normalised[i]);
+    if (changed) onCommit(normalised);
+  };
+
+  return (
+    <div>
+      <label className="label text-[10px] uppercase">
+        Dropdown Options <span className="text-red-500">*</span>{' '}
+        <span className="text-slate-400 normal-case font-normal">(one per line)</span>
+      </label>
+      <textarea
+        ref={registerRef}
+        className={`input font-mono text-xs ${hasError ? errCls : ''}`}
+        rows={4}
+        value={text}
+        onChange={(e) => { setText(e.target.value); clearError?.(); }}
+        onBlur={commit}
+        placeholder={'Excellent\nGood\nAverage\nPoor'}
+      />
+      {hasError && <div className="text-[11px] text-red-600 mt-0.5">{errorMessage}</div>}
+    </div>
+  );
+}
+
 function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove, errors = {}, setRef = () => () => {}, clearError = () => {} }) {
   const f = field;
   const idx = f.__idx;
@@ -977,20 +1037,15 @@ function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove, error
         </div>
       )}
       {f.fieldType === 'dropdown' && (
-        <div>
-          <label className="label text-[10px] uppercase">
-            Dropdown Options <span className="text-red-500">*</span> <span className="text-slate-400 normal-case font-normal">(one per line)</span>
-          </label>
-          <textarea
-            ref={setRef(eOpts)}
-            className={`input font-mono text-xs ${errors[eOpts] ? errCls : ''}`}
-            rows={2}
-            value={(f.options || []).join('\n')}
-            onChange={(e) => { onPatch({ options: e.target.value.split('\n').map((s) => s.trim()).filter(Boolean) }); clearError(eOpts); }}
-            placeholder={'Option A\nOption B\nOption C'}
-          />
-          {errors[eOpts] && <div className="text-[11px] text-red-600 mt-0.5">{errors[eOpts]}</div>}
-        </div>
+        <DropdownOptionsEditor
+          options={f.options}
+          onCommit={(nextOptions) => onPatch({ options: nextOptions })}
+          hasError={!!errors[eOpts]}
+          errorMessage={errors[eOpts]}
+          registerRef={setRef(eOpts)}
+          clearError={() => clearError(eOpts)}
+          errCls={errCls}
+        />
       )}
     </div>
   );

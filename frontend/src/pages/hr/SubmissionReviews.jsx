@@ -589,6 +589,14 @@ function SubmissionPanel({ sub, onReload }) {
         {!isCalling && !isProductFarmer && sub.templateType === 'custom' && (
           <CustomResponsesPanel responses={sub.customResponses || []} fields={sub.template?.customFields || []} />
         )}
+        {/* Phase 53 -- Extra Tasks live in their own panel so the
+            reviewer can tell predefined vs. ad-hoc work apart at a
+            glance.  Renders for any custom-template submission that
+            carries at least one extra task; never leaks into task /
+            excel / sheet templates. */}
+        {sub.templateType === 'custom' && Array.isArray(sub.extraTasks) && sub.extraTasks.length > 0 && (
+          <ExtraTasksPanel extras={sub.extraTasks} />
+        )}
         {sub.templateType === 'task' && (
           <TaskListPanel sub={sub} onReload={onReload} />
         )}
@@ -763,6 +771,59 @@ function ProductFarmerPanel({ sub }) {
 }
 
 /* ----------------- Generic custom-template panel ----------------- */
+/**
+ * Phase 53 -- Extra Tasks review panel.
+ *
+ * Renders the employee-added ad-hoc tasks in a dedicated section so
+ * they're never confused with the template's predefined customFields.
+ * Read-only: extras don't feed discipline / innovation and don't
+ * modify the original template.  The template's extraTaskCatalog is
+ * updated separately by the submit endpoint.
+ */
+function ExtraTasksPanel({ extras }) {
+  return (
+    <div className="rounded-lg border border-indigo-100 bg-indigo-50/30 p-3 space-y-2">
+      <div className="text-[11px] uppercase tracking-wide text-indigo-800 font-semibold">
+        Extra Tasks ({extras.length})
+      </div>
+      <div className="grid gap-2">
+        {extras.map((r, i) => {
+          const wantsValue  = r.responseType === 'number' || r.responseType === 'number_status';
+          const wantsStatus = r.responseType === 'status' || r.responseType === 'number_status';
+          return (
+            <div key={i} className="rounded-md border border-slate-200 bg-white p-2 text-sm flex items-start justify-between gap-3 flex-wrap">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-slate-800">{r.label}</div>
+                {r.description && <div className="text-[11px] text-slate-500">{r.description}</div>}
+                {r.remark && <div className="text-[11px] text-slate-600 mt-0.5"><b>Remark:</b> {r.remark}</div>}
+              </div>
+              <div className="flex items-center gap-2 text-[11px] shrink-0">
+                {wantsValue && (
+                  <span className="badge bg-blue-50 text-blue-700">
+                    Value: <b>{r.value === '' || r.value === null || r.value === undefined ? '—' : r.value}</b>
+                  </span>
+                )}
+                {wantsStatus && r.status && (
+                  <span className={`badge ${
+                    r.status === 'done' ? 'bg-green-50 text-green-700'
+                      : r.status === 'pending' ? 'bg-amber-50 text-amber-700'
+                      : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {r.status === 'work_not_available' ? 'Work N/A' : r.status[0].toUpperCase() + r.status.slice(1)}
+                  </span>
+                )}
+                {!wantsValue && !wantsStatus && (
+                  <span className="text-slate-400 italic">no response</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function CustomResponsesPanel({ responses, fields }) {
   if (responses.length === 0) return <div className="text-xs text-slate-500 italic">No responses.</div>;
   // Phase 14: surface { value, status, remark } per row, with a

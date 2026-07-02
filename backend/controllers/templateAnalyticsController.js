@@ -235,7 +235,7 @@ const generate = asyncHandler(async (req, res) => {
     submitted: true,
     ...liveSubmissionFilter({ ...flags, onlyReviewed: true }),
   })
-    .select('employee date submittedAt templateType customResponses tasks productSales farmerRecords earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus')
+    .select('employee date submittedAt templateType customResponses tasks productSales farmerRecords earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus extraTasks')
     .lean();
 
   /* =================================================================
@@ -878,6 +878,158 @@ const generate = asyncHandler(async (req, res) => {
     }
   }
 
+  /* =================================================================
+   * Phase 53 -- EXTRA TASK ANALYTICS
+   *
+   * Aggregates every employee-submitted extra task across every
+   * reviewed submission in the range, grouped by `key` (label) so
+   * multiple employees who submit "Dealer Visit" contribute to ONE
+   * card, not three separate cards.
+   *
+   * Response types:
+   *   number, number_status  -> numeric aggregation (Total / Avg /
+   *                             High / Low) + top employees + dept
+   *                             summary + daily trend
+   *   status, none           -> status distribution (Done / Pending /
+   *                             Work N/A / completion %) + top emps
+   *
+   * Analytics is strictly template-isolated because we start from
+   * `template: tpl._id` in the submission query above.
+   * ================================================================= */
+  const extraByKey = new Map(); // key -> { label, responseType, values[], perEmp, perDept, perDay, statusCounts }
+  for (const s of subs) {
+    const empId = String(s.employee);
+    const emp = empMap.get(empId);
+    if (!emp) continue;
+    const dateKey = new Date(s.date).toISOString().slice(0, 10);
+    const deptName = emp.department?.name || '—';
+    for (const t of (s.extraTasks || [])) {
+      const key = t.key || (t.label || '').toLowerCase().replace(/\s+/g, '_');
+      if (!key) continue;
+      if (!extraByKey.has(key)) {
+        extraByKey.set(key, {
+          key,
+          label: t.label || key,
+          description: t.description || '',
+          responseType: t.responseType || 'none',
+          values: [],
+          perEmp:  new Map(), // empId -> { name, employeeId, total, count, statuses{}, done }
+          perDept: new Map(), // dept -> { total, count, done }
+          perDay:  new Map(), // dateKey -> { total, count, done }
+          statusCounts: { done: 0, pending: 0, work_not_available: 0, ongoing: 0, empty: 0 },
+          submissionCount: 0,
+        });
+      }
+      const bucket = extraByKey.get(key);
+      bucket.submissionCount += 1;
+      // Track the most recent label/description/responseType so a
+      // catalog rename is reflected across the aggregate.
+      if (t.label)        bucket.label = t.label;
+      if (t.description)  bucket.description = t.description;
+      if (t.responseType) bucket.responseType = t.responseType;
+      const wantsValue  = bucket.responseType === 'number' || bucket.responseType === 'number_status';
+      const wantsStatus = bucket.responseType === 'status' || bucket.responseType === 'number_status';
+      const v = wantsValue ? Number(t.value) : NaN;
+      const hasV = Number.isFinite(v);
+      if (hasV) bucket.values.push(v);
+      const st = t.status || 'empty';
+      if (Object.prototype.hasOwnProperty.call(bucket.statusCounts, st)) {
+        bucket.statusCounts[st] += 1;
+      } else {
+        bucket.statusCounts.empty += 1;
+      }
+      const isDone = st === 'done';
+      // per-employee
+      if (!bucket.perEmp.has(empId)) {
+        bucket.perEmp.set(empId, {
+          employeeId: emp.employeeId || '',
+          name: emp.name || '',
+          department: deptName,
+          total: 0, count: 0, done: 0,
+        });
+      }
+      const pe = bucket.perEmp.get(empId);
+      pe.count += 1;
+      if (hasV) pe.total += v;
+      if (isDone) pe.done += 1;
+      // per-department
+      if (!bucket.perDept.has(deptName)) {
+        bucket.perDept.set(deptName, { department: deptName, total: 0, count: 0, done: 0 });
+      }
+      const pd = bucket.perDept.get(deptName);
+      pd.count += 1;
+      if (hasV) pd.total += v;
+      if (isDone) pd.done += 1;
+      // per-day
+      if (!bucket.perDay.has(dateKey)) {
+        bucket.perDay.set(dateKey, { date: dateKey, total: 0, count: 0, done: 0 });
+      }
+      const pday = bucket.perDay.get(dateKey);
+      pday.count += 1;
+      if (hasV) pday.total += v;
+      if (isDone) pday.done += 1;
+    }
+  }
+
+  const extraTaskAnalytics = [...extraByKey.values()].map((b) => {
+    const wantsValue = b.responseType === 'number' || b.responseType === 'number_status';
+    const wantsStatus = b.responseType === 'status' || b.responseType === 'number_status';
+    const sorted = b.values.slice().sort((a, b) => a - b);
+    const total  = sorted.reduce((s, v) => s + v, 0);
+    const count  = sorted.length;
+    const avg    = count ? Math.round((total / count) * 100) / 100 : 0;
+    const high   = count ? sorted[count - 1] : 0;
+    const low    = count ? sorted[0] : 0;
+    const done   = b.statusCounts.done || 0;
+    const pending = b.statusCounts.pending || 0;
+    const wna    = b.statusCounts.work_not_available || 0;
+    const statusTotal = done + pending + wna + (b.statusCounts.ongoing || 0);
+    const completionPct = statusTotal > 0 ? Math.round((done / statusTotal) * 1000) / 10 : 0;
+    return {
+      key: b.key,
+      label: b.label,
+      description: b.description,
+      responseType: b.responseType,
+      submissionCount: b.submissionCount,
+      employeeCount: b.perEmp.size,
+      // Numeric aggregates (0 when the response type has no numeric side).
+      total, average: avg, highest: high, lowest: low,
+      // Status aggregates
+      statusCounts: b.statusCounts,
+      completionPct,
+      // Leaderboards.  Sort by total for numeric types, by done count
+      // for status-only types.  Top 10 keeps the payload cheap.
+      topEmployees: [...b.perEmp.values()]
+        .sort((a, b) => (wantsValue ? (b.total - a.total) : (b.done - a.done)) || (b.count - a.count))
+        .slice(0, 10)
+        .map((e) => ({
+          employeeId: e.employeeId,
+          name: e.name,
+          department: e.department,
+          total: e.total,
+          count: e.count,
+          done: e.done,
+        })),
+      departmentSummary: [...b.perDept.values()]
+        .sort((a, b) => (wantsValue ? (b.total - a.total) : (b.done - a.done)))
+        .map((d) => ({
+          department: d.department,
+          total: d.total,
+          count: d.count,
+          done: d.done,
+        })),
+      dailyTrend: [...b.perDay.values()]
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .map((d) => ({
+          date: d.date,
+          total: d.total,
+          count: d.count,
+          done: d.done,
+        })),
+      _flags: { hasNumeric: wantsValue, hasStatus: wantsStatus },
+    };
+  }).sort((a, b) => (b.submissionCount - a.submissionCount));
+
   res.json({
     template: {
       _id: tpl._id, title: tpl.title,
@@ -894,6 +1046,8 @@ const generate = asyncHandler(async (req, res) => {
     employeePerformance,
     extraWork,
     subTemplates,
+    // Phase 53 -- template-scoped Extra Task Analytics, grouped by key.
+    extraTaskAnalytics,
     // Phase 30: drill-down detail rows.
     detail: { submissionRows, taskRows, fieldRows },
   });

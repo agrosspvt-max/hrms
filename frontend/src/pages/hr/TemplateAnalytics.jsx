@@ -176,6 +176,9 @@ export default function TemplateAnalytics() {
           <TasksSection tasks={data.tasks || []} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
           <EmployeePerformanceSection perf={data.employeePerformance || {}} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
           <ExtraWorkSection extra={data.extraWork || {}} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
+          {/* Phase 53 -- Extra Task Analytics.  Rendered as its own
+              section so predefined and extra-task metrics never mix. */}
+          <ExtraTaskAnalyticsSection extras={data.extraTaskAnalytics || []} />
         </div>
       )}
 
@@ -607,6 +610,210 @@ function EmployeePerformanceSection({ perf, onDrill = () => {} }) {
 /* =================================================================== */
 /* EXTRA WORK                                                           */
 /* =================================================================== */
+/**
+ * Phase 53 -- Extra Task Analytics section.
+ *
+ * Renders one card per template-catalog Extra Task (grouped by key),
+ * so multiple employees submitting the same Extra Task contribute to
+ * a single aggregate.  Numeric types get Total/Avg/High/Low; status
+ * types get Done/Pending/W-N-A + completion %.  Both types get a
+ * top-employees leaderboard, department summary, and daily trend.
+ *
+ * Template-isolated: the endpoint's underlying Submission.find scopes
+ * strictly by `template: <this templateId>`, so one template's cards
+ * never leak into another's analytics.
+ */
+function ExtraTaskAnalyticsSection({ extras }) {
+  if (!extras || extras.length === 0) {
+    // Still render the heading so HR can tell the section exists but
+    // hasn't been populated by any submitted extra tasks yet.
+    return (
+      <div>
+        <div className="text-sm font-semibold text-slate-800 mb-2">Extra Task Analytics</div>
+        <div className="text-xs italic text-slate-500 bg-slate-50 rounded p-3 border border-slate-200">
+          No extra tasks submitted in this range. Employees can add extra tasks from any Custom Assignment submission.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="text-sm font-semibold text-slate-800 mb-2">
+        Extra Task Analytics
+        <span className="text-slate-400 font-normal text-[11px] ml-2">
+          {extras.length} unique extra task{extras.length === 1 ? '' : 's'} across all submissions
+        </span>
+      </div>
+      <div className="space-y-3">
+        {extras.map((x) => <ExtraTaskCard key={x.key} data={x} />)}
+      </div>
+    </div>
+  );
+}
+
+function ExtraTaskCard({ data }) {
+  const { hasNumeric, hasStatus } = data._flags || {};
+  const [tab, setTab] = useState('summary'); // summary | employees | departments | trend
+  return (
+    <div className="rounded-lg border border-indigo-100 bg-white overflow-hidden">
+      <div className="px-4 py-3 bg-indigo-50/60 border-b border-indigo-100 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-sm font-semibold text-indigo-900">{data.label}</div>
+          {data.description && (
+            <div className="text-[11px] text-indigo-800/70">{data.description}</div>
+          )}
+          <div className="text-[10px] uppercase tracking-wide text-indigo-700 mt-0.5">
+            {EXTRA_LABEL[data.responseType] || data.responseType}
+            {' · '}
+            {data.submissionCount} submission{data.submissionCount === 1 ? '' : 's'}
+            {' · '}
+            {data.employeeCount} employee{data.employeeCount === 1 ? '' : 's'}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 text-xs">
+          {[
+            { id: 'summary',     label: 'Summary' },
+            { id: 'employees',   label: 'Top Employees' },
+            { id: 'departments', label: 'Departments' },
+            { id: 'trend',       label: 'Daily Trend' },
+          ].map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-2 py-1 rounded ${tab === t.id ? 'bg-white text-indigo-800 font-semibold border border-indigo-200' : 'text-indigo-700 hover:bg-white/70'}`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="p-4">
+        {tab === 'summary' && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+            {hasNumeric && (
+              <>
+                <MiniStat label="Total"   value={data.total} />
+                <MiniStat label="Average" value={data.average} />
+                <MiniStat label="Highest" value={data.highest} />
+                <MiniStat label="Lowest"  value={data.lowest} />
+              </>
+            )}
+            {hasStatus && (
+              <>
+                <MiniStat label="Done"    value={data.statusCounts.done || 0}    cls="text-green-700" />
+                <MiniStat label="Pending" value={data.statusCounts.pending || 0} cls="text-amber-700" />
+                <MiniStat label="Work N/A" value={data.statusCounts.work_not_available || 0} cls="text-slate-600" />
+                <MiniStat label="Completion %" value={`${data.completionPct}%`} cls="text-brand-700" />
+              </>
+            )}
+            {!hasNumeric && !hasStatus && (
+              <div className="col-span-4 text-xs italic text-slate-500">
+                Response type "none" — no numeric or status metric to aggregate.
+              </div>
+            )}
+          </div>
+        )}
+        {tab === 'employees' && (
+          <div className="overflow-x-auto">
+            <table className="table text-xs">
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Dept</th>
+                  <th>Submissions</th>
+                  {hasNumeric && <th>Total</th>}
+                  {hasStatus  && <th>Done</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {data.topEmployees.length === 0 ? (
+                  <tr><td colSpan="5" className="text-slate-500 italic">No submissions yet.</td></tr>
+                ) : data.topEmployees.map((e) => (
+                  <tr key={e.employeeId || e.name}>
+                    <td className="font-medium">{e.name}<div className="text-[10px] text-slate-400">{e.employeeId}</div></td>
+                    <td>{e.department}</td>
+                    <td>{e.count}</td>
+                    {hasNumeric && <td className="font-mono">{e.total}</td>}
+                    {hasStatus  && <td className="font-mono">{e.done}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {tab === 'departments' && (
+          <div className="overflow-x-auto">
+            <table className="table text-xs">
+              <thead>
+                <tr>
+                  <th>Department</th>
+                  <th>Submissions</th>
+                  {hasNumeric && <th>Total</th>}
+                  {hasStatus  && <th>Done</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {data.departmentSummary.length === 0 ? (
+                  <tr><td colSpan="4" className="text-slate-500 italic">No submissions yet.</td></tr>
+                ) : data.departmentSummary.map((d) => (
+                  <tr key={d.department}>
+                    <td className="font-medium">{d.department}</td>
+                    <td>{d.count}</td>
+                    {hasNumeric && <td className="font-mono">{d.total}</td>}
+                    {hasStatus  && <td className="font-mono">{d.done}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {tab === 'trend' && (
+          <div className="overflow-x-auto">
+            <table className="table text-xs">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Submissions</th>
+                  {hasNumeric && <th>Total</th>}
+                  {hasStatus  && <th>Done</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {data.dailyTrend.length === 0 ? (
+                  <tr><td colSpan="4" className="text-slate-500 italic">No submissions yet.</td></tr>
+                ) : data.dailyTrend.map((d) => (
+                  <tr key={d.date}>
+                    <td>{d.date}</td>
+                    <td>{d.count}</td>
+                    {hasNumeric && <td className="font-mono">{d.total}</td>}
+                    {hasStatus  && <td className="font-mono">{d.done}</td>}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const EXTRA_LABEL = {
+  none: 'Status only (None)',
+  number: 'Number',
+  status: 'Status',
+  number_status: 'Number + Status',
+};
+
+function MiniStat({ label, value, cls = 'text-slate-800' }) {
+  return (
+    <div className="border border-slate-200 rounded p-2">
+      <div className="text-[10px] uppercase text-slate-500">{label}</div>
+      <div className={`font-semibold ${cls}`}>{value ?? 0}</div>
+    </div>
+  );
+}
+
 function ExtraWorkSection({ extra, onDrill = () => {} }) {
   // Phase 30: extras have addedByEmployee=true on the taskRows projection.
   // Every card / row in this section drills into the same Breakdown

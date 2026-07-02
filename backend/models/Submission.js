@@ -233,6 +233,42 @@ const submissionSchema = new mongoose.Schema(
       default: [],
     },
 
+    /* ---- Phase 53: Extra Tasks ----
+       Per-submission ad-hoc tasks the employee added on top of the
+       template's predefined `customFields`.  Each row snapshots
+       label + description + responseType at submit time so historical
+       submissions keep rendering correctly even if the template's
+       extraTaskCatalog is later renamed or the employee-side wording
+       is edited.  Analytics groups across submissions by `key`.
+
+       Predefined tasks (customResponses) and extra tasks live in
+       distinct arrays so the HR review UI, template analytics, and
+       existing scoring / discipline / innovation flows never confuse
+       one for the other. */
+    extraTasks: {
+      type: [new mongoose.Schema(
+        {
+          key:          { type: String, required: true, trim: true },
+          label:        { type: String, required: true, trim: true },
+          description:  { type: String, default: '', trim: true },
+          responseType: {
+            type: String,
+            enum: ['none', 'number', 'status', 'number_status'],
+            default: 'none',
+          },
+          value:  { type: mongoose.Schema.Types.Mixed, default: '' },
+          status: {
+            type: String,
+            enum: ['', 'done', 'ongoing', 'pending', 'work_not_available'],
+            default: '',
+          },
+          remark: { type: String, default: '' },
+        },
+        { _id: false },
+      )],
+      default: [],
+    },
+
     /* ---- Product Sales sub-table ----
        Repeating rows for templates that declare customSections: ['productSales'].
        Each row snapshots the product + quantity master values at submit
