@@ -1,4 +1,5 @@
 const asyncHandler = require('express-async-handler');
+const mongoose = require('mongoose');
 const Leave = require('../models/Leave');
 const User = require('../models/User');
 const Department = require('../models/Department');
@@ -7,6 +8,44 @@ const { startOfDay, daysBetween, addDays, effectiveLeaveDays } = require('../uti
 const Holiday = require('../models/Holiday');
 const { logAudit } = require('../utils/audit');
 const notify = require('../services/notifyEvents');
+// Phase 54 -- supporting documents.  Never required; if the employee
+// sends `attachmentIds[]` we link matching orphan attachments to the
+// new leave.  Nothing else in the leave flow depends on this.
+const LeaveAttachment = require('../models/LeaveAttachment');
+
+/**
+ * Phase 54 -- attach metadata for a batch of leaves.  Returns a Map
+ * keyed by leave._id (as String) so callers can splice attachments
+ * into their response without extra loops.  Attachment BYTES are
+ * never returned here — only metadata.
+ */
+const _attachmentsForLeaves = async (leaveIds) => {
+  const map = new Map();
+  if (!Array.isArray(leaveIds) || leaveIds.length === 0) return map;
+  const rows = await LeaveAttachment.find({
+    leave: { $in: leaveIds },
+    deletedAt: { $in: [null, undefined] },
+  })
+    .populate('uploadedBy', 'name role employeeId')
+    .select('leave filename mimeType size status version uploadedBy createdAt')
+    .sort({ createdAt: 1 })
+    .lean();
+  for (const a of rows) {
+    const k = String(a.leave);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push({
+      _id: a._id,
+      filename: a.filename,
+      mimeType: a.mimeType,
+      size: a.size,
+      status: a.status,
+      version: a.version,
+      uploadedBy: a.uploadedBy,
+      createdAt: a.createdAt,
+    });
+  }
+  return map;
+};
 
 /**
  * Employee applies for a leave.
@@ -91,6 +130,32 @@ const apply = asyncHandler(async (req, res) => {
     paid: isPaidRequest,
   });
 
+  // Phase 54 -- link any orphan attachments the employee uploaded
+  // during the two-phase apply flow.  Silent no-op when the client
+  // didn't send any; strict ownership check on the update filter so
+  // one employee can never re-parent another's attachments.
+  const rawIds = Array.isArray(req.body?.attachmentIds) ? req.body.attachmentIds : [];
+  const attachmentIds = rawIds.filter((id) => mongoose.Types.ObjectId.isValid(id));
+  let linkedCount = 0;
+  if (attachmentIds.length > 0) {
+    try {
+      const r = await LeaveAttachment.updateMany(
+        {
+          _id: { $in: attachmentIds },
+          employee: req.user._id,
+          leave: null,
+        },
+        { $set: { leave: lv._id } },
+      );
+      linkedCount = r.modifiedCount || 0;
+    } catch (e) {
+      // Non-fatal: leave stays created even if the link step fails.
+      // The employee can re-upload from an HR-requested doc flow
+      // once we add that endpoint.
+      console.error('[leaveAttachments] link failed:', e.message);
+    }
+  }
+
   // Phase 45 -- HOD informational copy DISABLED (reclassified as noise;
   // HR + Super Admin still get the canonical "leave applied" alert
   // below, and the HOD sees pending leaves in their Leave panel).
@@ -98,15 +163,31 @@ const apply = asyncHandler(async (req, res) => {
   // Global notification: HR + Super Admin see every new leave request.
   notify.notifyLeaveApplied({ leave: lv, employee: req.user });
 
-  res.status(201).json(lv);
+  // Enrich the response with attachment metadata so the client can
+  // update its list without a second round-trip.
+  const attMap = await _attachmentsForLeaves([lv._id]);
+  const withAttachments = {
+    ...lv.toObject(),
+    attachments: attMap.get(String(lv._id)) || [],
+    attachmentsLinked: linkedCount,
+  };
+  res.status(201).json(withAttachments);
 });
 
 /**
  * Employee lists own leaves.
  */
 const myLeaves = asyncHandler(async (req, res) => {
-  const items = await Leave.find({ employee: req.user._id }).sort({ createdAt: -1 });
-  res.json(items);
+  const items = await Leave.find({ employee: req.user._id }).sort({ createdAt: -1 }).lean();
+  // Phase 54 -- splice attachment metadata into each leave so the
+  // history view can render "Supporting Documents" without a second
+  // fetch per row.
+  const attMap = await _attachmentsForLeaves(items.map((i) => i._id));
+  const enriched = items.map((i) => ({
+    ...i,
+    attachments: attMap.get(String(i._id)) || [],
+  }));
+  res.json(enriched);
 });
 
 /**
@@ -120,7 +201,8 @@ const listAll = asyncHandler(async (req, res) => {
 
   let items = await Leave.find(where)
     .populate('employee', 'name employeeId email role')
-    .sort({ createdAt: -1 });
+    .sort({ createdAt: -1 })
+    .lean();
 
   // RBAC-aware scoping:
   //   - HR: only sees employee-role leaves (cannot decide HR leaves)
@@ -135,7 +217,13 @@ const listAll = asyncHandler(async (req, res) => {
   }
   // audience omitted (or 'all') for Super Admin -> return everything
 
-  res.json(items);
+  // Phase 54 -- attach supporting-document metadata (bytes NOT included).
+  const attMap = await _attachmentsForLeaves(items.map((i) => i._id));
+  const enriched = items.map((i) => ({
+    ...i,
+    attachments: attMap.get(String(i._id)) || [],
+  }));
+  res.json(enriched);
 });
 
 /**

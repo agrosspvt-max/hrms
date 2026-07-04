@@ -4,8 +4,16 @@ import Modal from '../../components/Modal.jsx';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { fmtDate, errMsg } from '../../utils/helpers';
+import { fmtDate, errMsg, authUrl } from '../../utils/helpers';
 import { subscribe } from '../../realtime';
+
+// Phase 54 -- reused inside LeaveDetailsModal to display supporting docs.
+const fmtSize = (n) => {
+  if (!Number.isFinite(n)) return '';
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024)        return `${(n / 1024).toFixed(0)} KB`;
+  return `${n} B`;
+};
 
 export default function HRLeaves() {
   const { user } = useAuth();
@@ -146,6 +154,19 @@ export default function HRLeaves() {
                     ) : (
                       <span className="text-slate-300">—</span>
                     )}
+                    {/* Phase 54 -- inline paperclip when supporting docs
+                        exist so HR can spot leave requests that carry
+                        attachments at a glance. */}
+                    {Array.isArray(lv.attachments) && lv.attachments.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setViewing(lv)}
+                        className="ml-2 badge bg-blue-50 text-blue-700 text-[10px]"
+                        title={`${lv.attachments.length} supporting document${lv.attachments.length === 1 ? '' : 's'}`}
+                      >
+                        📎 {lv.attachments.length}
+                      </button>
+                    )}
                   </td>
                   <td>
                     {lv.status === 'pending' && <span className="badge-amber">Pending</span>}
@@ -276,6 +297,54 @@ function LeaveDetailsModal({ lv, onClose }) {
             )}
           </div>
         )}
+
+        {/* Phase 54 -- Supporting Documents.  Available before, during
+            and after decision (approve / reject / revoke) so HR
+            history stays intact.  Reviewer sees file name, mime type,
+            size, uploader + upload time and can View (inline) or
+            Download.  PDFs / images render inline in the browser
+            because the /inline endpoint sets Content-Disposition:
+            inline; the router hands the correct Content-Type header. */}
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500 mb-1">
+            Supporting Documents {Array.isArray(lv.attachments) && lv.attachments.length > 0 ? `(${lv.attachments.length})` : ''}
+          </div>
+          {!Array.isArray(lv.attachments) || lv.attachments.length === 0 ? (
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-500 italic">
+              No supporting documents attached to this request.
+            </div>
+          ) : (
+            <ul className="space-y-1.5">
+              {lv.attachments.map((a) => (
+                <li key={a._id} className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded px-3 py-2 text-xs">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-medium text-slate-800 truncate">{a.filename}</div>
+                    <div className="text-[10px] text-slate-500">
+                      {a.mimeType} · {fmtSize(a.size)}
+                      {' · '}
+                      Uploaded by {a.uploadedBy?.name || 'employee'}
+                      {a.uploadedBy?.role && ` (${a.uploadedBy.role === 'super_admin' ? 'Super Admin' : a.uploadedBy.role.toUpperCase()})`}
+                      {' · '}
+                      {new Date(a.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <a
+                      className="btn-ghost !py-0.5 !text-[10px]"
+                      href={authUrl(`/leaves/attachments/${a._id}/inline`)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >View</a>
+                    <a
+                      className="btn-ghost !py-0.5 !text-[10px]"
+                      href={authUrl(`/leaves/attachments/${a._id}/download`)}
+                    >Download</a>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
 
         {lv.decidedAt && (
           <div className="text-[11px] text-slate-500">
