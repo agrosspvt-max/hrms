@@ -325,13 +325,13 @@ function AttachmentList({ attachments = [] }) {
             <div className="flex items-center gap-2 shrink-0">
               <a
                 className="btn-ghost !py-0.5 !text-[10px]"
-                href={authUrl(`/leaves/attachments/${a._id}/inline`)}
+                href={authUrl(`/api/leaves/attachments/${a._id}/inline`)}
                 target="_blank"
                 rel="noopener noreferrer"
               >View</a>
               <a
                 className="btn-ghost !py-0.5 !text-[10px]"
-                href={authUrl(`/leaves/attachments/${a._id}/download`)}
+                href={authUrl(`/api/leaves/attachments/${a._id}/download`)}
               >Download</a>
             </div>
           </li>

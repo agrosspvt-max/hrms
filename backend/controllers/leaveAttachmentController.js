@@ -124,13 +124,65 @@ const listForLeave = asyncHandler(async (req, res) => {
 
 /* -------------------------------------------------------------------- */
 /* Stream — inline (browser preview) or attachment (download)           */
+/*                                                                      */
+/* Phase 54.6 bug fix.                                                  */
+/*                                                                      */
+/* Root cause of "Failed to load PDF document" / ERR_INVALID_RESPONSE:  */
+/*   Previously this handler used `.select('+data').lean()`.  Under     */
+/*   Mongoose 8 + mongodb driver 6, `.lean()` skips the cast layer and  */
+/*   returns the Buffer field as a `mongodb.Binary` object.  Passing    */
+/*   that object to `res.end()` throws                                  */
+/*     ERR_INVALID_ARG_TYPE: The "chunk" argument must be of type       */
+/*     string or an instance of Buffer or Uint8Array.  Received an      */
+/*     instance of Binary                                               */
+/*   after Content-Length has already been sent, which the browser      */
+/*   surfaces as a corrupt PDF (View) or ERR_INVALID_RESPONSE           */
+/*   (Download).                                                        */
+/*                                                                      */
+/* Fix:                                                                 */
+/*   1. Drop `.lean()`.  Hydrated docs run Mongoose's cast layer, so    */
+/*      `data` becomes a real Node Buffer.                              */
+/*   2. Belt-and-suspenders: `_asBuffer(x)` coerces whatever we got     */
+/*      into a real Buffer, so if a future driver / Mongoose upgrade    */
+/*      changes the default shape (or someone reintroduces `.lean()`),  */
+/*      the endpoint still writes bytes correctly.                      */
+/*   3. Use `bytes.length` for Content-Length so the header can never   */
+/*      disagree with the body — closes the door on ERR_INVALID_RESPONSE*/
+/*      entirely.                                                       */
 /* -------------------------------------------------------------------- */
+
+/**
+ * _asBuffer — normalise any of the shapes Mongoose / MongoDB might
+ * return for a Buffer-typed field into a real Node Buffer.
+ *   - Node Buffer (hydrated read, our happy path)   -> returned as-is
+ *   - mongodb.Binary (raw .lean() output)           -> unwrap .buffer
+ *   - Uint8Array / ArrayBuffer / typed array        -> Buffer.from(...)
+ *   - null / undefined                              -> null
+ * Never throws; returns null when the input has no representable bytes.
+ */
+const _asBuffer = (d) => {
+  if (d == null) return null;
+  if (Buffer.isBuffer(d)) return d;
+  // mongodb.Binary: `.buffer` is a real Node Buffer since driver 4.x.
+  if (d.buffer && Buffer.isBuffer(d.buffer)) return d.buffer;
+  // Some driver versions expose the raw bytes via `.value()`.
+  if (typeof d.value === 'function') {
+    const v = d.value();
+    if (Buffer.isBuffer(v)) return v;
+    if (v && (v.byteLength != null || Array.isArray(v))) return Buffer.from(v);
+  }
+  // Uint8Array / ArrayBuffer / plain array of bytes.
+  if (d.byteLength != null || Array.isArray(d)) return Buffer.from(d);
+  return null;
+};
+
 const _stream = (disposition) => asyncHandler(async (req, res) => {
   const { id } = req.params;
   if (!mongoose.Types.ObjectId.isValid(id)) {
     res.status(400); throw new Error('Invalid attachment id.');
   }
-  const att = await LeaveAttachment.findById(id).select('+data').lean();
+  // NB: no `.lean()` here — see the block comment above for why.
+  const att = await LeaveAttachment.findById(id).select('+data');
   if (!att || att.deletedAt) { res.status(404); throw new Error('Attachment not found.'); }
   if (!_canRead(att, req.user)) { res.status(403); throw new Error('Forbidden.'); }
 
@@ -138,10 +190,18 @@ const _stream = (disposition) => asyncHandler(async (req, res) => {
     // Placeholder for future cloud storage: today only 'db' is used.
     res.status(501); throw new Error(`Storage provider "${att.storageProvider}" not supported.`);
   }
-  if (!att.data) { res.status(410); throw new Error('Attachment data missing.'); }
+
+  // Coerce to a canonical Buffer regardless of what Mongoose / the
+  // driver handed us.  Any mismatch between headers and body is now
+  // impossible because Content-Length is derived from THIS variable,
+  // and the same variable is what we hand to res.end().
+  const bytes = _asBuffer(att.data);
+  if (!bytes || bytes.length === 0) {
+    res.status(410); throw new Error('Attachment data missing.');
+  }
 
   res.setHeader('Content-Type', att.mimeType || 'application/octet-stream');
-  res.setHeader('Content-Length', att.size || att.data.length);
+  res.setHeader('Content-Length', bytes.length);
   // RFC 5987-style encoded filename so unicode names survive downloads.
   const safeName = String(att.filename || 'attachment')
     .replace(/[^\w. -]+/g, '_');
@@ -151,7 +211,7 @@ const _stream = (disposition) => asyncHandler(async (req, res) => {
   );
   // No-cache so a redownload after a soft-delete doesn't leak stale bytes.
   res.setHeader('Cache-Control', 'private, no-store');
-  res.end(att.data);
+  res.end(bytes);
 });
 const download = _stream('attachment');
 const inline   = _stream('inline');
