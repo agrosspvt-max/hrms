@@ -173,7 +173,15 @@ export default function TemplateAnalytics() {
           <SubTemplatesSection subTemplates={data.subTemplates || []} />
           <FieldsSection fields={data.fields || []} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
           <DropdownsSection dropdowns={data.dropdowns || []} />
-          <TasksSection tasks={data.tasks || []} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
+          {/* Phase 55 -- Point analytics are Task-template-only.  Custom
+              templates ride the same TasksSection component but the
+              new Applicable / Total Points / Earned Points columns
+              stay hidden for them. */}
+          <TasksSection
+            tasks={data.tasks || []}
+            onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })}
+            showPoints={data.template?.templateType === 'task'}
+          />
           <EmployeePerformanceSection perf={data.employeePerformance || {}} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
           <ExtraWorkSection extra={data.extraWork || {}} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
           {/* Phase 53 -- Extra Task Analytics.  Rendered as its own
@@ -285,8 +293,40 @@ function OverviewCards({ data, onDrill = () => {} }) {
   // taskDone/taskPending/taskWNA project taskRows by status; submissions
   // projects submissionRows; submissionRate/completionRate use the same
   // submissionRows and let the modal contextualise the rate.
+  //
+  // Phase 55 -- for Task templates, surface point-based summary cards
+  // (Total Available Points / Total Earned Points / Overall Score %)
+  // right at the top so HR sees the point picture before the raw
+  // status counts.  Custom templates never render these because they
+  // have no per-task point values.
+  const isTaskTpl = data.template?.templateType === 'task';
   return (
     <div>
+      {isTaskTpl && (
+        <div className="mb-3">
+          <div className="text-sm font-semibold text-slate-800 mb-2">Point Summary</div>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <StatCard
+              label="Total Available Points"
+              value={o.totalAvailablePoints ?? 0}
+              sub="Excludes Work N/A"
+              accent="brand"
+            />
+            <StatCard
+              label="Total Earned Points"
+              value={o.totalEarnedPoints ?? 0}
+              sub="Sum of Done points"
+              accent="green"
+            />
+            <StatCard
+              label="Overall Score %"
+              value={`${o.overallScorePct ?? 0}%`}
+              sub="Earned / Available"
+              accent={(o.overallScorePct ?? 0) >= 80 ? 'green' : (o.overallScorePct ?? 0) >= 50 ? 'amber' : 'red'}
+            />
+          </div>
+        </div>
+      )}
       <div className="text-sm font-semibold text-slate-800 mb-2">Overview</div>
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
         <ClickableCard onClick={() => onDrill('ta_submissions', 'Submissions')}>
@@ -298,11 +338,25 @@ function OverviewCards({ data, onDrill = () => {} }) {
         <ClickableCard onClick={() => onDrill('ta_completionRate', 'Completion Rate')}>
           <StatCard label="Completion Rate"    value={`${o.completionRate ?? 0}%`} accent={o.completionRate >= 80 ? 'green' : 'amber'} />
         </ClickableCard>
+        {/* Phase 55 -- Done Rate + Pending Rate now use Applicable
+            (Done+Ongoing+Pending) as the denominator; Work N/A no
+            longer inflates or deflates completion.  The `sub` label
+            spells that out so HR sees why the numbers may have moved. */}
         <ClickableCard onClick={() => onDrill('ta_doneRate', 'Done Rate', { statuses: ['done', 'ongoing'] })}>
-          <StatCard label="Done Rate"          value={`${o.doneRate ?? 0}%`} accent="green" />
+          <StatCard
+            label="Done Rate"
+            value={`${o.doneRate ?? 0}%`}
+            sub={o.totalTasksApplicable != null ? `of ${o.totalTasksApplicable} applicable` : undefined}
+            accent="green"
+          />
         </ClickableCard>
         <ClickableCard onClick={() => onDrill('ta_pendingRate', 'Pending Rate', { statuses: ['pending'] })}>
-          <StatCard label="Pending Rate"       value={`${o.pendingRate ?? 0}%`} accent={(o.pendingRate ?? 0) <= 20 ? 'green' : 'red'} />
+          <StatCard
+            label="Pending Rate"
+            value={`${o.pendingRate ?? 0}%`}
+            sub={o.totalTasksApplicable != null ? `of ${o.totalTasksApplicable} applicable` : undefined}
+            accent={(o.pendingRate ?? 0) <= 20 ? 'green' : 'red'}
+          />
         </ClickableCard>
         <ClickableCard onClick={() => onDrill('ta_wnaRate', 'Work N/A Rate', { statuses: ['work_not_available'] })}>
           <StatCard label="Work N/A Rate"      value={`${o.wnaRate ?? 0}%`} accent="amber" />
@@ -523,7 +577,7 @@ function Leaderboard({ rows, valueKey, suffix = '', onRowClick }) {
 /* =================================================================== */
 /* TASK STATUS                                                          */
 /* =================================================================== */
-function TasksSection({ tasks, onDrill = () => {} }) {
+function TasksSection({ tasks, onDrill = () => {}, showPoints = false }) {
   if (tasks.length === 0) {
     return null;
   }
@@ -531,6 +585,9 @@ function TasksSection({ tasks, onDrill = () => {} }) {
   // Breakdown modal filtered by (title + status).  Title cell drills
   // into the union of all statuses for that task.
   const drillTask = (title, statuses, label) => onDrill('ta_task', label, { taskTitle: title, statuses });
+  // Phase 55 -- Applicable / Total Points / Earned Points columns render
+  // only for Task templates.  Custom-template analytics ride the same
+  // component but never carry point data, so we skip those columns.
   return (
     <div>
       <div className="text-sm font-semibold text-slate-800 mb-2">Task Status</div>
@@ -542,6 +599,9 @@ function TasksSection({ tasks, onDrill = () => {} }) {
               <th className="text-right">Done</th>
               <th className="text-right">Pending</th>
               <th className="text-right">Work N/A</th>
+              {showPoints && <th className="text-right">Applicable</th>}
+              {showPoints && <th className="text-right">Total Points</th>}
+              {showPoints && <th className="text-right">Earned Points</th>}
               <th className="text-right">Done %</th>
               <th className="text-right">Pending %</th>
             </tr>
@@ -552,6 +612,11 @@ function TasksSection({ tasks, onDrill = () => {} }) {
                 <td className="font-medium text-brand-700 cursor-pointer hover:underline"
                   onClick={() => drillTask(t.title, ['done', 'ongoing', 'pending', 'work_not_available'], `${t.title} — All`)}>
                   {t.title}
+                  {showPoints && t.points > 0 && (
+                    <span className="ml-1 text-[10px] text-slate-400 font-normal">
+                      ({t.points} pt{t.points === 1 ? '' : 's'})
+                    </span>
+                  )}
                 </td>
                 <td className="text-right text-green-700 cursor-pointer hover:underline"
                   onClick={() => drillTask(t.title, ['done', 'ongoing'], `${t.title} — Done`)}>
@@ -565,6 +630,20 @@ function TasksSection({ tasks, onDrill = () => {} }) {
                   onClick={() => drillTask(t.title, ['work_not_available'], `${t.title} — Work N/A`)}>
                   {t.counts.wna}
                 </td>
+                {/* Phase 55 -- Applicable = Done + Ongoing + Pending.
+                    Excludes Work N/A so the denominator for Done % and
+                    Pending % matches HR's mental model. */}
+                {showPoints && (
+                  <td className="text-right font-medium text-slate-700">
+                    {t.applicable ?? (t.counts.done + t.counts.ongoing + t.counts.pending)}
+                  </td>
+                )}
+                {showPoints && (
+                  <td className="text-right font-mono">{t.totalPoints ?? 0}</td>
+                )}
+                {showPoints && (
+                  <td className="text-right font-mono text-green-700">{t.earnedPoints ?? 0}</td>
+                )}
                 <td className="text-right">{t.donePct}%</td>
                 <td className="text-right">{t.pendingPct}%</td>
               </tr>

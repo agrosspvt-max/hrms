@@ -246,6 +246,27 @@ const generate = asyncHandler(async (req, res) => {
 
   // Aggregate task-status counts across every submission's tasks[].
   let totalTasksDone = 0, totalTasksPending = 0, totalTasksWNA = 0, totalTasksOngoing = 0;
+  // Phase 55 — Task-template point analytics.  Only accumulated inside
+  // the `s.tasks` loop below, so custom-template analytics fed through
+  // the customResponses branch is untouched (they don't carry points).
+  //   totalTasksAvailablePoints -> sum of task.points for Done+Ongoing+Pending
+  //   totalTasksEarnedPoints    -> sum of task.points for Done+Ongoing
+  //   Work N/A never contributes to either.
+  let totalTasksAvailablePoints = 0, totalTasksEarnedPoints = 0;
+  // Backfill map for legacy submissions where `points` was defaulted
+  // to 0 on the snapshot.  Falls back to the CURRENT template
+  // definition's points-by-title so old data still scores.
+  const tplPointsByTitle = new Map(
+    (tpl.tasks || []).map((t) => [String(t.title || '').trim() || '(untitled)', Number(t.points) || 0]),
+  );
+  const _taskPoints = (t, key) => {
+    // Prefer the snapshotted value (locked at seed time); fall back to
+    // the current template definition when a legacy submission stored
+    // 0/undefined.  Never negative.
+    const snap = Number(t?.points);
+    if (Number.isFinite(snap) && snap > 0) return snap;
+    return Number(tplPointsByTitle.get(key)) || 0;
+  };
   let extraTasksDone = 0, extraTasksPending = 0, extraTasksWNA = 0;
   const taskAgg = new Map();      // taskTitle -> { done, pending, wna }
   const extraByTitle = new Map(); // extra-work title -> { done, pending, wna, count }
@@ -271,12 +292,41 @@ const generate = asyncHandler(async (req, res) => {
         else if (t.status === 'pending') { b.pending += 1; extraTasksPending += 1; }
         else if (t.status === 'work_not_available') { b.wna += 1; extraTasksWNA += 1; }
       } else {
-        if (!taskAgg.has(key)) taskAgg.set(key, { title: key, done: 0, pending: 0, wna: 0, ongoing: 0 });
+        if (!taskAgg.has(key)) taskAgg.set(key, {
+          title: key, done: 0, pending: 0, wna: 0, ongoing: 0,
+          // Phase 55 -- point totals per task title.  Sum of points on
+          // Done+Ongoing rows becomes earnedPoints; sum on Done+Ongoing
+          // +Pending becomes totalPoints (i.e. "assigned but applicable").
+          earnedPoints: 0, totalPoints: 0,
+          // Snapshot the per-task point value (from the first submission
+          // that carries it, or the template definition) so the UI can
+          // show "10 pts / task" without a second lookup.
+          points: 0,
+        });
         const b = taskAgg.get(key);
-        if (t.status === 'done') { b.done += 1; totalTasksDone += 1; }
-        else if (t.status === 'ongoing') { b.ongoing += 1; totalTasksOngoing += 1; }
-        else if (t.status === 'pending') { b.pending += 1; totalTasksPending += 1; }
-        else if (t.status === 'work_not_available') { b.wna += 1; totalTasksWNA += 1; }
+        // Phase 55 -- points snapshot + per-status accumulation.  WNA
+        // never contributes to either earned or total points.
+        const p = _taskPoints(t, key);
+        if (p > 0 && !b.points) b.points = p;
+        if (t.status === 'done') {
+          b.done += 1; totalTasksDone += 1;
+          b.earnedPoints += p; b.totalPoints += p;
+          totalTasksEarnedPoints += p; totalTasksAvailablePoints += p;
+        } else if (t.status === 'ongoing') {
+          // 'ongoing' is operationally identical to 'done' per the
+          // Submission model comment — earns points, counts as applicable.
+          b.ongoing += 1; totalTasksOngoing += 1;
+          b.earnedPoints += p; b.totalPoints += p;
+          totalTasksEarnedPoints += p; totalTasksAvailablePoints += p;
+        } else if (t.status === 'pending') {
+          b.pending += 1; totalTasksPending += 1;
+          b.totalPoints += p;
+          totalTasksAvailablePoints += p;
+        } else if (t.status === 'work_not_available') {
+          // Explicitly no point contribution — the task was N/A, so it
+          // never "existed" for that employee.
+          b.wna += 1; totalTasksWNA += 1;
+        }
       }
     }
     // Phase 14: per-customField status aggregation.  Each
@@ -286,7 +336,14 @@ const generate = asyncHandler(async (req, res) => {
       const def = statusFieldByKey.get(r.key);
       if (!def) continue;
       const key = (def.label || def.key || '').trim() || '(untitled)';
-      if (!taskAgg.has(key)) taskAgg.set(key, { title: key, done: 0, pending: 0, wna: 0, ongoing: 0 });
+      // Phase 55 -- custom-field rows go through the same aggregate so
+      // the existing custom-template UI keeps working.  Points always
+      // stay at 0 for custom fields — the spec explicitly limits point
+      // analytics to Task templates.
+      if (!taskAgg.has(key)) taskAgg.set(key, {
+        title: key, done: 0, pending: 0, wna: 0, ongoing: 0,
+        earnedPoints: 0, totalPoints: 0, points: 0,
+      });
       const b = taskAgg.get(key);
       if (r.status === 'done')                    { b.done += 1; totalTasksDone += 1; }
       else if (r.status === 'ongoing')            { b.ongoing += 1; totalTasksOngoing += 1; }
@@ -295,15 +352,33 @@ const generate = asyncHandler(async (req, res) => {
     }
   }
   const totalTaskRows = totalTasksDone + totalTasksOngoing + totalTasksPending + totalTasksWNA;
+  // Phase 55 -- corrected denominator.  Applicable = everything except
+  // Work N/A, because a WNA task never "existed" for that employee and
+  // should not inflate or deflate the completion picture.
+  const applicableTaskRows = totalTasksDone + totalTasksOngoing + totalTasksPending;
   const overview = {
     totalSubmissions: submittedCount,
     generatedSubmissions: generatedCount,
     submissionRate,
     totalTasksDone, totalTasksOngoing, totalTasksPending, totalTasksWNA,
-    doneRate:    safePct(totalTasksDone + totalTasksOngoing, totalTaskRows),
-    pendingRate: safePct(totalTasksPending, totalTaskRows),
+    // Phase 55 -- new: applicable count exposed at overview level.
+    totalTasksApplicable: applicableTaskRows,
+    // Phase 55 -- Done % and Pending % now use the Applicable denominator.
+    // Work N/A gets its own rate against the total-with-WNA denominator so
+    // HR can still see how often tasks were marked N/A.
+    doneRate:    safePct(totalTasksDone + totalTasksOngoing, applicableTaskRows),
+    pendingRate: safePct(totalTasksPending, applicableTaskRows),
     wnaRate:     safePct(totalTasksWNA, totalTaskRows),
+    // Phase 55 -- point totals for the Task-template summary cards.
+    //   Available = sum of points on Done+Ongoing+Pending rows.
+    //   Earned    = sum of points on Done+Ongoing rows.
+    //   Overall Score % = Earned / Available.
+    // WNA excluded from both numerator and denominator.
+    totalAvailablePoints: totalTasksAvailablePoints,
+    totalEarnedPoints:    totalTasksEarnedPoints,
+    overallScorePct:      safePct(totalTasksEarnedPoints, totalTasksAvailablePoints),
     // Work-only completion (matches Phase 6 reading of earned/total).
+    // Retained for backward compat with any consumer that reads it.
     completionRate: (() => {
       let e = 0, t = 0;
       for (const s of subs) { e += Number(s.earnedPoints) || 0; t += Number(s.totalPoints) || 0; }
@@ -468,11 +543,26 @@ const generate = asyncHandler(async (req, res) => {
    * ================================================================= */
   const tasks = [...taskAgg.values()].map((t) => {
     const total = t.done + t.ongoing + t.pending + t.wna;
+    // Phase 55 -- Applicable = Done + Ongoing + Pending.  WNA is
+    // treated as "task didn't exist for this employee" and is excluded
+    // from Done % and Pending %.  It IS kept in the Work N/A % denom
+    // so HR can still see the raw incidence rate.
+    const applicable = t.done + t.ongoing + t.pending;
     return {
       title: t.title,
       counts: t,
-      donePct:    safePct(t.done + t.ongoing, total),
-      pendingPct: safePct(t.pending, total),
+      // Phase 55 -- expose applicable at the row level for the frontend.
+      applicable,
+      // Phase 55 -- per-task point aggregates (0 for custom-template
+      // rows, which don't have per-task points).
+      points:        t.points,
+      earnedPoints:  t.earnedPoints,
+      totalPoints:   t.totalPoints,
+      // Phase 55 -- percentages now use the corrected Applicable denom.
+      // WNA % keeps the total-with-WNA denominator so it reads as "of
+      // all times this task was submitted, how often was it N/A".
+      donePct:    safePct(t.done + t.ongoing, applicable),
+      pendingPct: safePct(t.pending, applicable),
       wnaPct:     safePct(t.wna, total),
     };
   }).sort((a, b) => (b.counts.done + b.counts.pending + b.counts.wna) - (a.counts.done + a.counts.pending + a.counts.wna));
