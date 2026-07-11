@@ -83,6 +83,11 @@ export default function Performance() {
   // pendency / completion drill state so the two flows can't collide --
   // the calling breakdown function projects rows differently per metric.
   const [callingDrill, setCallingDrill] = useState(null); // { metricId, title }
+  // Phase 56 -- Calling-tab Employee dropdown is restricted to employees
+  // with actual calling activity (submitted a report in range OR are
+  // assigned to a calling template).  Refetched on every time-period
+  // change so the roster tracks the visible period.
+  const [callingRoster, setCallingRoster] = useState([]);
 
   useEffect(() => {
     // Phase 23.2: the /employees endpoint is HR-only (authorize('hr')),
@@ -128,6 +133,20 @@ export default function Performance() {
       .catch(() => setLoading(false));
   }, [mode, range, from, to, department, designation, employee, templateType, recurrence, includeTest]);
 
+  // Phase 56 -- refetch the calling-mode roster whenever the visible
+  // period changes.  Not tied to `employee` so a selection never
+  // "clips" the roster to just that one person.  Only fires on the
+  // Calling tab; the other modes keep using opts.employees.
+  useEffect(() => {
+    if (mode !== 'calling') return;
+    const params = {};
+    if (range === 'custom') { if (!from || !to) return; params.from = from; params.to = to; }
+    else params.range = range;
+    api.get('/dashboard/calling/roster', { params })
+      .then(({ data }) => setCallingRoster(Array.isArray(data) ? data : []))
+      .catch(() => setCallingRoster([]));
+  }, [mode, range, from, to]);
+
   const openDrill = (metricId, title) => setDrill({ metricId, title });
 
   return (
@@ -146,7 +165,14 @@ export default function Performance() {
         {[['pendency', 'Pendency Review'], ['completion', 'Completion Review'], ['calling', 'Calling Analytics']]
           .filter(([k]) => allowedModes.includes(k))
           .map(([k, label]) => (
-          <button key={k} onClick={() => { setMode(k); setData(null); }}
+          <button key={k} onClick={() => {
+              setMode(k);
+              setData(null);
+              // Phase 56 -- clear filters that don't exist on the
+              // Calling tab so a stale department / non-calling employee
+              // selection doesn't silently narrow the calling view.
+              if (k === 'calling') { setDepartment(''); setEmployee(''); }
+            }}
             className={`px-5 py-2 text-sm font-medium rounded-lg transition ${mode === k ? 'bg-white shadow text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
             {label}
           </button>
@@ -169,7 +195,11 @@ export default function Performance() {
           <div><label className="label">From</label><input className="input max-w-[150px]" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><label className="label">To</label><input className="input max-w-[150px]" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></div>
         </>)}
-        {!isHOD && (
+        {/* Phase 56 -- Calling tab hides Department entirely (calling
+            work is its own operational workflow, not department-scoped)
+            and swaps the Employee dropdown to a roster of only those
+            with actual calling activity. */}
+        {!isHOD && mode !== 'calling' && (
           <div className="min-w-[180px]"><label className="label">Department</label>
             <SearchableSelect
               value={department}
@@ -195,11 +225,13 @@ export default function Performance() {
           <SearchableSelect
             value={employee}
             onChange={setEmployee}
-            options={opts.employees}
+            options={mode === 'calling' ? callingRoster : opts.employees}
             getValue={(e) => e._id}
             getLabel={(e) => e.name + (e.employeeId ? ` (${e.employeeId})` : '')}
             getSearchText={(e) => `${e.name} ${e.employeeId || ''} ${e.email || ''}`}
-            placeholder="All employees"
+            placeholder={mode === 'calling'
+              ? (callingRoster.length === 0 ? 'No calling activity in range' : 'All calling employees')
+              : 'All employees'}
           />
         </div>
         <div><label className="label">Template type</label>

@@ -58,13 +58,34 @@ export default function TemplateAnalytics() {
     api.get('/employees', { params: { status: 'active', role: 'employee' } }).then((r) => setEmployees(r.data || [])).catch(() => setEmployees([]));
   }, []);
 
+  // Phase 56 -- restricted Employee dropdown: refetch the assigned roster
+  // whenever the selected template changes, so the dropdown always
+  // reflects "employees who were assigned this template".  The
+  // previously-selected employee is cleared if they don't belong to
+  // the new template's roster.
+  const [templateRoster, setTemplateRoster] = useState([]);
+  useEffect(() => {
+    if (!templateId) { setTemplateRoster([]); return; }
+    api.get(`/template-analytics/${templateId}/assigned-employees`)
+      .then(({ data }) => {
+        const roster = Array.isArray(data) ? data : [];
+        setTemplateRoster(roster);
+        // If the currently selected employee isn't in the new roster,
+        // drop the filter so the user isn't looking at an empty view.
+        setEmployee((cur) => (cur && !roster.some((r) => String(r._id) === String(cur)) ? '' : cur));
+      })
+      .catch(() => setTemplateRoster([]));
+  }, [templateId]);
+
   // Fetch payload when filters change.
   useEffect(() => {
     if (!templateId) { setData(null); setLoading(false); return; }
     const params = {};
     if (range === 'custom') { if (!from || !to) return; params.from = from; params.to = to; params.range = 'custom'; }
     else params.range = range;
-    if (department) params.department = department;
+    // Phase 56 -- Department filter was removed from this page (the
+    // page already represents ONE template).  Kept the param off the
+    // request so the backend response reflects the full template scope.
     if (employee)   params.employee = employee;
     if (includeTest) params.includeTest = 'true';
     setLoading(true);
@@ -124,27 +145,38 @@ export default function TemplateAnalytics() {
           <div><label className="label">From</label><input className="input max-w-[150px]" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><label className="label">To</label><input className="input max-w-[150px]" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></div>
         </>)}
-        <div className="min-w-[200px]">
-          <label className="label">Department</label>
+        {/* Phase 56 -- The Analytics page already scopes to ONE template,
+            so a Department filter has no meaning at this level.  Replace
+            it with a Template selector so HR can switch between
+            templates without going back to the picker. */}
+        <div className="min-w-[240px]">
+          <label className="label">Template</label>
           <SearchableSelect
-            value={department}
-            onChange={setDepartment}
-            options={departments}
-            getValue={(d) => d._id}
-            getLabel={(d) => d.name}
-            placeholder="All departments"
+            value={templateId}
+            onChange={(next) => { if (next && String(next) !== String(templateId)) navigate(`/template-analytics/${next}`); }}
+            options={templates}
+            getValue={(t) => t._id}
+            getLabel={(t) => t.analyticsName || t.title || '(untitled)'}
+            getSearchText={(t) => `${t.analyticsName || ''} ${t.title || ''}`}
+            placeholder="Pick a template"
           />
         </div>
+        {/* Phase 56 -- Employee dropdown restricted to employees actually
+            assigned this template.  Refreshes whenever the template
+            changes; a stale selection auto-clears if the new template's
+            roster doesn't include them. */}
         <div className="min-w-[220px]">
           <label className="label">Employee</label>
           <SearchableSelect
             value={employee}
             onChange={setEmployee}
-            options={employees}
+            options={templateRoster}
             getValue={(e) => e._id}
             getLabel={(e) => `${e.name} (${e.employeeId || ''})`}
-            getSearchText={(e) => `${e.name} ${e.employeeId || ''} ${e.email || ''}`}
-            placeholder="All employees"
+            getSearchText={(e) => `${e.name} ${e.employeeId || ''}`}
+            placeholder={templateRoster.length === 0
+              ? 'No assignees on this template'
+              : `All assigned (${templateRoster.length})`}
           />
         </div>
         {(user?.role === 'hr' || user?.role === 'super_admin') && (

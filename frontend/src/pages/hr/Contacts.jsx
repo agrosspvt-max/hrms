@@ -492,16 +492,61 @@ function ContactModal({ modal, employees, existingLinkedIds, onCancel, onSave })
           <div>
             <label className="label">Search employee (name, ID, department, designation)</label>
             <input className="input" placeholder="Start typing…" value={empSearch} onChange={(e) => setEmpSearch(e.target.value)} />
+            {/* Phase 56 -- results were previously hidden inside a native
+                <select> that only reactively filters when clicked, so
+                typing looked like "nothing happened".  Now results
+                render as a live scrollable list right below the search
+                input: matches update on every keystroke, clearing the
+                search restores the full roster, and clicking a row
+                populates linkedEmployee exactly like before. */}
+            <div className="text-[11px] text-slate-500 mt-1">
+              {empSearch
+                ? `${employeeOptions.length} match${employeeOptions.length === 1 ? '' : 'es'}`
+                : `${employeeOptions.length} employee${employeeOptions.length === 1 ? '' : 's'} available`}
+            </div>
           </div>
           <div>
             <label className="label">Select employee</label>
-            <select className="input" value={f.linkedEmployee || ''} onChange={(e) => set('linkedEmployee', e.target.value)}>
-              <option value="">— Select —</option>
-              {employeeOptions.map((u) => {
-                const dup = existingLinkedIds.includes(String(u._id)) && String(u._id) !== String(modal.data?.linkedEmployee);
-                return <option key={u._id} value={u._id} disabled={dup}>{u.name} · {u.employeeId}{u.department?.name ? ` · ${u.department.name}` : ''}{u.designation?.title ? ` · ${u.designation.title}` : ''}{dup ? ' (already in directory)' : ''}</option>;
-              })}
-            </select>
+            <div className="border border-slate-200 rounded-lg max-h-64 overflow-y-auto bg-white">
+              {employeeOptions.length === 0 ? (
+                <div className="p-3 text-xs italic text-slate-500">
+                  {empSearch ? 'No employees match this search.' : 'No employees available.'}
+                </div>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {employeeOptions.map((u) => {
+                    const dup = existingLinkedIds.includes(String(u._id)) && String(u._id) !== String(modal.data?.linkedEmployee);
+                    const isSel = String(f.linkedEmployee || '') === String(u._id);
+                    return (
+                      <li key={u._id}>
+                        <button
+                          type="button"
+                          disabled={dup}
+                          onClick={() => set('linkedEmployee', String(u._id))}
+                          className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between gap-2 transition ${
+                            isSel ? 'bg-brand-50 text-brand-800 font-medium'
+                              : dup ? 'text-slate-400 bg-slate-50 cursor-not-allowed'
+                              : 'hover:bg-slate-50 text-slate-700'
+                          }`}
+                        >
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate">
+                              {u.name}
+                              <span className="text-slate-400 font-normal"> · {u.employeeId}</span>
+                            </span>
+                            <span className="block text-[10px] text-slate-500 truncate">
+                              {[u.department?.name, u.designation?.title].filter(Boolean).join(' · ') || '—'}
+                            </span>
+                          </span>
+                          {isSel && <span className="text-brand-600 text-xs">✓ Selected</span>}
+                          {dup && !isSel && <span className="text-[10px] italic">already in directory</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
             <div className="text-[11px] text-slate-500 mt-1">Phone, email, department &amp; designation come from the employee record and stay in sync.</div>
           </div>
           <div>

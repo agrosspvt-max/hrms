@@ -27,6 +27,11 @@ router.get('/calling/analytics', requireAnalyticsAccess, analytics.callingAnalyt
 // Phase 24 -- xlsx export of the same dataset.  Same role gate, same
 // scoping, same calculations as the JSON endpoint above.
 router.get('/calling/analytics/export', requireAnalyticsAccess, analytics.exportCallingAnalytics);
+// Phase 56 -- roster for the Employee dropdown on the Calling tab.
+// Returns only employees who either submitted calling work in range
+// OR are assigned to a calling template.  Kept lightweight so the
+// dropdown can refresh on every range change without cost.
+router.get('/calling/roster', requireAnalyticsAccess, analytics.callingRoster);
 // Employee self-view of their own calling KPIs.
 router.get('/calling/mine', analytics.myCallingAnalytics);
 

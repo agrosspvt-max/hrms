@@ -5,6 +5,8 @@ const DependencyTask = require('../models/DependencyTask');
 const Assignment = require('../models/Assignment');
 const Department = require('../models/Department');
 const Designation = require('../models/Designation');
+// Phase 56 — used by callingRoster to look up calling templates.
+const Template = require('../models/Template');
 const { startOfDay, addDays, parseDay, formatYMD } = require('../utils/dateHelpers');
 // Phase 4: every analytics query AND-s in this filter so soft-deleted
 // and test-marked submissions never reach a leaderboard / KPI / trend.
@@ -1803,4 +1805,69 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
   res.send(Buffer.from(buf));
 });
 
-module.exports = { pendency, completion, assignmentAnalytics, callingAnalytics, myCallingAnalytics, exportCallingAnalytics };
+/**
+ * Phase 56 — Calling Analytics roster.
+ *
+ * Powers the Employee dropdown on the Performance → Calling tab.
+ * Returns every active employee who either (a) has submitted a
+ * calling report in the requested range, or (b) has an active
+ * assignment for a calling template (kind === 'calling') — matching
+ * the spec's inclusion criteria verbatim.
+ *
+ * Role gate mirrors callingAnalytics via the route middleware.  The
+ * response is a tiny metadata list — no KPIs, no drill rows — so it
+ * costs nothing to re-fetch on every range change.
+ */
+const callingRoster = asyncHandler(async (req, res) => {
+  const { from, to } = resolveRange(req.query);
+  // Scope employees by role, mirroring callingAnalytics.
+  const empWhere = { status: 'active' };
+  const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  const hasCalling = _hasCallingAnalytics(req);
+  if (req.user.role === 'super_admin' || req.user.role === 'hr' || hasCalling) {
+    // full org
+  } else if (isHOD) {
+    empWhere.department = req.user.hodDepartment;
+  } else {
+    res.status(403);
+    throw new Error('Calling analytics is restricted to HR / Super Admin / HOD.');
+  }
+  const employees = await User.find(empWhere).select('_id name employeeId').lean();
+  if (employees.length === 0) return res.json([]);
+  const empIds = employees.map((e) => e._id);
+  const empMap = new Map(employees.map((e) => [String(e._id), e]));
+
+  // (a) submitted a calling report in range.
+  const submittedIds = await Submission.distinct('employee', {
+    submitted: true,
+    employee: { $in: empIds },
+    templateType: 'custom',
+    customKind: 'calling',
+    date: { $gte: from, $lt: to },
+    ...liveSubmissionFilter({ ...readReqFlags(req), onlyReviewed: true }),
+  });
+
+  // (b) has an active assignment for a calling template.
+  const callingTplIds = await Template.find({
+    templateType: 'custom', customKind: 'calling', isActive: { $ne: false },
+  }).distinct('_id');
+  const assignedIds = callingTplIds.length === 0
+    ? []
+    : await Assignment.distinct('employee', {
+        template: { $in: callingTplIds },
+        active: { $ne: false },
+        employee: { $in: empIds },
+      });
+
+  const rosterIds = new Set([
+    ...submittedIds.map(String),
+    ...assignedIds.map(String),
+  ]);
+  const roster = [...rosterIds]
+    .map((id) => empMap.get(id))
+    .filter(Boolean)
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  res.json(roster);
+});
+
+module.exports = { pendency, completion, assignmentAnalytics, callingAnalytics, myCallingAnalytics, exportCallingAnalytics, callingRoster };

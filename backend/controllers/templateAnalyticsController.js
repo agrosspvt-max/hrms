@@ -1209,4 +1209,77 @@ const removeBulk = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { list, generate, remove, removeBulk };
+/**
+ * Phase 56 — Employee roster for a specific template.
+ *
+ * Powers the Employee dropdown on the Template Analytics page: only
+ * employees who have actually been assigned this template appear
+ * (matching the spec's "employees assigned to the selected template"
+ * requirement).  Assignment inclusion uses the same Assignment
+ * targeting rules the daily engine reads — employee / department /
+ * designation targets are all resolved.  Role scope + per-employee
+ * `allowedTemplateIds` are enforced identically to `generate`.
+ */
+const assignedEmployees = asyncHandler(async (req, res) => {
+  const { templateId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(templateId)) {
+    res.status(400); throw new Error('Valid templateId is required.');
+  }
+  const scope = _templateAnalyticsScope(req);
+  if (!scope.hasFeature) { res.status(403); throw new Error('Forbidden: Template Analytics access not granted.'); }
+  if (scope.allowedTemplateIds && !scope.allowedTemplateIds.includes(String(templateId))) {
+    res.status(403); throw new Error('Forbidden: this template is not in your Template Analytics scope.');
+  }
+
+  // Same role-scoped employee universe generate() uses, so a HOD's
+  // department clamp naturally propagates to the roster.
+  const empWhere = { status: 'active' };
+  const role = req.user.role;
+  const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  if (role !== 'hr' && role !== 'super_admin') {
+    if (isHOD) empWhere.department = req.user.hodDepartment;
+    // Feature-granted employees see the full org — same as HR.
+  }
+  const employees = await User.find(empWhere)
+    .select('_id name employeeId department designation')
+    .lean();
+  if (employees.length === 0) return res.json([]);
+  const empMap = new Map(employees.map((e) => [String(e._id), e]));
+  const empIds = employees.map((e) => e._id);
+
+  // Match the daily engine's assignment resolution — direct + department + designation targets.
+  const activeAssignments = await Assignment.find({
+    template: templateId,
+    active: { $ne: false },
+  }).select('targetType targetRef employee').lean();
+
+  const targetedEmpIds  = new Set();
+  const targetedDeptIds = new Set();
+  const targetedDesigIds = new Set();
+  for (const a of activeAssignments) {
+    // Legacy Assignment docs sometimes carry `employee` directly.
+    if (a.employee) targetedEmpIds.add(String(a.employee));
+    if (a.targetType === 'employee'    && a.targetRef) targetedEmpIds.add(String(a.targetRef));
+    if (a.targetType === 'department'  && a.targetRef) targetedDeptIds.add(String(a.targetRef));
+    if (a.targetType === 'designation' && a.targetRef) targetedDesigIds.add(String(a.targetRef));
+  }
+
+  const rosterIds = new Set();
+  for (const e of employees) {
+    const id = String(e._id);
+    if (targetedEmpIds.has(id)) { rosterIds.add(id); continue; }
+    const deptId = String(e.department || '');
+    if (deptId && targetedDeptIds.has(deptId)) { rosterIds.add(id); continue; }
+    const desigId = String(e.designation || '');
+    if (desigId && targetedDesigIds.has(desigId)) { rosterIds.add(id); continue; }
+  }
+
+  const roster = [...rosterIds]
+    .map((id) => empMap.get(id))
+    .filter(Boolean)
+    .map((e) => ({ _id: e._id, name: e.name, employeeId: e.employeeId }))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  res.json(roster);
+});
+
+module.exports = { list, generate, remove, removeBulk, assignedEmployees };
