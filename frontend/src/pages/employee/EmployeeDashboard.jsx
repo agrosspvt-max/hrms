@@ -415,8 +415,16 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         (s.customResponses || []).forEach((r) => {
           ctx[r.key] = r.value;
           // Phase 14 status + remark survive reload too.
-          if ((r.status && r.status !== '') || (r.remark && r.remark !== '')) {
-            metaCtx[r.key] = { status: r.status || '', remark: r.remark || '' };
+          // Phase 58 -- outOfValue also survives so Number tasks with
+          // enableOutOf preserve their second field across reloads.
+          const hasStatus = r.status && r.status !== '';
+          const hasRemark = r.remark && r.remark !== '';
+          const hasOutOf  = r.outOfValue !== undefined && Number(r.outOfValue) !== 0;
+          if (hasStatus || hasRemark || hasOutOf) {
+            metaCtx[r.key] = {
+              status: r.status || '', remark: r.remark || '',
+              outOfValue: Number(r.outOfValue) || 0,
+            };
           }
         });
         customSeed[s._id] = ctx;
@@ -644,7 +652,16 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         }
         const payload = Object.entries(raw).map(([key, value]) => {
           const m = metaForSub[key] || {};
-          return { key, value, status: m.status || '', remark: m.remark || '' };
+          // Phase 58 -- Number tasks with enableOutOf pass their second
+          // value via meta.outOfValue.  The submit handler picks this
+          // up alongside status + remark.
+          return {
+            key,
+            value,
+            status: m.status || '',
+            remark: m.remark || '',
+            outOfValue: Number.isFinite(Number(m.outOfValue)) ? Number(m.outOfValue) : 0,
+          };
         });
         // Repeating sub-tables (any template that opts in via customSections).
         const sections = sub.template?.customSections || [];
@@ -1699,20 +1716,60 @@ function CustomTemplateForm({
     } else if (f.fieldType === 'number' || f.fieldType === 'currency' || f.fieldType === 'percentage') {
       const prefix = f.fieldType === 'currency'   ? '₹' : '';
       const suffix = f.fieldType === 'percentage' ? '%' : '';
-      valueControl = (
-        <div className="relative">
-          {prefix && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{prefix}</span>}
-          <input
-            className={`input ${prefix ? 'pl-7' : ''} ${suffix ? 'pr-7' : ''}`}
-            type="number"
-            step="any"
-            min="0"
-            value={v ?? ''}
-            onChange={(e) => onChange(f.key, e.target.value === '' ? '' : Number(e.target.value))}
-          />
-          {suffix && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{suffix}</span>}
-        </div>
-      );
+      // Phase 58 — Number tasks may carry a second "Out Of" value.
+      // When enableOutOf is on, render two inputs side-by-side; the
+      // second value is stored in meta.outOfValue so the submission
+      // handler can pick it up alongside status + remark.
+      if (f.enableOutOf) {
+        const outOf = m.outOfValue ?? '';
+        const remaining = (Number(outOf) || 0) - (Number(v) || 0);
+        valueControl = (
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <div className="text-[10px] text-slate-500 mb-0.5">Completed</div>
+              <input
+                className="input"
+                type="number"
+                step="any"
+                min="0"
+                value={v ?? ''}
+                onChange={(e) => onChange(f.key, e.target.value === '' ? '' : Number(e.target.value))}
+              />
+            </div>
+            <div>
+              <div className="text-[10px] text-slate-500 mb-0.5">{f.outOfLabel || 'Out Of'}</div>
+              <input
+                className="input"
+                type="number"
+                step="any"
+                min="0"
+                value={outOf}
+                onChange={(e) => onMeta(f.key, { outOfValue: e.target.value === '' ? 0 : Number(e.target.value) })}
+              />
+              {Number(outOf) > 0 && Number(v) >= 0 && (
+                <div className="text-[10px] text-slate-500 mt-0.5">
+                  Remaining: <b>{Math.max(0, remaining)}</b>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      } else {
+        valueControl = (
+          <div className="relative">
+            {prefix && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{prefix}</span>}
+            <input
+              className={`input ${prefix ? 'pl-7' : ''} ${suffix ? 'pr-7' : ''}`}
+              type="number"
+              step="any"
+              min="0"
+              value={v ?? ''}
+              onChange={(e) => onChange(f.key, e.target.value === '' ? '' : Number(e.target.value))}
+            />
+            {suffix && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{suffix}</span>}
+          </div>
+        );
+      }
     } else {
       // text + any unknown future type fall through here.
       valueControl = (

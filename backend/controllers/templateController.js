@@ -177,6 +177,29 @@ const normalisePayload = (body) => {
       remarkRequired:      !!f.supportsRemark && !!f.remarkRequired,
       dependencyType:      DEP_TYPES.includes(f.dependencyType) ? f.dependencyType : 'independent',
       isAnalyticsEligible: f.isAnalyticsEligible !== false,
+      // Phase 58 — Custom-template Marks system.  All optional; when
+      // enableMarks is off, the numeric knobs are coerced to 0 so the
+      // DB never carries phantom marks that could sneak into
+      // analytics.  Same story for isCritical + penalty.
+      enableMarks:   !!f.enableMarks,
+      maxMarks:      Math.max(0, Number(f.maxMarks) || 0),
+      enableOutOf:   !!f.enableOutOf,
+      outOfLabel:    String(f.outOfLabel || '').trim() || 'Out Of',
+      // Coerce per-option marks to a clean [{ option, percent, penalty }]
+      // array.  Percents clamped to 0-100; penalties clamped to >= 0.
+      optionMarks: Array.isArray(f.optionMarks)
+        ? f.optionMarks
+            .filter((o) => o && typeof o.option === 'string')
+            .map((o) => ({
+              option:  String(o.option).trim(),
+              percent: Math.max(0, Math.min(100, Number(o.percent) || 0)),
+              penalty: Math.max(0, Number(o.penalty) || 0),
+            }))
+            .filter((o) => o.option)
+        : [],
+      isCritical:    !!f.isCritical,
+      penaltyMarks:  Math.max(0, Number(f.penaltyMarks) || 0),
+      threshold:     Math.max(0, Number(f.threshold) || 0),
     })).filter((f) => f.key && f.label);
     out.customSections = Array.isArray(body.customSections)
       ? body.customSections.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim())

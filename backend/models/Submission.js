@@ -227,11 +227,33 @@ const submissionSchema = new mongoose.Schema(
             default: '',
           },
           remark: { type: String, default: '' },
+          // Phase 58 — Number-task second value.  Only meaningful when
+          // the template's field carries `enableOutOf: true`.  Legacy
+          // rows leave this at 0.  Always coerced to a non-negative
+          // number by the submit handler.
+          outOfValue: { type: Number, default: 0 },
+          // Phase 58 — per-response marks snapshot.  Computed at submit
+          // time from the CURRENT template's marks config so historical
+          // scoring is preserved even if HR later edits the template.
+          availableMarks: { type: Number, default: 0 },
+          earnedMarks:    { type: Number, default: 0 },
+          penaltyMarks:   { type: Number, default: 0 },
         },
         { _id: false },
       )],
       default: [],
     },
+
+    /* ---- Phase 58 — Custom-template marks totals ----
+       Roll-up of the per-response marks numbers above.  Computed at
+       submit time; zeroed on legacy submissions so they simply don't
+       contribute to Marks Analytics.  Historical values are NEVER
+       recomputed after submission, so a template edit will not
+       retroactively change scores. */
+    customAvailableMarks: { type: Number, default: 0 },
+    customEarnedMarks:    { type: Number, default: 0 },
+    customPenaltyMarks:   { type: Number, default: 0 },
+    customFinalMarks:     { type: Number, default: 0 },
 
     /* ---- Phase 53: Extra Tasks ----
        Per-submission ad-hoc tasks the employee added on top of the

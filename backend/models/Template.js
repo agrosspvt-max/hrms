@@ -214,6 +214,69 @@ const customFieldSchema = new mongoose.Schema(
     remarkRequired:      { type: Boolean, default: false },
     dependencyType:      { type: String, enum: ['independent', 'dependent'], default: 'independent' },
     isAnalyticsEligible: { type: Boolean, default: true },
+
+    /* ================================================================ */
+    /* Phase 58 — Custom-template Marks system                          */
+    /*                                                                  */
+    /* Marks are OPTIONAL.  A field with `enableMarks: false` (default) */
+    /* behaves exactly as it does today — no marks are collected, no    */
+    /* penalty is applied, no marks appear in analytics.  Existing      */
+    /* templates therefore continue rendering + scoring identically.    */
+    /*                                                                  */
+    /* When `enableMarks: true`, the field contributes to Marks         */
+    /* Analytics using the rule appropriate for its `fieldType`:        */
+    /*                                                                  */
+    /*   number / currency / percentage:                                */
+    /*     enableOutOf: true   -> Employee enters two values            */
+    /*                             (completed, outOf).  Earned marks =  */
+    /*                             min(1, completed/outOf) × maxMarks   */
+    /*                             (never exceeds maxMarks).            */
+    /*                             Remaining = max(0, outOf-completed). */
+    /*     enableOutOf: false  -> No auto marks; value is informational */
+    /*                             only.  Marks column shows 0.         */
+    /*                                                                  */
+    /*   dropdown / yes_no:                                             */
+    /*     optionMarks[i].percent decides marks earned per option.      */
+    /*                                                                  */
+    /*   none / (supportsStatus true, any type):                        */
+    /*     Done / Ongoing        -> full maxMarks                       */
+    /*     Pending               -> 0 marks                             */
+    /*     Work N/A              -> excluded from Available + Earned    */
+    /*                                                                  */
+    /* Critical flag adds a penalty deduction:                          */
+    /*   number tasks -> penalty when completed < threshold (if set)    */
+    /*   status tasks -> penalty when status is 'pending'               */
+    /*   dropdown     -> penalty is per-option (optionMarks[i].penalty) */
+    /* Final = max(0, Earned − Penalty).                                */
+    /* ================================================================ */
+    enableMarks:  { type: Boolean, default: false },
+    maxMarks:     { type: Number,  default: 0, min: 0 },
+
+    // Number-task second value ("Completed / Out Of" pair).
+    // outOfLabel is HR-customisable so the employee sees whichever
+    // wording matches the workflow (e.g. "Assigned", "Total Bills").
+    enableOutOf:  { type: Boolean, default: false },
+    outOfLabel:   { type: String,  default: 'Out Of' },
+
+    // Per-option dropdown marks + penalty (only meaningful when
+    // fieldType==='dropdown' or 'yes_no' AND enableMarks/critical).
+    // Kept as an array of { option, percent, penalty } so `options`
+    // stays a plain string[] for backward compatibility.
+    optionMarks: {
+      type: [new mongoose.Schema(
+        {
+          option:  { type: String, required: true, trim: true },
+          percent: { type: Number, default: 0, min: 0, max: 100 },
+          penalty: { type: Number, default: 0, min: 0 },
+        },
+        { _id: false },
+      )],
+      default: [],
+    },
+
+    isCritical:     { type: Boolean, default: false },
+    penaltyMarks:   { type: Number,  default: 0, min: 0 },
+    threshold:      { type: Number,  default: 0, min: 0 },
   },
   { _id: false }
 );

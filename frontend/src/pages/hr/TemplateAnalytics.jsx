@@ -198,28 +198,7 @@ export default function TemplateAnalytics() {
       ) : !data ? (
         <Loader />
       ) : (
-        <div className="space-y-6">
-          {/* Phase 30: every section accepts an onDrill prop so every
-              card / row can route into the same Breakdown modal. */}
-          <OverviewCards data={data} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
-          <SubTemplatesSection subTemplates={data.subTemplates || []} />
-          <FieldsSection fields={data.fields || []} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
-          <DropdownsSection dropdowns={data.dropdowns || []} />
-          {/* Phase 55 -- Point analytics are Task-template-only.  Custom
-              templates ride the same TasksSection component but the
-              new Applicable / Total Points / Earned Points columns
-              stay hidden for them. */}
-          <TasksSection
-            tasks={data.tasks || []}
-            onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })}
-            showPoints={data.template?.templateType === 'task'}
-          />
-          <EmployeePerformanceSection perf={data.employeePerformance || {}} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
-          <ExtraWorkSection extra={data.extraWork || {}} onDrill={(metricId, title, extra) => setDrill({ metricId, title, extra })} />
-          {/* Phase 53 -- Extra Task Analytics.  Rendered as its own
-              section so predefined and extra-task metrics never mix. */}
-          <ExtraTaskAnalyticsSection extras={data.extraTaskAnalytics || []} />
-        </div>
+        <TemplateAnalyticsBody data={data} setDrill={setDrill} />
       )}
 
       {drill && data && (
@@ -319,6 +298,197 @@ function SubTemplatesSection({ subTemplates }) {
 /* =================================================================== */
 /* OVERVIEW                                                             */
 /* =================================================================== */
+/**
+ * Phase 58 — Template Analytics body.
+ *
+ * Adds a segmented tab selector (Value / Marks) at the top so HR can
+ * flip between the existing value-based analytics and the new marks
+ * analytics without navigating away.  Custom templates get both tabs;
+ * Task templates keep the legacy layout since marks already live inside
+ * Point Summary + Task Status.
+ */
+function TemplateAnalyticsBody({ data, setDrill }) {
+  const isCustom = data.template?.templateType === 'custom';
+  const [tab, setTab] = useState('value');
+  const drillProp = (metricId, title, extra) => setDrill({ metricId, title, extra });
+  return (
+    <div className="space-y-6">
+      {isCustom && (
+        <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
+          {[
+            ['value', 'Value Analytics'],
+            ['marks', 'Marks Analytics'],
+          ].map(([k, label]) => (
+            <button
+              key={k}
+              onClick={() => setTab(k)}
+              className={`px-5 py-2 text-sm font-medium rounded-lg transition ${
+                tab === k ? 'bg-white shadow text-brand-700' : 'text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+      {tab === 'value' || !isCustom ? (
+        <>
+          <OverviewCards data={data} onDrill={drillProp} />
+          <SubTemplatesSection subTemplates={data.subTemplates || []} />
+          <FieldsSection fields={data.fields || []} onDrill={drillProp} />
+          <DropdownsSection dropdowns={data.dropdowns || []} />
+          <TasksSection
+            tasks={data.tasks || []}
+            onDrill={drillProp}
+            showPoints={data.template?.templateType === 'task'}
+          />
+          <EmployeePerformanceSection perf={data.employeePerformance || {}} onDrill={drillProp} />
+          <ExtraWorkSection extra={data.extraWork || {}} onDrill={drillProp} />
+          <ExtraTaskAnalyticsSection extras={data.extraTaskAnalytics || []} />
+        </>
+      ) : (
+        <MarksAnalyticsSection marks={data.marksAnalytics || null} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Phase 58 — Marks Analytics view for Custom templates.
+ *
+ * Renders a friendly empty state when the template has no fields with
+ * enableMarks set.  Otherwise: summary cards + employee ranking +
+ * department ranking + daily trend + per-task marks/penalty table.
+ */
+function MarksAnalyticsSection({ marks }) {
+  if (!marks || !marks.hasMarks) {
+    return (
+      <div className="card card-body">
+        <div className="text-sm font-semibold text-slate-800 mb-1">Marks Analytics</div>
+        <div className="text-xs italic text-slate-500">
+          Marks are not configured on this template. Enable "Marks" on individual tasks in the template editor to populate this view.
+        </div>
+      </div>
+    );
+  }
+  const s = marks.summary || {};
+  const _n = (v) => (Number.isFinite(v) ? v : 0);
+  const scoreAccent = _n(s.overallScorePct) >= 80 ? 'green' : _n(s.overallScorePct) >= 50 ? 'amber' : 'red';
+  return (
+    <div className="space-y-6">
+      <div>
+        <div className="text-sm font-semibold text-slate-800 mb-2">Summary</div>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <StatCard label="Total Available Marks" value={_n(s.totalAvailableMarks)} accent="brand" />
+          <StatCard label="Total Earned Marks"    value={_n(s.totalEarnedMarks)}    accent="green" />
+          <StatCard label="Penalty Marks"         value={_n(s.totalPenaltyMarks)}   accent="red" />
+          <StatCard label="Net Marks"             value={_n(s.netMarks)}            accent="blue" />
+          <StatCard label="Overall Score %"       value={`${_n(s.overallScorePct)}%`} accent={scoreAccent} />
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
+          <StatCard label="Average Marks" value={_n(s.averageMarks)} accent="brand" />
+          <StatCard label="Highest Marks" value={_n(s.highestMarks)} accent="green" />
+          <StatCard label="Lowest Marks"  value={_n(s.lowestMarks)}  accent="amber" />
+        </div>
+      </div>
+
+      <div>
+        <div className="text-sm font-semibold text-slate-800 mb-2">Employee Ranking</div>
+        <div className="card overflow-x-auto">
+          <table className="table">
+            <thead><tr><th>Employee</th><th>Dept</th><th className="text-right">Submissions</th><th className="text-right">Available</th><th className="text-right">Earned</th><th className="text-right">Penalty</th><th className="text-right">Net</th><th className="text-right">Score %</th></tr></thead>
+            <tbody>
+              {(marks.employeeRanking || []).length === 0 ? (
+                <tr><td colSpan="8" className="text-slate-500 italic">No marks yet.</td></tr>
+              ) : marks.employeeRanking.map((e) => (
+                <tr key={e.employeeId || e.name}>
+                  <td className="font-medium">{e.name}<div className="text-[10px] text-slate-400">{e.employeeId}</div></td>
+                  <td>{e.department}</td>
+                  <td className="text-right">{e.submissions}</td>
+                  <td className="text-right font-mono">{e.available}</td>
+                  <td className="text-right font-mono text-green-700">{e.earned}</td>
+                  <td className="text-right font-mono text-red-700">{e.penalty}</td>
+                  <td className="text-right font-mono">{e.final}</td>
+                  <td className="text-right">{e.scorePct}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-sm font-semibold text-slate-800 mb-2">Department Ranking</div>
+        <div className="card overflow-x-auto">
+          <table className="table">
+            <thead><tr><th>Department</th><th className="text-right">Available</th><th className="text-right">Earned</th><th className="text-right">Penalty</th><th className="text-right">Net</th><th className="text-right">Score %</th></tr></thead>
+            <tbody>
+              {(marks.departmentRanking || []).length === 0 ? (
+                <tr><td colSpan="6" className="text-slate-500 italic">No marks yet.</td></tr>
+              ) : marks.departmentRanking.map((d) => (
+                <tr key={d.department}>
+                  <td className="font-medium">{d.department}</td>
+                  <td className="text-right font-mono">{d.available}</td>
+                  <td className="text-right font-mono text-green-700">{d.earned}</td>
+                  <td className="text-right font-mono text-red-700">{d.penalty}</td>
+                  <td className="text-right font-mono">{d.final}</td>
+                  <td className="text-right">{d.scorePct}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-sm font-semibold text-slate-800 mb-2">Task-wise Marks & Penalty</div>
+        <div className="card overflow-x-auto">
+          <table className="table">
+            <thead><tr><th>Task</th><th className="text-right">Submissions</th><th className="text-right">Available</th><th className="text-right">Earned</th><th className="text-right">Penalty</th><th className="text-right">Score %</th></tr></thead>
+            <tbody>
+              {(marks.taskBreakdown || []).length === 0 ? (
+                <tr><td colSpan="6" className="text-slate-500 italic">No marks yet.</td></tr>
+              ) : marks.taskBreakdown.map((t) => (
+                <tr key={t.key}>
+                  <td className="font-medium">{t.label}</td>
+                  <td className="text-right">{t.submissions}</td>
+                  <td className="text-right font-mono">{t.available}</td>
+                  <td className="text-right font-mono text-green-700">{t.earned}</td>
+                  <td className="text-right font-mono text-red-700">{t.penalty}</td>
+                  <td className="text-right">{t.scorePct}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-sm font-semibold text-slate-800 mb-2">Daily Trend</div>
+        <div className="card overflow-x-auto">
+          <table className="table">
+            <thead><tr><th>Date</th><th className="text-right">Available</th><th className="text-right">Earned</th><th className="text-right">Penalty</th><th className="text-right">Net</th><th className="text-right">Score %</th></tr></thead>
+            <tbody>
+              {(marks.dailyTrend || []).length === 0 ? (
+                <tr><td colSpan="6" className="text-slate-500 italic">No marks yet.</td></tr>
+              ) : marks.dailyTrend.map((d) => (
+                <tr key={d.date}>
+                  <td>{d.date}</td>
+                  <td className="text-right font-mono">{d.available}</td>
+                  <td className="text-right font-mono text-green-700">{d.earned}</td>
+                  <td className="text-right font-mono text-red-700">{d.penalty}</td>
+                  <td className="text-right font-mono">{d.final}</td>
+                  <td className="text-right">{d.scorePct}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OverviewCards({ data, onDrill = () => {} }) {
   const o = data.overview || {};
   // Phase 30: each overview card routes to a generic Breakdown metric.

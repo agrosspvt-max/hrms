@@ -485,6 +485,24 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
           remarkRequired: (f.supportsRemark !== false) && !!f.remarkRequired,
           dependencyType: f.dependencyType === 'dependent' ? 'dependent' : 'independent',
           isAnalyticsEligible: f.isAnalyticsEligible !== false,
+          // Phase 58 -- Marks configuration passthrough.  Server also
+          // normalises defensively (see templateController).
+          enableMarks:  !!f.enableMarks,
+          maxMarks:     Math.max(0, Number(f.maxMarks) || 0),
+          enableOutOf:  !!f.enableOutOf,
+          outOfLabel:   String(f.outOfLabel || '').trim() || 'Out Of',
+          optionMarks: Array.isArray(f.optionMarks)
+            ? f.optionMarks
+                .filter((o) => o && o.option)
+                .map((o) => ({
+                  option: String(o.option),
+                  percent: Math.max(0, Math.min(100, Number(o.percent) || 0)),
+                  penalty: Math.max(0, Number(o.penalty) || 0),
+                }))
+            : [],
+          isCritical:    !!f.isCritical,
+          penaltyMarks:  Math.max(0, Number(f.penaltyMarks) || 0),
+          threshold:     Math.max(0, Number(f.threshold) || 0),
         });
       }
 
@@ -559,6 +577,16 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
       remarkRequired: false,
       dependencyType: 'independent',
       isAnalyticsEligible: true,
+      // Phase 58 -- Marks configuration defaults.  Disabled so new
+      // fields render exactly as they did before this feature landed.
+      enableMarks: false,
+      maxMarks: 0,
+      enableOutOf: false,
+      outOfLabel: 'Out Of',
+      optionMarks: [],
+      isCritical: false,
+      penaltyMarks: 0,
+      threshold: 0,
     }];
     set('customFields', next);
   };
@@ -895,6 +923,166 @@ function DropdownOptionsEditor({ options, onCommit, hasError, errorMessage, regi
   );
 }
 
+/**
+ * Phase 58 — Marks configuration panel for a single custom field.
+ *
+ * Renders under every TaskFieldRow.  Collapsed by default (a single
+ * checkbox toggle).  When enabled, task-type-specific knobs appear:
+ *   Number/currency/percentage -> Max marks + Out Of pair + Critical
+ *                                  threshold/penalty.
+ *   Dropdown / yes_no          -> Per-option marks percent + penalty.
+ *   Status-supporting field    -> Max marks + Critical penalty (Pending).
+ * Every knob is optional; leaving Marks disabled preserves legacy
+ * behaviour byte-for-byte.
+ */
+function MarksConfig({ f, onPatch }) {
+  const isNumericLike = f.fieldType === 'number' || f.fieldType === 'currency' || f.fieldType === 'percentage';
+  const isDropdownLike = f.fieldType === 'dropdown' || f.fieldType === 'yes_no';
+  const enabled = !!f.enableMarks;
+  const setOptionMarks = (patch) => {
+    const cur = Array.isArray(f.optionMarks) ? f.optionMarks : [];
+    onPatch({ optionMarks: patch(cur) });
+  };
+  return (
+    <div className="mt-2 rounded-md border border-indigo-100 bg-indigo-50/30 p-2">
+      <div className="flex items-center gap-3 text-xs text-slate-700">
+        <label className="flex items-center gap-1 font-semibold">
+          <input type="checkbox" checked={enabled} onChange={(e) => onPatch({ enableMarks: e.target.checked })} />
+          Enable Marks
+        </label>
+        {enabled && (
+          <>
+            <span>Max Marks</span>
+            <input
+              type="number" step="any" min="0"
+              className="input !py-0.5 !text-xs !max-w-[90px]"
+              value={f.maxMarks || 0}
+              onChange={(e) => onPatch({ maxMarks: Math.max(0, Number(e.target.value) || 0) })}
+            />
+          </>
+        )}
+        <label className={`flex items-center gap-1 ${enabled ? '' : 'opacity-50 cursor-not-allowed'}`}>
+          <input
+            type="checkbox"
+            disabled={!enabled}
+            checked={!!f.isCritical && enabled}
+            onChange={(e) => onPatch({ isCritical: e.target.checked })}
+          />
+          Critical Task
+        </label>
+      </div>
+
+      {enabled && isNumericLike && (
+        <div className="mt-2 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+          <label className="flex items-center gap-1 text-slate-700">
+            <input type="checkbox" checked={!!f.enableOutOf} onChange={(e) => onPatch({ enableOutOf: e.target.checked })} />
+            Enable "Out Of" field
+          </label>
+          {f.enableOutOf && (
+            <input
+              className="input !py-0.5 !text-xs"
+              placeholder='Label (e.g. "Assigned")'
+              value={f.outOfLabel || 'Out Of'}
+              onChange={(e) => onPatch({ outOfLabel: e.target.value })}
+            />
+          )}
+          {f.isCritical && (
+            <>
+              <div className="flex items-center gap-1">
+                <span>Threshold</span>
+                <input
+                  type="number" step="any" min="0" className="input !py-0.5 !text-xs !max-w-[80px]"
+                  value={f.threshold || 0}
+                  onChange={(e) => onPatch({ threshold: Math.max(0, Number(e.target.value) || 0) })}
+                />
+              </div>
+              <div className="flex items-center gap-1">
+                <span>Penalty</span>
+                <input
+                  type="number" step="any" min="0" className="input !py-0.5 !text-xs !max-w-[80px]"
+                  value={f.penaltyMarks || 0}
+                  onChange={(e) => onPatch({ penaltyMarks: Math.max(0, Number(e.target.value) || 0) })}
+                />
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {enabled && f.supportsStatus && !isDropdownLike && !isNumericLike && f.isCritical && (
+        <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+          <div className="flex items-center gap-1">
+            <span>Penalty for Pending</span>
+            <input
+              type="number" step="any" min="0" className="input !py-0.5 !text-xs !max-w-[80px]"
+              value={f.penaltyMarks || 0}
+              onChange={(e) => onPatch({ penaltyMarks: Math.max(0, Number(e.target.value) || 0) })}
+            />
+          </div>
+        </div>
+      )}
+      {enabled && f.supportsStatus && (isNumericLike || isDropdownLike) && f.isCritical && (
+        <div className="mt-2 text-[10px] text-slate-500 italic">
+          Status penalty ({f.penaltyMarks || 0}) is used when the field is marked Pending.
+        </div>
+      )}
+
+      {enabled && isDropdownLike && (
+        <div className="mt-2 space-y-1">
+          <div className="text-[10px] uppercase text-slate-500">Per-option marks</div>
+          {(f.options || []).length === 0 ? (
+            <div className="text-[11px] italic text-slate-500">Add dropdown options above to configure their marks.</div>
+          ) : (
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="text-[10px] uppercase text-slate-500">
+                  <th className="text-left">Option</th>
+                  <th className="text-right">Marks %</th>
+                  {f.isCritical && <th className="text-right">Penalty</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {(f.options || []).map((opt) => {
+                  const cur = (f.optionMarks || []).find((o) => String(o.option) === String(opt)) || { option: opt, percent: 0, penalty: 0 };
+                  const upsert = (patch) => setOptionMarks((list) => {
+                    const idx = list.findIndex((o) => String(o.option) === String(opt));
+                    const next = { ...cur, ...patch };
+                    if (idx === -1) return [...list, next];
+                    const out = [...list]; out[idx] = next; return out;
+                  });
+                  return (
+                    <tr key={opt}>
+                      <td className="py-0.5">{opt}</td>
+                      <td className="text-right py-0.5">
+                        <input
+                          type="number" step="any" min="0" max="100"
+                          className="input !py-0.5 !text-xs !max-w-[70px]"
+                          value={cur.percent || 0}
+                          onChange={(e) => upsert({ percent: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+                        />
+                      </td>
+                      {f.isCritical && (
+                        <td className="text-right py-0.5">
+                          <input
+                            type="number" step="any" min="0"
+                            className="input !py-0.5 !text-xs !max-w-[70px]"
+                            value={cur.penalty || 0}
+                            onChange={(e) => upsert({ penalty: Math.max(0, Number(e.target.value) || 0) })}
+                          />
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove, errors = {}, setRef = () => () => {}, clearError = () => {} }) {
   const f = field;
   const idx = f.__idx;
@@ -1018,6 +1206,11 @@ function TaskFieldRow({ field, isFirst, isLast, onPatch, onRemove, onMove, error
         </label>
         <label className="flex items-center gap-1"><input type="checkbox" checked={f.isAnalyticsEligible !== false} onChange={(e) => onPatch({ isAnalyticsEligible: e.target.checked })} /> Show on analytics</label>
       </div>
+      {/* Phase 58 — Custom-template Marks configuration.  Fully
+          optional; disabled by default so existing templates are
+          untouched.  Enabling opens task-type-specific knobs (Max
+          Marks, Out Of label, per-option marks, Critical + penalty). */}
+      <MarksConfig f={f} onPatch={onPatch} />
       {f.fieldType === 'auto' && (
         <div>
           <label className="label text-[10px] uppercase">

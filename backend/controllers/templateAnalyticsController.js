@@ -235,7 +235,7 @@ const generate = asyncHandler(async (req, res) => {
     submitted: true,
     ...liveSubmissionFilter({ ...flags, onlyReviewed: true }),
   })
-    .select('employee date submittedAt templateType customResponses tasks productSales farmerRecords earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus extraTasks')
+    .select('employee date submittedAt templateType customResponses tasks productSales farmerRecords earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus extraTasks customAvailableMarks customEarnedMarks customPenaltyMarks customFinalMarks')
     .lean();
 
   /* =================================================================
@@ -1120,6 +1120,144 @@ const generate = asyncHandler(async (req, res) => {
     };
   }).sort((a, b) => (b.submissionCount - a.submissionCount));
 
+  /* =================================================================
+   * Phase 58 — MARKS ANALYTICS (Custom templates only)
+   *
+   * The submission-time marks snapshot (customEarnedMarks etc.) is
+   * summed here.  Historical submissions with all four values at 0
+   * naturally contribute nothing, so a template with no marks
+   * configured shows a friendly zero state in the frontend.
+   *
+   * Employee ranking + department ranking + daily trend + per-task
+   * marks/penalty come from the same walk over `subs`, so nothing
+   * runs its own global query.
+   * ================================================================= */
+  let totalAvailableMarks = 0, totalEarnedMarks = 0, totalPenaltyMarks = 0, totalFinalMarks = 0;
+  const marksPerEmp = new Map();   // empId -> { available, earned, penalty, final, subs }
+  const marksPerDept = new Map();  // deptName -> ...
+  const marksPerDay = new Map();   // ymd -> ...
+  const marksPerTask = new Map();  // fieldKey -> { label, available, earned, penalty, submissions }
+  const taskLabelByKey = new Map(
+    (tpl.customFields || []).map((f) => [f.key, f.label || f.key]),
+  );
+
+  for (const s of subs) {
+    const av = Number(s.customAvailableMarks) || 0;
+    const er = Number(s.customEarnedMarks)    || 0;
+    const pn = Number(s.customPenaltyMarks)   || 0;
+    const fn = Number(s.customFinalMarks)     || 0;
+    totalAvailableMarks += av;
+    totalEarnedMarks    += er;
+    totalPenaltyMarks   += pn;
+    totalFinalMarks     += fn;
+
+    const empId = String(s.employee);
+    const emp = empMap.get(empId);
+    const deptName = emp?.department?.name || '—';
+    const dateKey = new Date(s.date).toISOString().slice(0, 10);
+
+    if (!marksPerEmp.has(empId)) marksPerEmp.set(empId, {
+      employeeId: emp?.employeeId || '', name: emp?.name || '', department: deptName,
+      available: 0, earned: 0, penalty: 0, final: 0, submissions: 0,
+    });
+    const pe = marksPerEmp.get(empId);
+    pe.available += av; pe.earned += er; pe.penalty += pn; pe.final += fn; pe.submissions += 1;
+
+    if (!marksPerDept.has(deptName)) marksPerDept.set(deptName, { department: deptName, available: 0, earned: 0, penalty: 0, final: 0 });
+    const pd = marksPerDept.get(deptName);
+    pd.available += av; pd.earned += er; pd.penalty += pn; pd.final += fn;
+
+    if (!marksPerDay.has(dateKey)) marksPerDay.set(dateKey, { date: dateKey, available: 0, earned: 0, penalty: 0, final: 0 });
+    const pday = marksPerDay.get(dateKey);
+    pday.available += av; pday.earned += er; pday.penalty += pn; pday.final += fn;
+
+    // Per-task marks -- read from the submission's response snapshot.
+    for (const r of (s.customResponses || [])) {
+      const rowAv = Number(r.availableMarks) || 0;
+      const rowEr = Number(r.earnedMarks)    || 0;
+      const rowPn = Number(r.penaltyMarks)   || 0;
+      if (rowAv === 0 && rowEr === 0 && rowPn === 0) continue;
+      if (!marksPerTask.has(r.key)) marksPerTask.set(r.key, {
+        key: r.key, label: taskLabelByKey.get(r.key) || r.key,
+        available: 0, earned: 0, penalty: 0, submissions: 0,
+      });
+      const pt = marksPerTask.get(r.key);
+      pt.available += rowAv; pt.earned += rowEr; pt.penalty += rowPn; pt.submissions += 1;
+    }
+  }
+
+  const safePctLocal = (n, d) => (d > 0 ? Math.round((n / d) * 1000) / 10 : 0);
+  const marksEmployeeRanking = [...marksPerEmp.values()]
+    .filter((e) => e.available > 0)
+    .map((e) => ({
+      ...e,
+      scorePct: safePctLocal(e.final, e.available),
+      averageMarks: e.submissions > 0 ? Math.round((e.final / e.submissions) * 100) / 100 : 0,
+      available: Math.round(e.available * 100) / 100,
+      earned:    Math.round(e.earned    * 100) / 100,
+      penalty:   Math.round(e.penalty   * 100) / 100,
+      final:     Math.round(e.final     * 100) / 100,
+    }))
+    .sort((a, b) => (b.final - a.final) || (b.scorePct - a.scorePct));
+  const marksDepartmentRanking = [...marksPerDept.values()]
+    .filter((d) => d.available > 0)
+    .map((d) => ({
+      ...d,
+      scorePct: safePctLocal(d.final, d.available),
+      available: Math.round(d.available * 100) / 100,
+      earned:    Math.round(d.earned    * 100) / 100,
+      penalty:   Math.round(d.penalty   * 100) / 100,
+      final:     Math.round(d.final     * 100) / 100,
+    }))
+    .sort((a, b) => b.final - a.final);
+  const marksDailyTrend = [...marksPerDay.values()]
+    .sort((a, b) => a.date.localeCompare(b.date))
+    .map((d) => ({
+      ...d,
+      available: Math.round(d.available * 100) / 100,
+      earned:    Math.round(d.earned    * 100) / 100,
+      penalty:   Math.round(d.penalty   * 100) / 100,
+      final:     Math.round(d.final     * 100) / 100,
+      scorePct:  safePctLocal(d.final, d.available),
+    }));
+  const marksTaskBreakdown = [...marksPerTask.values()]
+    .map((t) => ({
+      ...t,
+      scorePct: safePctLocal(t.earned, t.available),
+      available: Math.round(t.available * 100) / 100,
+      earned:    Math.round(t.earned    * 100) / 100,
+      penalty:   Math.round(t.penalty   * 100) / 100,
+    }))
+    .sort((a, b) => b.available - a.available);
+
+  const finalCounts = [...marksPerEmp.values()].map((e) => e.final).filter((v) => v > 0);
+  const highestMarks = finalCounts.length ? Math.max(...finalCounts) : 0;
+  const lowestMarks  = finalCounts.length ? Math.min(...finalCounts) : 0;
+  const totalMarkedSubmissions = [...marksPerEmp.values()].reduce((s, e) => s + e.submissions, 0);
+  const avgMarks = totalMarkedSubmissions > 0
+    ? Math.round((totalFinalMarks / totalMarkedSubmissions) * 100) / 100
+    : 0;
+
+  const marksAnalytics = {
+    // Boolean flag the frontend uses to render either the summary or a
+    // "Marks not configured on this template" empty state.
+    hasMarks: totalAvailableMarks > 0,
+    summary: {
+      totalAvailableMarks: Math.round(totalAvailableMarks * 100) / 100,
+      totalEarnedMarks:    Math.round(totalEarnedMarks    * 100) / 100,
+      totalPenaltyMarks:   Math.round(totalPenaltyMarks   * 100) / 100,
+      netMarks:            Math.round(totalFinalMarks     * 100) / 100,
+      overallScorePct:     safePctLocal(totalFinalMarks, totalAvailableMarks),
+      averageMarks:        avgMarks,
+      highestMarks:        Math.round(highestMarks * 100) / 100,
+      lowestMarks:         Math.round(lowestMarks  * 100) / 100,
+    },
+    employeeRanking:   marksEmployeeRanking,
+    departmentRanking: marksDepartmentRanking,
+    dailyTrend:        marksDailyTrend,
+    taskBreakdown:     marksTaskBreakdown,
+  };
+
   res.json({
     template: {
       _id: tpl._id, title: tpl.title,
@@ -1138,6 +1276,10 @@ const generate = asyncHandler(async (req, res) => {
     subTemplates,
     // Phase 53 -- template-scoped Extra Task Analytics, grouped by key.
     extraTaskAnalytics,
+    // Phase 58 -- Marks Analytics payload.  Empty (hasMarks:false) when
+    // no field on the template has enableMarks true.  Frontend tab
+    // selector uses this to switch between Value and Marks views.
+    marksAnalytics,
     // Phase 30: drill-down detail rows.
     detail: { submissionRows, taskRows, fieldRows },
   });

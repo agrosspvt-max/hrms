@@ -182,6 +182,55 @@ const getToday = asyncHandler(async (req, res) => {
     }
   }
 
+  /* ------------------------------------------------------------------
+   * Phase 58 — automatic template synchronization for UNSUBMITTED
+   * custom submissions.  If HR edited the template AFTER the daily
+   * engine seeded today's submission, the seeded `customResponses`
+   * won't include the new field's key -- the employee form's
+   * `seededKeys` filter would then hide it.  Here we splice any
+   * template-defined fields that aren't yet in customResponses,
+   * respecting the assignment's sub-template scope, so the form
+   * reflects the LATEST template config without requiring HR to
+   * revoke + reassign.  Historical (submitted) rows are never touched.
+   * ------------------------------------------------------------------ */
+  for (const s of submissions) {
+    if (s.templateType !== 'custom' || s.submitted) continue;
+    const tplFields = s.template?.customFields || [];
+    if (tplFields.length === 0) continue;
+    // Assignment sub-template scope (matches dailyEngine.fieldsForScope).
+    const wantIds = Array.isArray(s.subTemplateIds) && s.subTemplateIds.length > 0
+      ? s.subTemplateIds.map(String)
+      : (s.subTemplateId ? [String(s.subTemplateId)] : []);
+    const allSubs = wantIds.length === 0;
+    const scopeMatch = (f) => {
+      const sid = String(f.subTemplateId || '');
+      if (!sid) return true;
+      return allSubs || wantIds.includes(sid);
+    };
+    const have = new Set((s.customResponses || []).map((r) => r.key));
+    const missing = tplFields.filter(scopeMatch).filter((f) => !have.has(f.key));
+    if (missing.length === 0) continue;
+    // Persist the newly-appended rows so the next reload also has them
+    // (avoids a live-form flash while the day rolls over).
+    const added = missing.map((f) => ({
+      key: f.key,
+      value: f.fieldType === 'number' || f.fieldType === 'currency' || f.fieldType === 'percentage' ? 0 : '',
+      status: '', remark: '', outOfValue: 0,
+      availableMarks: 0, earnedMarks: 0, penaltyMarks: 0,
+    }));
+    s.customResponses = [...(s.customResponses || []), ...added];
+    try {
+      await Submission.updateOne(
+        { _id: s._id },
+        { $set: { customResponses: s.customResponses } },
+      );
+    } catch (e) {
+      // Non-fatal: even if the write fails, the client still sees the
+      // spliced rows for this request.
+      console.error('[getToday] template-sync splice failed:', e.message);
+    }
+  }
+
   // Effective working status: if HR pushed override work onto a weekly-off
   // or holiday, today is a working day for the employee -- otherwise the
   // dashboard would still show "Enjoy your day!" and hide the tasks.
@@ -456,15 +505,52 @@ const submitOne = asyncHandler(async (req, res) => {
       }
     }
     const evaluated = computeAutoFields(tpl, incoming);
+    // Phase 58 — capture Number-tasks' second value ("Out Of").  The
+    // client sends it in the response row alongside `value`; we lift
+    // it into a keyed lookup so the marks calculator + persisted
+    // response both see the same number.
+    const incomingOutOf = {};
+    (customResponses || []).forEach((r) => {
+      if (r && r.key && r.outOfValue !== undefined) incomingOutOf[r.key] = Number(r.outOfValue) || 0;
+    });
+    // Phase 58 — compute the per-field marks + totals BEFORE writing
+    // customResponses, so we can splice the marks back onto each row.
+    const { computeCustomMarks } = require('../services/customMarks');
+    const marksResult = computeCustomMarks(
+      tpl.customFields || [],
+      incoming,
+      incomingOutOf,
+      Object.fromEntries(Object.entries(incomingMeta).map(([k, v]) => [k, v?.status || ''])),
+    );
+    const marksByKey = new Map(marksResult.perField.map((m) => [m.key, m]));
+
     // Phase 14: re-attach status + remark per row.  computeAutoFields
     // returns the canonical [{ key, value }] shape; we layer the
     // incoming { status, remark } back on so the storage matches the
     // new schema.
     sub.customResponses = evaluated.map((row) => {
       const meta = incomingMeta[row.key] || { status: '', remark: '' };
-      return { key: row.key, value: row.value, status: meta.status, remark: meta.remark };
+      const m = marksByKey.get(row.key);
+      return {
+        key: row.key,
+        value: row.value,
+        status: meta.status,
+        remark: meta.remark,
+        // Phase 58 -- persist marks snapshot on every row so historical
+        // analytics are stable even if HR later edits the template.
+        outOfValue: incomingOutOf[row.key] || 0,
+        availableMarks: m ? m.availableMarks : 0,
+        earnedMarks:    m ? m.earnedMarks    : 0,
+        penaltyMarks:   m ? m.penaltyMarks   : 0,
+      };
     });
     sub.customKind = tpl.customKind || sub.customKind || '';
+    // Phase 58 — Marks roll-up on the submission itself.  Never
+    // negative; zeroed for legacy templates with no marks enabled.
+    sub.customAvailableMarks = marksResult.available;
+    sub.customEarnedMarks    = marksResult.earned;
+    sub.customPenaltyMarks   = marksResult.penalty;
+    sub.customFinalMarks     = marksResult.final;
     sub.markModified('customResponses');
 
     /* ---- Phase 53: Extra Tasks + catalog upsert ----
