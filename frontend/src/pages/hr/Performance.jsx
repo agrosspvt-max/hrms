@@ -71,6 +71,17 @@ export default function Performance() {
   const [employee, setEmployee] = useState('');
   const [templateType, setTemplateType] = useState('');
   const [recurrence, setRecurrence] = useState('');
+  // Phase 57 — Analytics Scope + Scope Value for Pendency / Completion.
+  // scope: '' (global) | 'employee' | 'department' | 'designation' | 'template'
+  // scopeValue: the selected id for the chosen scope kind.
+  // Both are cleared whenever the mode changes so state can't leak
+  // between Pendency and Completion (which share the two states).
+  // Calling mode keeps its own filter layout — this state is unused there.
+  const [scope, setScope] = useState('');
+  const [scopeValue, setScopeValue] = useState('');
+  const [scopeOptions, setScopeOptions] = useState({
+    employees: [], templates: [], departments: [], designations: [],
+  });
   // Phase 4: HR/SA quick toggle to see analytics WITH test-marked rows
   // included.  Default off so analytics show the production picture.
   const [includeTest, setIncludeTest] = useState(false);
@@ -115,9 +126,20 @@ export default function Performance() {
     const params = {};
     if (range === 'custom') { if (!from || !to) return; params.from = from; params.to = to; }
     else params.range = range;
-    if (department) params.department = department;
-    if (designation) params.designation = designation;
-    if (employee) params.employee = employee;
+    // Phase 57 -- Scope + Value drive backend filtering for Pendency /
+    // Completion.  Calling mode keeps using its own `department` /
+    // `employee` state (already routed through its dedicated roster).
+    if (mode === 'pendency' || mode === 'completion') {
+      if (scope === 'employee'     && scopeValue) params.employee    = scopeValue;
+      if (scope === 'department'   && scopeValue) params.department  = scopeValue;
+      if (scope === 'designation'  && scopeValue) params.designation = scopeValue;
+      if (scope === 'template'     && scopeValue) params.template    = scopeValue;
+    } else {
+      // Calling mode retains the legacy filter routing.
+      if (department) params.department = department;
+      if (designation) params.designation = designation;
+      if (employee) params.employee = employee;
+    }
     if (templateType) params.templateType = templateType;
     if (recurrence) params.recurrence = recurrence;
     if (includeTest) params.includeTest = 'true';
@@ -131,7 +153,43 @@ export default function Performance() {
     api.get(url, { params })
       .then(({ data }) => { setData(data); setLoading(false); })
       .catch(() => setLoading(false));
-  }, [mode, range, from, to, department, designation, employee, templateType, recurrence, includeTest]);
+  }, [mode, range, from, to, department, designation, employee, scope, scopeValue, templateType, recurrence, includeTest]);
+
+  // Phase 57 -- populated-only scope options for the Pendency /
+  // Completion Analytics Scope dropdown.  Refetched on every time-period
+  // change so options mirror what's actually visible; if the currently
+  // selected scopeValue disappears from the new list we clear it so
+  // charts don't render empty.
+  useEffect(() => {
+    if (mode !== 'pendency' && mode !== 'completion') return;
+    const params = {};
+    if (range === 'custom') { if (!from || !to) return; params.from = from; params.to = to; }
+    else params.range = range;
+    if (includeTest) params.includeTest = 'true';
+    api.get('/dashboard/hr/scope-options', { params })
+      .then(({ data }) => {
+        const next = {
+          employees:   Array.isArray(data?.employees)   ? data.employees   : [],
+          templates:   Array.isArray(data?.templates)   ? data.templates   : [],
+          departments: Array.isArray(data?.departments) ? data.departments : [],
+          designations: Array.isArray(data?.designations) ? data.designations : [],
+        };
+        setScopeOptions(next);
+        // Drop a stale value that's no longer populated in the new period.
+        if (scope && scopeValue) {
+          const list = next[
+            scope === 'employee' ? 'employees'
+            : scope === 'template' ? 'templates'
+            : scope === 'department' ? 'departments'
+            : scope === 'designation' ? 'designations'
+            : null
+          ] || [];
+          if (!list.some((x) => String(x._id) === String(scopeValue))) setScopeValue('');
+        }
+      })
+      .catch(() => setScopeOptions({ employees: [], templates: [], departments: [], designations: [] }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, range, from, to, includeTest]);
 
   // Phase 56 -- refetch the calling-mode roster whenever the visible
   // period changes.  Not tied to `employee` so a selection never
@@ -173,6 +231,12 @@ export default function Performance() {
               // non-calling employee selection doesn't silently
               // narrow the calling view.
               if (k === 'calling') { setDepartment(''); setDesignation(''); setEmployee(''); }
+              // Phase 57 -- clear scope on ANY mode change so a scope
+              // picked on Pendency doesn't silently carry into
+              // Completion (or vice-versa).  Both modes share the
+              // scope state but their datasets differ enough that
+              // carrying the value across can look glitchy.
+              setScope(''); setScopeValue('');
             }}
             className={`px-5 py-2 text-sm font-medium rounded-lg transition ${mode === k ? 'bg-white shadow text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
             {label}
@@ -196,52 +260,97 @@ export default function Performance() {
           <div><label className="label">From</label><input className="input max-w-[150px]" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><label className="label">To</label><input className="input max-w-[150px]" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></div>
         </>)}
-        {/* Phase 56 -- Calling tab hides Department entirely (calling
-            work is its own operational workflow, not department-scoped)
-            and swaps the Employee dropdown to a roster of only those
-            with actual calling activity. */}
-        {!isHOD && mode !== 'calling' && (
-          <div className="min-w-[180px]"><label className="label">Department</label>
+        {/* Phase 57 -- Pendency + Completion use the new "Analytics
+            Scope + Scope Value" two-filter design.  Calling keeps its
+            own filter layout below. */}
+        {(mode === 'pendency' || mode === 'completion') && (
+          <>
+            <div className="min-w-[170px]">
+              <label className="label">Analytics Scope</label>
+              <select
+                className="input max-w-[170px]"
+                value={scope}
+                onChange={(e) => { setScope(e.target.value); setScopeValue(''); }}
+              >
+                <option value="">Global (default)</option>
+                <option value="employee">Employee</option>
+                <option value="department">Department</option>
+                <option value="designation">Designation</option>
+                <option value="template">Template</option>
+              </select>
+            </div>
+            {/* Scope Value dropdown — hidden for Global, dynamic for the
+                other four kinds.  Options are pre-filtered by the
+                scopeOptions endpoint so only entities with data in the
+                current period appear. */}
+            {scope && (
+              <div className="min-w-[220px]">
+                <label className="label">Scope Value</label>
+                {scope === 'employee' && (
+                  <SearchableSelect
+                    value={scopeValue}
+                    onChange={setScopeValue}
+                    options={scopeOptions.employees}
+                    getValue={(e) => e._id}
+                    getLabel={(e) => e.name + (e.employeeId ? ` (${e.employeeId})` : '')}
+                    getSearchText={(e) => `${e.name} ${e.employeeId || ''}`}
+                    placeholder={scopeOptions.employees.length === 0
+                      ? 'No employees with data in range' : 'Select employee'}
+                  />
+                )}
+                {scope === 'department' && (
+                  <SearchableSelect
+                    value={scopeValue}
+                    onChange={setScopeValue}
+                    options={scopeOptions.departments}
+                    getValue={(d) => d._id}
+                    getLabel={(d) => d.name}
+                    placeholder={scopeOptions.departments.length === 0
+                      ? 'No departments with data in range' : 'Select department'}
+                  />
+                )}
+                {scope === 'designation' && (
+                  <SearchableSelect
+                    value={scopeValue}
+                    onChange={setScopeValue}
+                    options={scopeOptions.designations}
+                    getValue={(d) => d._id}
+                    getLabel={(d) => d.title}
+                    placeholder={scopeOptions.designations.length === 0
+                      ? 'No designations with data in range' : 'Select designation'}
+                  />
+                )}
+                {scope === 'template' && (
+                  <SearchableSelect
+                    value={scopeValue}
+                    onChange={setScopeValue}
+                    options={scopeOptions.templates}
+                    getValue={(t) => t._id}
+                    getLabel={(t) => t.title}
+                    placeholder={scopeOptions.templates.length === 0
+                      ? 'No templates with data in range' : 'Select template'}
+                  />
+                )}
+              </div>
+            )}
+          </>
+        )}
+        {/* Calling mode -- legacy filter set (Employee dropdown was
+            already restricted to calling-active employees in Phase 56;
+            Department + Designation are hidden per Phases 56 / 56.1). */}
+        {mode === 'calling' && (
+          <div className="min-w-[200px]"><label className="label">Employee</label>
             <SearchableSelect
-              value={department}
-              onChange={setDepartment}
-              options={opts.departments}
-              getValue={(d) => d._id}
-              getLabel={(d) => d.name}
-              placeholder="All departments"
+              value={employee}
+              onChange={setEmployee}
+              options={callingRoster}
+              getValue={(e) => e._id}
+              getLabel={(e) => e.name + (e.employeeId ? ` (${e.employeeId})` : '')}
+              getSearchText={(e) => `${e.name} ${e.employeeId || ''} ${e.email || ''}`}
+              placeholder={callingRoster.length === 0 ? 'No calling activity in range' : 'All calling employees'}
             />
           </div>
         )}
-        {/* Phase 56.1 -- Designation filter is hidden on the Calling
-            tab.  The Employee dropdown is already restricted to
-            calling-active employees, so narrowing further by designation
-            adds no operational value.  Kept as-is for Pendency and
-            Completion Review tabs. */}
-        {mode !== 'calling' && (
-          <div className="min-w-[180px]"><label className="label">Designation</label>
-            <SearchableSelect
-              value={designation}
-              onChange={setDesignation}
-              options={opts.designations}
-              getValue={(d) => d._id}
-              getLabel={(d) => d.title}
-              placeholder="All designations"
-            />
-          </div>
-        )}
-        <div className="min-w-[200px]"><label className="label">Employee</label>
-          <SearchableSelect
-            value={employee}
-            onChange={setEmployee}
-            options={mode === 'calling' ? callingRoster : opts.employees}
-            getValue={(e) => e._id}
-            getLabel={(e) => e.name + (e.employeeId ? ` (${e.employeeId})` : '')}
-            getSearchText={(e) => `${e.name} ${e.employeeId || ''} ${e.email || ''}`}
-            placeholder={mode === 'calling'
-              ? (callingRoster.length === 0 ? 'No calling activity in range' : 'All calling employees')
-              : 'All employees'}
-          />
-        </div>
         <div><label className="label">Template type</label>
           <select className="input max-w-[150px]" value={templateType} onChange={(e) => setTemplateType(e.target.value)}>
             <option value="">All types</option><option value="task">Task</option><option value="excel">Excel</option><option value="sheet">Spreadsheet</option>
@@ -252,8 +361,12 @@ export default function Performance() {
             <option value="">All</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="one-time">One-time</option>
           </select>
         </div>
-        {(department || designation || employee || templateType || recurrence) && (
-          <button className="btn-ghost" onClick={() => { setDepartment(''); setDesignation(''); setEmployee(''); setTemplateType(''); setRecurrence(''); }}>Clear</button>
+        {(department || designation || employee || scope || scopeValue || templateType || recurrence) && (
+          <button className="btn-ghost" onClick={() => {
+            setDepartment(''); setDesignation(''); setEmployee('');
+            setScope(''); setScopeValue('');
+            setTemplateType(''); setRecurrence('');
+          }}>Clear</button>
         )}
         {/* HR / SA only -- include rows flagged as test data.  Default off. */}
         {(user?.role === 'hr' || user?.role === 'super_admin') && (

@@ -18,6 +18,11 @@ router.get('/hr/performance', authorize('hr'), c.hrPerformance);
 // HOD is auto-clamped to their own department inside the controller.
 router.get('/hr/pendency',   requireAnalyticsAccess, analytics.pendency);
 router.get('/hr/completion', requireAnalyticsAccess, analytics.completion);
+// Phase 57 -- populated-only scope-value lists for the Pendency /
+// Completion "Analytics Scope" dropdown redesign.  Returns employees,
+// templates, departments, designations that actually have submissions
+// in the current period so dropdowns never contain dead options.
+router.get('/hr/scope-options', requireAnalyticsAccess, analytics.scopeOptions);
 router.get('/hr/assignment-analytics', assignmentsGate, analytics.assignmentAnalytics);
 router.get('/hr/summary', authorize('hr'), c.hrSummary);
 

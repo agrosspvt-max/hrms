@@ -1,4 +1,5 @@
 const asyncHandler = require('express-async-handler');
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const Submission = require('../models/Submission');
 const DependencyTask = require('../models/DependencyTask');
@@ -149,8 +150,14 @@ const pendency = asyncHandler(async (req, res) => {
   };
   if (['task', 'excel', 'sheet'].includes(req.query.templateType)) subWhere.templateType = req.query.templateType;
   if (['daily', 'weekly', 'monthly', 'one-time'].includes(req.query.recurrence)) subWhere.frequency = req.query.recurrence;
+  // Phase 57 -- Analytics Scope: Template.  When the caller picks a
+  // specific template, every KPI / leaderboard / chart on the page
+  // must be recalculated from ONLY that template's submissions.
+  if (req.query.template && mongoose.Types.ObjectId.isValid(req.query.template)) {
+    subWhere.template = req.query.template;
+  }
   const subs = await Submission.find(subWhere)
-    .select('employee date frequency templateType tasks excelResponses sheet.scores').lean();
+    .select('employee date frequency templateType tasks excelResponses sheet.scores template').lean();
 
   // ---- Per-employee + per-day + per-frequency rollups ----
   const perEmp = new Map();   // empId -> { done, pending, ages:[] }
@@ -233,7 +240,23 @@ const pendency = asyncHandler(async (req, res) => {
   // ---- Dependency analytics ----
   // Phase 23.4: also populate assignedBy so the "Dependent Work" drill-
   // down can show Shared By → Assigned To per row without a second hop.
-  const depAll = await DependencyTask.find({})
+  //
+  // Phase 57 -- scope the dependency dataset to the SAME empIds the
+  // rest of this handler uses.  Previously this pulled every dep in
+  // the whole system, so cards like "Fastest Resolver" / "Most
+  // Blocked Employees" ignored the caller's Employee / Department /
+  // Designation / Template filter.  Now those cards recalculate from
+  // the filtered set:
+  //   - Employee scope  -> only deps this employee gave or received
+  //   - Department      -> only deps between employees in the dept
+  //   - Designation     -> only deps between employees in that designation
+  //   - Template        -> deps whose source template matches (below)
+  //   - Global          -> every dep involving any scoped employee
+  //                        (still effectively "all" because empIds is
+  //                        the full active roster)
+  const depWhere = { $or: [{ assignedTo: { $in: empIds } }, { assignedBy: { $in: empIds } }] };
+  if (subWhere.template) depWhere.template = subWhere.template;
+  const depAll = await DependencyTask.find(depWhere)
     .populate('assignedTo', 'name employeeId')
     .populate('assignedBy', 'name employeeId')
     .lean();
@@ -398,8 +421,14 @@ const completion = asyncHandler(async (req, res) => {
   if (['task', 'excel', 'sheet'].includes(req.query.templateType)) subWhere.templateType = req.query.templateType;
   if (['daily', 'weekly', 'monthly', 'one-time'].includes(req.query.recurrence)) subWhere.frequency = req.query.recurrence;
   if (req.query.reviewer) subWhere.reviewedBy = req.query.reviewer;
+  // Phase 57 -- Analytics Scope: Template.  When present, every card,
+  // leaderboard, chart and KPI on the Completion page is scoped to
+  // this template only.
+  if (req.query.template && mongoose.Types.ObjectId.isValid(req.query.template)) {
+    subWhere.template = req.query.template;
+  }
   const subs = await Submission.find(subWhere)
-    .select('employee date submittedAt frequency templateType earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus reviewedBy')
+    .select('employee date submittedAt frequency templateType earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus reviewedBy template')
     .lean();
 
   // Phase 6: discipline + innovation marks live exclusively on
@@ -547,8 +576,13 @@ const completion = asyncHandler(async (req, res) => {
   const reviewerName = new Map(reviewers.map((r) => [String(r._id), r.name]));
   const reviewerScores = [...reviewerAgg.entries()].map(([id, v]) => ({ name: reviewerName.get(id) || 'Unknown', avgScore: v.t > 0 ? round1((v.e / v.t) * 100) : 0, reviews: v.count })).sort((a, b) => b.reviews - a.reviews);
 
-  // Dependency resolution performance + collaboration
-  const depAll = await DependencyTask.find({}).populate('assignedTo', 'name').lean();
+  // Dependency resolution performance + collaboration.
+  // Phase 57 -- scope dep query to the SAME empIds + optional template
+  // so cards like Fastest Resolver / Most Collaborative recalculate
+  // from the filtered set instead of the whole system.
+  const depWhere_c = { $or: [{ assignedTo: { $in: empIds } }, { assignedBy: { $in: empIds } }] };
+  if (subWhere.template) depWhere_c.template = subWhere.template;
+  const depAll = await DependencyTask.find(depWhere_c).populate('assignedTo', 'name').lean();
   const resolved = depAll.filter((d) => d.currentStatus === 'resolved' && d.resolvedAt);
   const resolverAgg = new Map(); // name -> { hoursSum, count }
   for (const d of resolved) {
@@ -1870,4 +1904,97 @@ const callingRoster = asyncHandler(async (req, res) => {
   res.json(roster);
 });
 
-module.exports = { pendency, completion, assignmentAnalytics, callingAnalytics, myCallingAnalytics, exportCallingAnalytics, callingRoster };
+/**
+ * Phase 57 — Scope-value roster for the new Analytics Scope + Scope
+ * Value filter on the Performance page (Pendency + Completion tabs).
+ *
+ * Returns FOUR pre-filtered lists — only entities that actually have
+ * submissions in the requested period, so dropdowns never contain
+ * dead options.
+ *
+ *   employees   : [{ _id, name, employeeId }]
+ *   templates   : [{ _id, title }]
+ *   departments : [{ _id, name }]
+ *   designations: [{ _id, title }]
+ *
+ * Role scope + test-data flag mirror the pendency / completion handlers
+ * exactly, so HOD accounts get their department clamp automatically.
+ * The `includeTest` flag is respected so scope options and analytics
+ * stay in lock-step whether or not test rows are visible.
+ */
+const scopeOptions = asyncHandler(async (req, res) => {
+  const { from, to } = resolveRange(req.query);
+
+  // Same role-scoped employee universe pendency / completion use.
+  const empWhere = { role: { $in: ['employee', 'hr'] }, status: 'active' };
+  const isHRorSA = req.user.role === 'hr' || req.user.role === 'super_admin';
+  if (!isHRorSA && req.user.isHOD && req.user.hodDepartment) {
+    empWhere.department = req.user.hodDepartment;
+  }
+  const employees = await User.find(empWhere)
+    .select('_id name employeeId department designation')
+    .populate('department', 'name')
+    .populate('designation', 'title')
+    .lean();
+  if (employees.length === 0) {
+    return res.json({ employees: [], templates: [], departments: [], designations: [] });
+  }
+  const empIds = employees.map((e) => e._id);
+  const empById = new Map(employees.map((e) => [String(e._id), e]));
+
+  // Distinct employees + templates that actually submitted in range.
+  const [activeEmpIds, activeTplIds] = await Promise.all([
+    Submission.distinct('employee', {
+      submitted: true,
+      employee: { $in: empIds },
+      date: { $gte: from, $lt: to },
+      ...liveSubmissionFilter(readReqFlags(req)),
+    }),
+    Submission.distinct('template', {
+      submitted: true,
+      employee: { $in: empIds },
+      date: { $gte: from, $lt: to },
+      ...liveSubmissionFilter(readReqFlags(req)),
+    }),
+  ]);
+
+  // Build the four dropdown lists.
+  const activeEmps = activeEmpIds.map((id) => empById.get(String(id))).filter(Boolean);
+  const empList = activeEmps
+    .map((e) => ({ _id: e._id, name: e.name, employeeId: e.employeeId }))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  // Departments + designations: derive from the employees who actually
+  // submitted, so an empty department doesn't appear as an option.
+  const deptMap = new Map();
+  const desigMap = new Map();
+  for (const e of activeEmps) {
+    if (e.department?._id) {
+      deptMap.set(String(e.department._id), { _id: e.department._id, name: e.department.name });
+    }
+    if (e.designation?._id) {
+      desigMap.set(String(e.designation._id), { _id: e.designation._id, title: e.designation.title });
+    }
+  }
+  const deptList = [...deptMap.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  const desigList = [...desigMap.values()].sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+
+  // Templates: populate titles.
+  const tplIds = activeTplIds.filter(Boolean);
+  const Template = require('../models/Template');
+  const tplDocs = tplIds.length
+    ? await Template.find({ _id: { $in: tplIds } }).select('_id title').lean()
+    : [];
+  const tplList = tplDocs
+    .map((t) => ({ _id: t._id, title: t.title }))
+    .sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+
+  res.json({
+    employees:   empList,
+    templates:   tplList,
+    departments: deptList,
+    designations: desigList,
+  });
+});
+
+module.exports = { pendency, completion, assignmentAnalytics, callingAnalytics, myCallingAnalytics, exportCallingAnalytics, callingRoster, scopeOptions };
