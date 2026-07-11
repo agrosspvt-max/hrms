@@ -169,9 +169,10 @@ export default function Performance() {
               setMode(k);
               setData(null);
               // Phase 56 -- clear filters that don't exist on the
-              // Calling tab so a stale department / non-calling employee
-              // selection doesn't silently narrow the calling view.
-              if (k === 'calling') { setDepartment(''); setEmployee(''); }
+              // Calling tab so a stale department / designation /
+              // non-calling employee selection doesn't silently
+              // narrow the calling view.
+              if (k === 'calling') { setDepartment(''); setDesignation(''); setEmployee(''); }
             }}
             className={`px-5 py-2 text-sm font-medium rounded-lg transition ${mode === k ? 'bg-white shadow text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
             {label}
@@ -211,16 +212,23 @@ export default function Performance() {
             />
           </div>
         )}
-        <div className="min-w-[180px]"><label className="label">Designation</label>
-          <SearchableSelect
-            value={designation}
-            onChange={setDesignation}
-            options={opts.designations}
-            getValue={(d) => d._id}
-            getLabel={(d) => d.title}
-            placeholder="All designations"
-          />
-        </div>
+        {/* Phase 56.1 -- Designation filter is hidden on the Calling
+            tab.  The Employee dropdown is already restricted to
+            calling-active employees, so narrowing further by designation
+            adds no operational value.  Kept as-is for Pendency and
+            Completion Review tabs. */}
+        {mode !== 'calling' && (
+          <div className="min-w-[180px]"><label className="label">Designation</label>
+            <SearchableSelect
+              value={designation}
+              onChange={setDesignation}
+              options={opts.designations}
+              getValue={(d) => d._id}
+              getLabel={(d) => d.title}
+              placeholder="All designations"
+            />
+          </div>
+        )}
         <div className="min-w-[200px]"><label className="label">Employee</label>
           <SearchableSelect
             value={employee}
