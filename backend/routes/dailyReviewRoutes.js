@@ -20,5 +20,10 @@ router.post('/bulk-finalize', c.bulkFinalize);
 router.post('/task-status', c.editTaskStatus);
 // Phase 23.7 -- per-task marks edit for employee-added extra work.
 router.post('/task-marks', c.editTaskMarks);
+// Phase 59 -- full-edit for Custom submission values (Number, Status,
+// Dropdown).  Also handles Extra Tasks.  Recalculates marks + writes
+// audit log.  HR/SA always; HOD only when canEditSubmissions is set
+// AND the owner is in their own department.
+router.post('/edit-value', c.editSubmissionValue);
 
 module.exports = router;

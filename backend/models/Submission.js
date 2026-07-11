@@ -285,6 +285,30 @@ const submissionSchema = new mongoose.Schema(
             default: '',
           },
           remark: { type: String, default: '' },
+          /* ---- Phase 59 — Marks parity for Extra Tasks ----
+             Snapshot fields captured at submit time so the row can be
+             scored + re-edited independently of the catalog.  Same
+             semantics as the customField marks block; historical rows
+             leave these at 0. */
+          outOfValue:     { type: Number, default: 0 },
+          maxMarks:       { type: Number, default: 0 },
+          isCritical:     { type: Boolean, default: false },
+          penaltyMarksCfg:{ type: Number, default: 0 },
+          threshold:      { type: Number, default: 0 },
+          optionMarks: {
+            type: [new mongoose.Schema(
+              {
+                option:  { type: String, required: true, trim: true },
+                percent: { type: Number, default: 0, min: 0, max: 100 },
+                penalty: { type: Number, default: 0, min: 0 },
+              },
+              { _id: false },
+            )],
+            default: [],
+          },
+          availableMarks: { type: Number, default: 0 },
+          earnedMarks:    { type: Number, default: 0 },
+          penaltyMarks:   { type: Number, default: 0 },
         },
         { _id: false },
       )],

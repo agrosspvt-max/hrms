@@ -347,6 +347,29 @@ const templateSchema = new mongoose.Schema(
             enum: ['none', 'number', 'status', 'number_status'],
             default: 'none',
           },
+          /* ---- Phase 59 — Marks parity for Extra Tasks ----
+             Same shape as the customFields marks block so the shared
+             calculator can process both without a separate rule set.
+             All fields are OPTIONAL; a catalog row without any marks
+             config behaves exactly as it did before this phase. */
+          enableMarks:  { type: Boolean, default: false },
+          maxMarks:     { type: Number,  default: 0, min: 0 },
+          enableOutOf:  { type: Boolean, default: false },
+          outOfLabel:   { type: String,  default: 'Out Of' },
+          optionMarks: {
+            type: [new mongoose.Schema(
+              {
+                option:  { type: String, required: true, trim: true },
+                percent: { type: Number, default: 0, min: 0, max: 100 },
+                penalty: { type: Number, default: 0, min: 0 },
+              },
+              { _id: false },
+            )],
+            default: [],
+          },
+          isCritical:   { type: Boolean, default: false },
+          penaltyMarks: { type: Number,  default: 0, min: 0 },
+          threshold:    { type: Number,  default: 0, min: 0 },
           createdBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
           createdAt:    { type: Date, default: Date.now },
         },

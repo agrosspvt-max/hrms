@@ -587,7 +587,12 @@ function SubmissionPanel({ sub, onReload }) {
         {isCalling && <CallingReportPanel sub={sub} />}
         {isProductFarmer && <ProductFarmerPanel sub={sub} />}
         {!isCalling && !isProductFarmer && sub.templateType === 'custom' && (
-          <CustomResponsesPanel responses={sub.customResponses || []} fields={sub.template?.customFields || []} />
+          <CustomResponsesPanel
+            responses={sub.customResponses || []}
+            fields={sub.template?.customFields || []}
+            submissionId={sub._id}
+            onEdited={onReload}
+          />
         )}
         {/* Phase 53 -- Extra Tasks live in their own panel so the
             reviewer can tell predefined vs. ad-hoc work apart at a
@@ -595,7 +600,11 @@ function SubmissionPanel({ sub, onReload }) {
             carries at least one extra task; never leaks into task /
             excel / sheet templates. */}
         {sub.templateType === 'custom' && Array.isArray(sub.extraTasks) && sub.extraTasks.length > 0 && (
-          <ExtraTasksPanel extras={sub.extraTasks} />
+          <ExtraTasksPanel
+            extras={sub.extraTasks}
+            submissionId={sub._id}
+            onEdited={onReload}
+          />
         )}
         {sub.templateType === 'task' && (
           <TaskListPanel sub={sub} onReload={onReload} />
@@ -780,7 +789,108 @@ function ProductFarmerPanel({ sub }) {
  * modify the original template.  The template's extraTaskCatalog is
  * updated separately by the submit endpoint.
  */
-function ExtraTasksPanel({ extras }) {
+/**
+ * Phase 59 — Inline value editor used by Custom + Extra Task panels.
+ *
+ * Renders a compact form (number for Number tasks, select for Status,
+ * dropdown for Custom Dropdown).  On save, POSTs to /daily-review/edit-value;
+ * backend recomputes marks and writes audit + editHistory.  Parent
+ * onEdited() reloads the grouped feed so the new marks + totals flash
+ * immediately.
+ */
+function InlineValueEditor({ submissionId, kind, row, field, onDone, onCancel }) {
+  const responseType = row.responseType || (field?.fieldType || '');
+  const isNumberLike = kind === 'custom'
+    ? (field?.fieldType === 'number' || field?.fieldType === 'currency' || field?.fieldType === 'percentage')
+    : (responseType === 'number' || responseType === 'number_status');
+  const isStatusLike = kind === 'custom'
+    ? !!field?.supportsStatus
+    : (responseType === 'status' || responseType === 'number_status');
+  const isDropdownLike = kind === 'custom'
+    ? (field?.fieldType === 'dropdown' || field?.fieldType === 'yes_no')
+    : false;
+  const options = field?.options || [];
+  const [value, setValue] = useState(row.value ?? '');
+  const [outOfValue, setOutOfValue] = useState(row.outOfValue ?? 0);
+  const [status, setStatus] = useState(row.status || '');
+  const [remark, setRemark] = useState(row.remark || '');
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const body = { submissionId, kind, key: row.key, reason };
+      if (isNumberLike)  body.value = value === '' ? '' : Number(value);
+      if (isNumberLike && (kind === 'extra' ? true : field?.enableOutOf)) body.outOfValue = Number(outOfValue) || 0;
+      if (isStatusLike)  body.status = status;
+      if (isDropdownLike) body.value = value;
+      body.remark = remark;
+      await api.post('/daily-review/edit-value', body);
+      toast.success('Value updated');
+      onDone?.();
+    } catch (e) { toast.error(errMsg(e)); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="w-full mt-2 rounded-md bg-slate-50 border border-slate-200 p-2 space-y-2">
+      <div className="text-[10px] uppercase font-semibold text-slate-600">Edit values</div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        {isNumberLike && (
+          <>
+            <div>
+              <div className="label text-[10px] uppercase">Completed</div>
+              <input type="number" step="any" className="input !py-0.5 !text-xs" value={value ?? ''} onChange={(e) => setValue(e.target.value)} />
+            </div>
+            {(kind === 'extra' ? true : field?.enableOutOf) && (
+              <div>
+                <div className="label text-[10px] uppercase">{field?.outOfLabel || 'Out Of'}</div>
+                <input type="number" step="any" className="input !py-0.5 !text-xs" value={outOfValue ?? 0} onChange={(e) => setOutOfValue(e.target.value)} />
+              </div>
+            )}
+          </>
+        )}
+        {isDropdownLike && (
+          <div>
+            <div className="label text-[10px] uppercase">Selection</div>
+            <select className="input !py-0.5 !text-xs" value={value ?? ''} onChange={(e) => setValue(e.target.value)}>
+              <option value="">—</option>
+              {options.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+        )}
+        {isStatusLike && (
+          <div>
+            <div className="label text-[10px] uppercase">Status</div>
+            <select className="input !py-0.5 !text-xs" value={status || ''} onChange={(e) => setStatus(e.target.value)}>
+              <option value="">—</option>
+              <option value="done">Done</option>
+              <option value="pending">Pending</option>
+              <option value="work_not_available">Work N/A</option>
+            </select>
+          </div>
+        )}
+        <div>
+          <div className="label text-[10px] uppercase">Remark</div>
+          <input className="input !py-0.5 !text-xs" value={remark || ''} onChange={(e) => setRemark(e.target.value)} />
+        </div>
+        <div className="md:col-span-2">
+          <div className="label text-[10px] uppercase">Reason (audit log)</div>
+          <input className="input !py-0.5 !text-xs" placeholder="Optional — appears in audit log" value={reason} onChange={(e) => setReason(e.target.value)} />
+        </div>
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        <button className="btn-ghost !py-0.5 !text-xs" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button className="btn-primary !py-0.5 !text-xs" onClick={save} disabled={busy}>{busy ? 'Saving…' : 'Save + recalc marks'}</button>
+      </div>
+    </div>
+  );
+}
+
+function ExtraTasksPanel({ extras, submissionId, onEdited }) {
+  const [editingKey, setEditingKey] = useState(null);
   return (
     <div className="rounded-lg border border-indigo-100 bg-indigo-50/30 p-3 space-y-2">
       <div className="text-[11px] uppercase tracking-wide text-indigo-800 font-semibold">
@@ -790,32 +900,58 @@ function ExtraTasksPanel({ extras }) {
         {extras.map((r, i) => {
           const wantsValue  = r.responseType === 'number' || r.responseType === 'number_status';
           const wantsStatus = r.responseType === 'status' || r.responseType === 'number_status';
+          const hasMarks = (r.availableMarks || 0) > 0 || (r.earnedMarks || 0) > 0 || (r.penaltyMarks || 0) > 0;
           return (
-            <div key={i} className="rounded-md border border-slate-200 bg-white p-2 text-sm flex items-start justify-between gap-3 flex-wrap">
-              <div className="min-w-0 flex-1">
-                <div className="font-medium text-slate-800">{r.label}</div>
-                {r.description && <div className="text-[11px] text-slate-500">{r.description}</div>}
-                {r.remark && <div className="text-[11px] text-slate-600 mt-0.5"><b>Remark:</b> {r.remark}</div>}
+            <div key={i} className="rounded-md border border-slate-200 bg-white p-2 text-sm">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-slate-800">{r.label}</div>
+                  {r.description && <div className="text-[11px] text-slate-500">{r.description}</div>}
+                  {r.remark && <div className="text-[11px] text-slate-600 mt-0.5"><b>Remark:</b> {r.remark}</div>}
+                </div>
+                <div className="flex items-center gap-2 text-[11px] shrink-0">
+                  {wantsValue && (
+                    <span className="badge bg-blue-50 text-blue-700">
+                      Value: <b>{r.value === '' || r.value === null || r.value === undefined ? '—' : r.value}</b>
+                      {r.responseType === 'number_status' && r.outOfValue > 0 && (
+                        <> / <b>{r.outOfValue}</b></>
+                      )}
+                    </span>
+                  )}
+                  {wantsStatus && r.status && (
+                    <span className={`badge ${
+                      r.status === 'done' ? 'bg-green-50 text-green-700'
+                        : r.status === 'pending' ? 'bg-amber-50 text-amber-700'
+                        : 'bg-slate-100 text-slate-600'
+                    }`}>
+                      {r.status === 'work_not_available' ? 'Work N/A' : r.status[0].toUpperCase() + r.status.slice(1)}
+                    </span>
+                  )}
+                  {hasMarks && (
+                    <span className="badge bg-purple-50 text-purple-700">
+                      Marks: {r.earnedMarks ?? 0} / {r.availableMarks ?? 0}
+                      {r.penaltyMarks > 0 && <> · <span className="text-red-700">-{r.penaltyMarks}</span></>}
+                    </span>
+                  )}
+                  {!wantsValue && !wantsStatus && (
+                    <span className="text-slate-400 italic">no response</span>
+                  )}
+                  {submissionId && (
+                    <button className="btn-ghost !py-0.5 !text-[10px]" onClick={() => setEditingKey(editingKey === r.key ? null : r.key)}>
+                      {editingKey === r.key ? 'Close' : 'Edit'}
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2 text-[11px] shrink-0">
-                {wantsValue && (
-                  <span className="badge bg-blue-50 text-blue-700">
-                    Value: <b>{r.value === '' || r.value === null || r.value === undefined ? '—' : r.value}</b>
-                  </span>
-                )}
-                {wantsStatus && r.status && (
-                  <span className={`badge ${
-                    r.status === 'done' ? 'bg-green-50 text-green-700'
-                      : r.status === 'pending' ? 'bg-amber-50 text-amber-700'
-                      : 'bg-slate-100 text-slate-600'
-                  }`}>
-                    {r.status === 'work_not_available' ? 'Work N/A' : r.status[0].toUpperCase() + r.status.slice(1)}
-                  </span>
-                )}
-                {!wantsValue && !wantsStatus && (
-                  <span className="text-slate-400 italic">no response</span>
-                )}
-              </div>
+              {editingKey === r.key && (
+                <InlineValueEditor
+                  submissionId={submissionId}
+                  kind="extra"
+                  row={r}
+                  onCancel={() => setEditingKey(null)}
+                  onDone={() => { setEditingKey(null); onEdited?.(); }}
+                />
+              )}
             </div>
           );
         })}
@@ -824,11 +960,9 @@ function ExtraTasksPanel({ extras }) {
   );
 }
 
-function CustomResponsesPanel({ responses, fields }) {
+function CustomResponsesPanel({ responses, fields, submissionId, onEdited }) {
+  const [editingKey, setEditingKey] = useState(null);
   if (responses.length === 0) return <div className="text-xs text-slate-500 italic">No responses.</div>;
-  // Phase 14: surface { value, status, remark } per row, with a
-  // status badge + remark below the value.  Legacy { key, value }
-  // rows render only the value (status/remark default to '').
   const byKey = Object.fromEntries(responses.map((r) => [r.key, r]));
   const ordered = (fields || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
   const STATUS_META = {
@@ -842,6 +976,8 @@ function CustomResponsesPanel({ responses, fields }) {
       {ordered.map((f) => {
         const row = byKey[f.key] || {};
         const meta = STATUS_META[row.status];
+        const hasMarks = (row.availableMarks || 0) > 0 || (row.earnedMarks || 0) > 0 || (row.penaltyMarks || 0) > 0;
+        const isEditable = f.systemGenerated !== true && f.fieldType !== 'auto' && f.fieldType !== 'readonly';
         return (
           <div key={f.key} className="rounded border border-slate-200 px-3 py-2">
             <div className="flex items-start justify-between gap-2">
@@ -851,14 +987,41 @@ function CustomResponsesPanel({ responses, fields }) {
                   {row.value === '' || row.value == null
                     ? <span className="text-slate-400">—</span>
                     : String(row.value)}
+                  {/* Phase 58/59 -- surface Out Of + marks inline. */}
+                  {f.enableOutOf && (
+                    <span className="text-[11px] text-slate-500 ml-2">/ {row.outOfValue ?? 0} {f.outOfLabel && `(${f.outOfLabel})`}</span>
+                  )}
                 </div>
               </div>
-              {meta && <span className={`badge ${meta.cls} text-[10px] whitespace-nowrap`}>{meta.label}</span>}
+              <div className="flex items-center gap-2 shrink-0">
+                {meta && <span className={`badge ${meta.cls} text-[10px] whitespace-nowrap`}>{meta.label}</span>}
+                {hasMarks && (
+                  <span className="badge bg-purple-50 text-purple-700 text-[10px] whitespace-nowrap">
+                    {row.earnedMarks ?? 0}/{row.availableMarks ?? 0}
+                    {row.penaltyMarks > 0 && <> <span className="text-red-700">-{row.penaltyMarks}</span></>}
+                  </span>
+                )}
+                {isEditable && submissionId && (
+                  <button className="btn-ghost !py-0 !text-[10px]" onClick={() => setEditingKey(editingKey === f.key ? null : f.key)}>
+                    {editingKey === f.key ? 'Close' : 'Edit'}
+                  </button>
+                )}
+              </div>
             </div>
             {row.remark && (
               <div className="text-[11px] text-slate-600 mt-1">
                 <span className="font-semibold">Remark:</span> {row.remark}
               </div>
+            )}
+            {editingKey === f.key && (
+              <InlineValueEditor
+                submissionId={submissionId}
+                kind="custom"
+                row={row}
+                field={f}
+                onCancel={() => setEditingKey(null)}
+                onDone={() => { setEditingKey(null); onEdited?.(); }}
+              />
             )}
           </div>
         );

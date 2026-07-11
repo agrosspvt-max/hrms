@@ -1044,4 +1044,171 @@ const bulkFinalize = asyncHandler(async (req, res) => {
   res.json(out);
 });
 
-module.exports = { listGrouped, getDay, saveReflection, finalizeDay, bulkFinalize, editTaskStatus, editTaskMarks };
+/* ------------------------------------------------------------------ */
+/* Phase 59 — Full-edit for Custom Assignment submissions              */
+/*                                                                     */
+/* HR / Super Admin can always edit; HOD can edit ONLY when their      */
+/* hodPermissions.canEditSubmissions flag is on AND the submission     */
+/* owner is in their own department.  All edits automatically re-run   */
+/* the Marks engine so Available / Earned / Penalty / Final all update */
+/* atomically.  Every edit lands in the Submission.editHistory AND the */
+/* org-wide audit log with old→new + marks-delta captured.             */
+/*                                                                     */
+/* Body:                                                               */
+/*   { submissionId, kind: 'custom'|'extra',                           */
+/*     key,                                                            */
+/*     value?, outOfValue?, status?, remark?,                           */
+/*     reason? }                                                       */
+/* ------------------------------------------------------------------ */
+const editSubmissionValue = asyncHandler(async (req, res) => {
+  const { submissionId, kind, key, value, outOfValue, status, remark, reason } = req.body || {};
+  if (!mongoose.Types.ObjectId.isValid(submissionId)) {
+    res.status(400); throw new Error('Valid submissionId is required.');
+  }
+  if (kind !== 'custom' && kind !== 'extra') {
+    res.status(400); throw new Error('kind must be "custom" or "extra".');
+  }
+  if (!key || typeof key !== 'string') {
+    res.status(400); throw new Error('key is required.');
+  }
+  const sub = await Submission.findById(submissionId).populate('template', 'title customFields customKind customSections');
+  if (!sub) { res.status(404); throw new Error('Submission not found.'); }
+  if (sub.templateType !== 'custom') {
+    res.status(400); throw new Error('This endpoint only edits Custom Assignment submissions.');
+  }
+
+  // ---- Role gate + department clamp for HOD ----
+  const role = req.user.role;
+  const isHOD = !!(req.user.isHOD && req.user.hodDepartment);
+  const owner = await User.findById(sub.employee).select('role department name').lean();
+  if (!owner) { res.status(404); throw new Error('Submission owner not found.'); }
+  if (String(sub.employee) === String(req.user._id)) {
+    res.status(403); throw new Error('You cannot edit your own submission.');
+  }
+  const canEdit = role === 'super_admin'
+    || role === 'hr'
+    || (isHOD && req.user.hodPermissions?.canEditSubmissions === true
+        && String(owner.department) === String(req.user.hodDepartment))
+    || _hasFeature(req, 'submissionReviews');
+  if (!canEdit) {
+    res.status(403);
+    throw new Error(isHOD
+      ? 'HOD edit permission not granted, or not your department.'
+      : 'Only HR / Super Admin / authorised HOD may edit submission values.');
+  }
+  if (role === 'hr' && (owner.role === 'hr' || owner.role === 'super_admin')) {
+    res.status(403); throw new Error('Only Super Admin can edit HR submissions.');
+  }
+
+  // ---- Locate the target row ----
+  const listName = kind === 'custom' ? 'customResponses' : 'extraTasks';
+  const rows = Array.isArray(sub[listName]) ? sub[listName] : [];
+  const idx = rows.findIndex((r) => r.key === key);
+  if (idx === -1) {
+    res.status(404); throw new Error(`Row with key "${key}" not found in ${listName}.`);
+  }
+  const before = { ...rows[idx].toObject ? rows[idx].toObject() : rows[idx] };
+
+  // Old marks snapshot for delta logging.
+  const oldTotals = {
+    available: Number(sub.customAvailableMarks) || 0,
+    earned:    Number(sub.customEarnedMarks)    || 0,
+    penalty:   Number(sub.customPenaltyMarks)   || 0,
+    final:     Number(sub.customFinalMarks)     || 0,
+  };
+
+  // ---- Apply patch (only fields explicitly provided) ----
+  const editedFields = [];
+  const setIfProvided = (field, next, valid = () => true) => {
+    if (next === undefined) return;
+    const cur = rows[idx][field];
+    if (!valid(next)) return;
+    if (String(cur ?? '') === String(next ?? '')) return;
+    rows[idx][field] = next;
+    editedFields.push({ field, oldValue: cur, newValue: next });
+  };
+  setIfProvided('value',      value);
+  setIfProvided('outOfValue', outOfValue !== undefined ? Number(outOfValue) || 0 : undefined);
+  setIfProvided('status',     status, (v) => ['', 'done', 'ongoing', 'pending', 'work_not_available'].includes(v));
+  setIfProvided('remark',     remark !== undefined ? String(remark) : undefined);
+  if (editedFields.length === 0) {
+    res.status(200).json({ ok: true, unchanged: true, submission: sub });
+    return;
+  }
+
+  // ---- Re-run the Marks engine over the FULL slice + splice per-row marks ----
+  const { computeCustomMarks, computeExtraTaskMarks } = require('../services/customMarks');
+  // Custom side
+  const cValueByKey  = Object.fromEntries((sub.customResponses || []).map((r) => [r.key, r.value]));
+  const cOutOfByKey  = Object.fromEntries((sub.customResponses || []).map((r) => [r.key, Number(r.outOfValue) || 0]));
+  const cStatusByKey = Object.fromEntries((sub.customResponses || []).map((r) => [r.key, r.status || '']));
+  const customMarks = computeCustomMarks(sub.template?.customFields || [], cValueByKey, cOutOfByKey, cStatusByKey);
+  const cMap = new Map(customMarks.perField.map((m) => [m.key, m]));
+  for (const r of (sub.customResponses || [])) {
+    const m = cMap.get(r.key);
+    if (m) { r.availableMarks = m.availableMarks; r.earnedMarks = m.earnedMarks; r.penaltyMarks = m.penaltyMarks; }
+  }
+  // Extra side
+  const extraMarks = computeExtraTaskMarks(sub.extraTasks || []);
+  const eMap = new Map(extraMarks.perField.map((m) => [m.key, m]));
+  for (const r of (sub.extraTasks || [])) {
+    const m = eMap.get(r.key);
+    if (m) { r.availableMarks = m.availableMarks; r.earnedMarks = m.earnedMarks; r.penaltyMarks = m.penaltyMarks; }
+  }
+  const totAvail = customMarks.available + extraMarks.available;
+  const totEarn  = customMarks.earned    + extraMarks.earned;
+  const totPen   = customMarks.penalty   + extraMarks.penalty;
+  sub.customAvailableMarks = totAvail;
+  sub.customEarnedMarks    = totEarn;
+  sub.customPenaltyMarks   = totPen;
+  sub.customFinalMarks     = Math.max(0, totEarn - totPen);
+  sub.markModified(listName);
+  sub.markModified('customResponses');
+  sub.markModified('extraTasks');
+
+  const after = { ...rows[idx].toObject ? rows[idx].toObject() : rows[idx] };
+  const newTotals = {
+    available: sub.customAvailableMarks,
+    earned:    sub.customEarnedMarks,
+    penalty:   sub.customPenaltyMarks,
+    final:     sub.customFinalMarks,
+  };
+
+  // ---- Edit history + audit log ----
+  sub.editHistory = sub.editHistory || [];
+  sub.editHistory.push({
+    editedBy: req.user._id,
+    editorName: req.user.name,
+    role,
+    fields: editedFields.map((f) => `${listName}.${key}.${f.field}`),
+    note: `${editedFields.map((f) => `${f.field}: ${f.oldValue} → ${f.newValue}`).join('; ')}${reason ? ` · reason: ${reason}` : ''}`,
+    timestamp: new Date(),
+  });
+  await sub.save();
+
+  logAudit(req, {
+    action: `submission.${kind}-edit`,
+    targetType: 'Submission',
+    targetId: sub._id,
+    targetLabel: `${owner.name || sub.employee} · ${String(sub.date).slice(0, 10)} · ${sub.template?.title || ''}`,
+    meta: {
+      submissionId: String(sub._id),
+      employeeId:   String(sub.employee),
+      template:     sub.template?.title || '',
+      taskKind:     kind,
+      taskKey:      key,
+      taskLabel:    after.label || before.label || key,
+      taskType:     after.responseType || after.fieldType || (kind === 'extra' ? 'extra' : 'custom'),
+      fieldEdits:   editedFields,   // [{ field, oldValue, newValue }]
+      oldRow:       before,
+      newRow:       after,
+      oldMarks:     oldTotals,
+      newMarks:     newTotals,
+      reason:       String(reason || ''),
+    },
+  });
+
+  res.json({ ok: true, submission: sub });
+});
+
+module.exports = { listGrouped, getDay, saveReflection, finalizeDay, bulkFinalize, editTaskStatus, editTaskMarks, editSubmissionValue };

@@ -141,4 +141,42 @@ const computeCustomMarks = (fields, valueByKey = {}, outOfByKey = {}, statusByKe
   };
 };
 
-module.exports = { computeCustomMarks };
+/**
+ * Phase 59 — Same scoring rules applied to Extra Tasks.
+ *
+ * Reuses the internal per-field engine so predefined and extra-task
+ * scoring can never drift.  Each row shape is:
+ *   { key, responseType, value, status, outOfValue,
+ *     maxMarks, isCritical, penaltyMarksCfg, threshold, optionMarks }
+ *
+ * Returns per-row marks + totals (available / earned / penalty / final).
+ * Rows with maxMarks==0 or unrecognised responseType contribute nothing.
+ */
+const computeExtraTaskMarks = (rows = []) => {
+  // Translate an extra-task row into the same shape computeCustomMarks
+  // expects (a customField-like object) so we call ONE engine.
+  const asField = (r) => {
+    const rt = r.responseType || 'none';
+    const wantsNumber = rt === 'number' || rt === 'number_status';
+    const wantsStatus = rt === 'status' || rt === 'number_status';
+    return {
+      key: r.key,
+      fieldType: wantsNumber ? 'number' : (r.responseType === 'status' || rt === 'none' ? 'none' : 'text'),
+      enableMarks: (Number(r.maxMarks) || 0) > 0,
+      maxMarks:    Number(r.maxMarks) || 0,
+      supportsStatus: wantsStatus,
+      enableOutOf: wantsNumber,
+      optionMarks: Array.isArray(r.optionMarks) ? r.optionMarks : [],
+      isCritical:   !!r.isCritical,
+      penaltyMarks: Number(r.penaltyMarksCfg) || 0,
+      threshold:    Number(r.threshold) || 0,
+    };
+  };
+  const fields = rows.map(asField);
+  const valueByKey  = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const outOfByKey  = Object.fromEntries(rows.map((r) => [r.key, Number(r.outOfValue) || 0]));
+  const statusByKey = Object.fromEntries(rows.map((r) => [r.key, r.status || '']));
+  return computeCustomMarks(fields, valueByKey, outOfByKey, statusByKey);
+};
+
+module.exports = { computeCustomMarks, computeExtraTaskMarks };

@@ -591,6 +591,20 @@ const submitOne = asyncHandler(async (req, res) => {
       const status = wantsStatus
         ? (['done', 'ongoing', 'pending', 'work_not_available'].includes(raw.status) ? raw.status : '')
         : '';
+      // Phase 59 — snapshot the marks config from the catalog (or the
+      // client-provided config for a brand-new task) so the row is
+      // scoreable + re-editable independently of the catalog.
+      const catalogRow = (tpl.extraTaskCatalog || []).find((c) => c.key === key);
+      const marksCfg = catalogRow || raw || {};
+      const optionMarksClean = Array.isArray(marksCfg.optionMarks)
+        ? marksCfg.optionMarks
+            .filter((o) => o && typeof o.option === 'string')
+            .map((o) => ({
+              option: String(o.option).trim(),
+              percent: Math.max(0, Math.min(100, Number(o.percent) || 0)),
+              penalty: Math.max(0, Number(o.penalty) || 0),
+            }))
+        : [];
       cleanedExtras.push({
         key,
         label,
@@ -599,17 +613,52 @@ const submitOne = asyncHandler(async (req, res) => {
         value,
         status,
         remark: String(raw.remark || '').trim(),
+        outOfValue:      Number(raw.outOfValue) || 0,
+        maxMarks:        Math.max(0, Number(marksCfg.maxMarks) || 0),
+        isCritical:      !!marksCfg.isCritical,
+        penaltyMarksCfg: Math.max(0, Number(marksCfg.penaltyMarks) || 0),
+        threshold:       Math.max(0, Number(marksCfg.threshold) || 0),
+        optionMarks:     optionMarksClean,
+        availableMarks:  0, earnedMarks: 0, penaltyMarks: 0,
       });
       if (!existingKeys.has(key)) {
         catalogAdditions.push({
           key, label,
           description: String(raw.description || '').trim(),
           responseType,
+          // Persist marks config on brand-new catalog entries so
+          // future submissions of the same extra task inherit them.
+          maxMarks:      Math.max(0, Number(raw.maxMarks) || 0),
+          isCritical:    !!raw.isCritical,
+          penaltyMarks:  Math.max(0, Number(raw.penaltyMarks) || 0),
+          threshold:     Math.max(0, Number(raw.threshold) || 0),
+          optionMarks:   optionMarksClean,
           createdBy: req.user._id,
           createdAt: new Date(),
         });
         existingKeys.add(key);
       }
+    }
+    // Phase 59 — score every extra task through the SAME engine that
+    // scores predefined customFields, then splice per-row marks back.
+    if (cleanedExtras.length > 0) {
+      const { computeExtraTaskMarks } = require('../services/customMarks');
+      const extraMarks = computeExtraTaskMarks(cleanedExtras);
+      const marksByKey = new Map(extraMarks.perField.map((m) => [m.key, m]));
+      for (const row of cleanedExtras) {
+        const m = marksByKey.get(row.key);
+        if (m) {
+          row.availableMarks = m.availableMarks;
+          row.earnedMarks    = m.earnedMarks;
+          row.penaltyMarks   = m.penaltyMarks;
+        }
+      }
+      // Fold Extra Task marks into the submission totals so Marks
+      // Analytics + Score % include both buckets.  Final never negative.
+      sub.customAvailableMarks = (sub.customAvailableMarks || 0) + extraMarks.available;
+      sub.customEarnedMarks    = (sub.customEarnedMarks    || 0) + extraMarks.earned;
+      sub.customPenaltyMarks   = (sub.customPenaltyMarks   || 0) + extraMarks.penalty;
+      sub.customFinalMarks     = Math.max(0, sub.customEarnedMarks - sub.customPenaltyMarks);
     }
     sub.extraTasks = cleanedExtras;
     sub.markModified('extraTasks');

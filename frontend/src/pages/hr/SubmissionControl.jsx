@@ -445,8 +445,52 @@ function ViewSubmissionModal({ id, onClose }) {
             <KV k="Test Data" v={sub.isTestData ? `Yes — by ${sub.testDataMarkedBy?.name || ''}` : 'No'} />
           </Section>
           {Array.isArray(sub.customResponses) && sub.customResponses.length > 0 && (
-            <Section title="Custom Responses">
+            <Section title="Predefined Tasks">
               <pre className="bg-slate-50 border border-slate-200 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(sub.customResponses, null, 2)}</pre>
+            </Section>
+          )}
+          {/* Phase 59 -- Extra Tasks rendered as their OWN section so
+              Submission Control matches Submission Review's layout. */}
+          {Array.isArray(sub.extraTasks) && sub.extraTasks.length > 0 && (
+            <Section title={`Extra Tasks (${sub.extraTasks.length})`}>
+              <div className="grid gap-2">
+                {sub.extraTasks.map((r, i) => {
+                  const wantsValue  = r.responseType === 'number' || r.responseType === 'number_status';
+                  const wantsStatus = r.responseType === 'status' || r.responseType === 'number_status';
+                  const hasMarks = (r.availableMarks || 0) > 0 || (r.earnedMarks || 0) > 0 || (r.penaltyMarks || 0) > 0;
+                  return (
+                    <div key={i} className="rounded border border-slate-200 p-2 text-xs">
+                      <div className="flex items-start justify-between gap-2 flex-wrap">
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-slate-800">{r.label}</div>
+                          <div className="text-[10px] uppercase text-slate-500">{r.responseType}</div>
+                          {r.description && <div className="text-[11px] text-slate-500">{r.description}</div>}
+                          {r.remark && <div className="text-[11px] text-slate-600 mt-0.5"><b>Remark:</b> {r.remark}</div>}
+                        </div>
+                        <div className="flex items-center gap-1 text-[10px] shrink-0">
+                          {wantsValue && (
+                            <span className="badge bg-blue-50 text-blue-700">
+                              Value: <b>{r.value === '' || r.value == null ? '—' : String(r.value)}</b>
+                              {r.responseType === 'number_status' && r.outOfValue > 0 && <> / <b>{r.outOfValue}</b></>}
+                            </span>
+                          )}
+                          {wantsStatus && r.status && (
+                            <span className="badge bg-slate-100 text-slate-700">
+                              {r.status === 'work_not_available' ? 'Work N/A' : r.status[0].toUpperCase() + r.status.slice(1)}
+                            </span>
+                          )}
+                          {hasMarks && (
+                            <span className="badge bg-purple-50 text-purple-700">
+                              {r.earnedMarks ?? 0}/{r.availableMarks ?? 0}
+                              {r.penaltyMarks > 0 && <> <span className="text-red-700">-{r.penaltyMarks}</span></>}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </Section>
           )}
           {Array.isArray(sub.productSales) && sub.productSales.length > 0 && (

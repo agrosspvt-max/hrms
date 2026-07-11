@@ -35,7 +35,7 @@ const blank = {
   status: 'active', weeklyOff: [0],
   reviewFlow: 'direct_hr',
   isHOD: false, hodDepartment: '',
-  hodPermissions: { canReview: false, canRemark: false, canMarks: false, canRecommend: false },
+  hodPermissions: { canReview: false, canRemark: false, canMarks: false, canRecommend: false, canEditSubmissions: false },
 };
 
 /**
@@ -769,6 +769,12 @@ export function EmployeeForm({ mode, initial, departments, designations, onCance
                     ['canRemark', 'Can add remarks'],
                     ['canMarks', 'Can give marks'],
                     ['canRecommend', 'Can recommend approval'],
+                    // Phase 59 -- Edit Submission Values.  When on, this
+                    // HOD can edit customResponses + extraTasks (Number,
+                    // Status, Dropdown) for employees IN THEIR OWN
+                    // DEPARTMENT.  Server re-clamps department, so an
+                    // enabled HOD can never edit outside their scope.
+                    ['canEditSubmissions', 'Can edit submission values'],
                   ].map(([key, label]) => (
                     <label key={key} className="flex items-center gap-1.5 text-[12px] text-slate-700">
                       <input

@@ -45,6 +45,12 @@ const userSchema = new mongoose.Schema(
       canRemark: { type: Boolean, default: false },   // can add remarks
       canMarks: { type: Boolean, default: false },    // can give marks (recommendation)
       canRecommend: { type: Boolean, default: false },// can recommend approval to HR
+      // Phase 59 -- when true, the HOD can edit Custom Assignment
+      // submission values (Number Completed/OutOf, Status, Dropdown
+      // choice) for employees IN THEIR OWN DEPARTMENT.  The edit
+      // endpoint re-clamps the department server-side; false leaves
+      // the HOD in read/review mode.  HR + Super Admin bypass.
+      canEditSubmissions: { type: Boolean, default: false },
     },
 
     // Per-employee review routing.  'direct_hr' = current behaviour
