@@ -139,6 +139,17 @@ const pendency = asyncHandler(async (req, res) => {
     .lean();
   const empMap = new Map(employees.map((e) => [String(e._id), e]));
   const empIds = employees.map((e) => e._id);
+  // Phase 57.1 -- SINGLE source of scope truth for this handler.  Every
+  // per-name / per-employee aggregation below must run inputs through
+  // `_inScopeId(...)`.  Accepts either a raw ObjectId (unpopulated
+  // ref) or a populated `{ _id, ... }` object -- so callers don't
+  // have to remember whether a dep was populated or not.
+  const empIdSet = new Set(empIds.map(String));
+  const _idOf = (v) => (v && typeof v === 'object' && v._id ? v._id : v);
+  const _inScopeId = (v) => {
+    const id = _idOf(v);
+    return id != null && empIdSet.has(String(id));
+  };
 
   // ---- Submitted submissions in range, scoped to those employees ----
   // Optional template-type + recurrence filters (still pendency-only).
@@ -266,8 +277,12 @@ const pendency = asyncHandler(async (req, res) => {
   const resolvedDeps = depAll.filter((d) => d.currentStatus === 'resolved');
 
   // Most blocked employees: who currently owns the most OPEN dependency work.
+  // Phase 57.1 -- tally ONLY when the resolver (assignedTo) is in scope.
+  // Without this, a dep that has John (in scope) as assignedBy but
+  // Jane (out of scope) as assignedTo would credit Jane in the ranking.
   const blockedMap = new Map();
   for (const d of openDeps) {
+    if (!_inScopeId(d.assignedTo)) continue;
     const name = d.assignedTo?.name || d.assignedToName || 'Unknown';
     blockedMap.set(name, (blockedMap.get(name) || 0) + 1);
   }
@@ -277,8 +292,12 @@ const pendency = asyncHandler(async (req, res) => {
     .slice(0, 10);
 
   // Departments creating most blockers (department of the assigner).
+  // Phase 57.1 -- tally ONLY when the assigner (assignedBy) is in scope,
+  // so a Marketing filter never credits the Sales department just
+  // because Sales assigned work to a Marketing employee.
   const blockerDeptMap = new Map();
   for (const d of depAll) {
+    if (!_inScopeId(d.assignedBy)) continue;
     const name = d.departmentName || 'Unassigned';
     blockerDeptMap.set(name, (blockerDeptMap.get(name) || 0) + 1);
   }
@@ -412,6 +431,17 @@ const completion = asyncHandler(async (req, res) => {
     .populate('department', 'name').populate('designation', 'title').lean();
   const empMap = new Map(employees.map((e) => [String(e._id), e]));
   const empIds = employees.map((e) => e._id);
+  // Phase 57.1 -- SINGLE source of scope truth for this handler.
+  // Same helper as pendency; declared per-handler to avoid crossing
+  // request state through module scope.  Used below on every per-name
+  // aggregation so a leaderboard can never rank a person who's not
+  // in the currently-selected scope.
+  const empIdSet = new Set(empIds.map(String));
+  const _idOf = (v) => (v && typeof v === 'object' && v._id ? v._id : v);
+  const _inScopeId = (v) => {
+    const id = _idOf(v);
+    return id != null && empIdSet.has(String(id));
+  };
 
   const subWhere = {
     submitted: true, employee: { $in: empIds }, date: { $gte: from, $lt: to },
@@ -580,23 +610,47 @@ const completion = asyncHandler(async (req, res) => {
   // Phase 57 -- scope dep query to the SAME empIds + optional template
   // so cards like Fastest Resolver / Most Collaborative recalculate
   // from the filtered set instead of the whole system.
+  // Phase 57.1 -- also populate assignedBy so we can gate collaboration
+  // tallies on whether the giver is in scope, not just their string
+  // snapshot.  Without this, "Most Collaborative" credited people who
+  // merely interacted with the scoped employee even if THEY were out
+  // of scope themselves.
   const depWhere_c = { $or: [{ assignedTo: { $in: empIds } }, { assignedBy: { $in: empIds } }] };
   if (subWhere.template) depWhere_c.template = subWhere.template;
-  const depAll = await DependencyTask.find(depWhere_c).populate('assignedTo', 'name').lean();
+  const depAll = await DependencyTask.find(depWhere_c)
+    .populate('assignedTo', 'name')
+    .populate('assignedBy', 'name')
+    .lean();
   const resolved = depAll.filter((d) => d.currentStatus === 'resolved' && d.resolvedAt);
+  // Phase 57.1 -- resolverAgg tallies ONLY when the resolver (assignedTo)
+  // is in the currently-selected scope.  This drives BOTH the
+  // Fastest Resolver KPI card AND the Dependency Resolution
+  // Performance chart, so both now respect the filter.
   const resolverAgg = new Map(); // name -> { hoursSum, count }
   for (const d of resolved) {
+    if (!_inScopeId(d.assignedTo)) continue;
     const name = d.assignedTo?.name || d.assignedToName || 'Unknown';
     const hrs = (new Date(d.resolvedAt) - new Date(d.waitingSince || d.createdAt)) / 36e5;
     if (!resolverAgg.has(name)) resolverAgg.set(name, { hoursSum: 0, count: 0 });
     const r = resolverAgg.get(name); r.hoursSum += hrs; r.count += 1;
   }
   const resolverPerf = [...resolverAgg.entries()].map(([name, v]) => ({ name, avgHours: round1(v.hoursSum / v.count), resolved: v.count })).sort((a, b) => a.avgHours - b.avgHours);
+  // Phase 57.1 -- collabAgg credits each side of a dep ONLY if that
+  // side is itself in scope.  Under the previous logic, dep involving
+  // (John=in-scope, Jane=out-of-scope) credited BOTH John and Jane in
+  // the collaboration ranking, so Jane could win "Most Collaborative"
+  // in a scope she wasn't part of.  Now Jane only counts if Jane is
+  // in the scope.
   const collabAgg = new Map();
   for (const d of depAll) {
-    const giver = d.assignedByName || 'Unknown'; const taker = d.assignedToName || 'Unknown';
-    collabAgg.set(giver, (collabAgg.get(giver) || 0) + 1);
-    collabAgg.set(taker, (collabAgg.get(taker) || 0) + 1);
+    if (_inScopeId(d.assignedBy)) {
+      const giver = d.assignedBy?.name || d.assignedByName || 'Unknown';
+      collabAgg.set(giver, (collabAgg.get(giver) || 0) + 1);
+    }
+    if (_inScopeId(d.assignedTo)) {
+      const taker = d.assignedTo?.name || d.assignedToName || 'Unknown';
+      collabAgg.set(taker, (collabAgg.get(taker) || 0) + 1);
+    }
   }
   const collaboration = [...collabAgg.entries()].map(([name, count]) => ({ name, interactions: count })).sort((a, b) => b.interactions - a.interactions).slice(0, 10);
 
