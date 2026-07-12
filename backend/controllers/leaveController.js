@@ -12,6 +12,10 @@ const notify = require('../services/notifyEvents');
 // sends `attachmentIds[]` we link matching orphan attachments to the
 // new leave.  Nothing else in the leave flow depends on this.
 const LeaveAttachment = require('../models/LeaveAttachment');
+// Phase 62 -- Probation validation.  Consulted BEFORE Leave.create so
+// blocked requests never touch Leave History (spec item 9).  Nothing
+// about approvals, balances, attendance or payroll is touched.
+const probation = require('../services/probation');
 
 /**
  * Phase 54 -- attach metadata for a batch of leaves.  Returns a Map
@@ -93,6 +97,42 @@ const apply = asyncHandler(async (req, res) => {
   if (days <= 0) {
     res.status(400);
     throw new Error('Requested period contains no working days (weekly off / holidays only). No leave to apply.');
+  }
+
+  // Phase 62 -- Probation Period gate.  ONLY the employee's own
+  // apply is gated; HR / Super Admin acting through other routes
+  // are untouched.  When probation is active AND the selected
+  // leaveType is in the org-wide restricted list, we throw before
+  // Leave.create so nothing lands in Leave History (spec item 9).
+  try {
+    // We need the joiningDate + probation sub-doc to derive the window.
+    const empForProbation = await User.findById(req.user._id)
+      .select('joiningDate probation role').lean();
+    if (empForProbation && empForProbation.role === 'employee'
+        && probation.isOnProbation(empForProbation)) {
+      const restricted = await probation.getRestrictedTypes();
+      if (Array.isArray(restricted) && restricted.includes(leaveType)) {
+        const { endDate } = probation.getProbationWindow(empForProbation);
+        const until = probation.formatEndDate(endDate);
+        // Human-friendly label so the message reads naturally.
+        const LABEL = { paid: 'Paid Leave', casual: 'Casual Leave', sick: 'Sick Leave', unpaid: 'Unpaid Leave', other: 'Other Leave' };
+        const label = LABEL[leaveType] || leaveType;
+        res.status(400);
+        throw new Error(
+          `You are currently under probation until ${until}. `
+          + `${label} is not available during the probation period. `
+          + `Please apply using Unpaid Leave or another eligible leave type.`,
+        );
+      }
+    }
+  } catch (e) {
+    // If the check itself throws (400 for probation) we surface it;
+    // any other error (DB hiccup) is logged and the request proceeds
+    // to the existing pipeline so probation never becomes a hard
+    // dependency on the leave apply path.
+    if (res.statusCode === 400) throw e;
+    if (String(e && e.message || '').startsWith('You are currently under probation')) throw e;
+    console.error('[leave.apply] probation check failed (soft):', e.message);
   }
 
   // Paid-leave balance gate (Phase 2.5).

@@ -22,6 +22,11 @@ app.use('/api/templates', require('./routes/templateRoutes'));
 app.use('/api/assignments', require('./routes/assignmentRoutes'));
 app.use('/api/submissions', require('./routes/submissionRoutes'));
 app.use('/api/leaves', require('./routes/leaveRoutes'));
+// Phase 62 -- org-wide Leave Configuration (restricted leave types
+// during probation, extensible).  Existing leave workflow is untouched.
+app.use('/api/leave-config', require('./routes/leaveConfigRoutes'));
+// Phase 62 -- read-only Probation endpoints for dashboard/profile cards.
+app.use('/api/probation', require('./routes/probationRoutes'));
 app.use('/api/salary', require('./routes/salaryRoutes'));
 app.use('/api/dependencies', require('./routes/dependencyRoutes'));
 app.use('/api/dashboard', require('./routes/dashboardRoutes'));

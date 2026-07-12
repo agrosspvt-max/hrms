@@ -164,6 +164,29 @@ const userSchema = new mongoose.Schema(
 
     joiningDate: { type: Date, default: Date.now },
 
+    /* ================================================================
+     * Phase 62 -- Employee Probation Period.
+     *
+     * Additive, backwards-compatible sub-document.  Nothing about the
+     * existing leave / attendance / payroll / notifications pipeline
+     * reads or depends on these fields; only the leave APPLY validation
+     * consults them (services/probation.js).
+     *
+     *   enabled     -- master toggle.  Default ON per spec.
+     *   startDate   -- probation window start.  Defaults to joiningDate.
+     *   endDate     -- probation window end.   Defaults to startDate + 4 months.
+     *
+     * HR / Super Admin can override either date to shorten or lengthen
+     * the window per employee.  When the record is missing (legacy
+     * user), services/probation.js derives the same defaults on read,
+     * so no data migration is required.
+     * ============================================================= */
+    probation: {
+      enabled:   { type: Boolean, default: true },
+      startDate: { type: Date },
+      endDate:   { type: Date },
+    },
+
     // Set on every successful login.  Powers the "Last login" column in
     // the Super Admin → Manage Access table.
     lastLoginAt: { type: Date },

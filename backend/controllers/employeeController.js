@@ -249,6 +249,10 @@ const updateEmployee = asyncHandler(async (req, res) => {
     'dateOfBirth',
     // Phase 29: per-employee attendance mode.
     'attendanceMode',
+    // Phase 62: per-employee Probation window.  Additive sub-doc:
+    // { enabled, startDate, endDate }.  HR / SA only (route already
+    // gated).  When the client omits it, no change is made.
+    'probation',
   ];
   const patch = {};
   updatable.forEach((k) => { if (k in req.body) patch[k] = req.body[k]; });

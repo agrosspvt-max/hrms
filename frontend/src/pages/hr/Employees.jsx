@@ -36,6 +36,9 @@ const blank = {
   reviewFlow: 'direct_hr',
   isHOD: false, hodDepartment: '',
   hodPermissions: { canReview: false, canRemark: false, canMarks: false, canRecommend: false, canEditSubmissions: false },
+  // Phase 62 -- Probation defaults.  enabled=ON per spec.  When both
+  // dates are left blank the backend derives them from joiningDate.
+  probation: { enabled: true, startDate: '', endDate: '' },
 };
 
 /**
@@ -86,8 +89,20 @@ export default function Employees() {
 
   const save = async (form) => {
     try {
-      if (modal.mode === 'create') await api.post('/employees', form);
-      else await api.put(`/employees/${modal.data._id}`, form);
+      // Phase 62 -- normalize the Probation sub-doc.  Empty date
+      // strings become null so the backend derives the defaults
+      // (startDate = joiningDate, endDate = start + 4 months).
+      const payload = { ...form };
+      if (payload.probation) {
+        const p = payload.probation;
+        payload.probation = {
+          enabled: p.enabled !== false,
+          startDate: p.startDate ? p.startDate : null,
+          endDate:   p.endDate   ? p.endDate   : null,
+        };
+      }
+      if (modal.mode === 'create') await api.post('/employees', payload);
+      else await api.put(`/employees/${modal.data._id}`, payload);
       toast.success('Saved');
       setModal(null);
       load();
@@ -704,6 +719,50 @@ export function EmployeeForm({ mode, initial, departments, designations, onCance
             ))}
           </div>
         </div>
+        {/* Phase 62 -- Probation Settings.  Additive; when HR leaves
+            the two dates blank, the backend derives them from
+            joiningDate + 4 months.  Toggling Enable OFF disables
+            the leave-apply gate for this employee. */}
+        <div className="md:col-span-2 border-t pt-3 mt-1">
+          <div className="text-sm font-semibold text-slate-800 mb-2">Probation Settings</div>
+          <div className="grid md:grid-cols-3 gap-3">
+            <div>
+              <label className="label">Enable Probation</label>
+              <label className="flex items-center gap-2 text-sm input bg-white">
+                <input
+                  type="checkbox"
+                  checked={form.probation?.enabled !== false}
+                  onChange={(e) => set('probation', { ...(form.probation || {}), enabled: e.target.checked })}
+                />
+                Enabled
+              </label>
+              <div className="text-[11px] text-slate-500 mt-1">Default ON.  Disable to skip the probation gate for this employee.</div>
+            </div>
+            <div>
+              <label className="label">Probation Start Date</label>
+              <input
+                type="date"
+                className="input"
+                value={(form.probation?.startDate || '').substring(0, 10)}
+                onChange={(e) => set('probation', { ...(form.probation || {}), startDate: e.target.value })}
+                placeholder="Defaults to joining date"
+              />
+              <div className="text-[11px] text-slate-500 mt-1">Blank = employee's joining date.</div>
+            </div>
+            <div>
+              <label className="label">Probation End Date</label>
+              <input
+                type="date"
+                className="input"
+                value={(form.probation?.endDate || '').substring(0, 10)}
+                onChange={(e) => set('probation', { ...(form.probation || {}), endDate: e.target.value })}
+                placeholder="Defaults to start + 4 months"
+              />
+              <div className="text-[11px] text-slate-500 mt-1">Blank = 4 months after start.</div>
+            </div>
+          </div>
+        </div>
+
         {/* Phase 29: per-employee Attendance Mode */}
         <div className="md:col-span-2">
           <label className="label">Attendance Mode</label>

@@ -109,6 +109,11 @@ export default function HRLeaves() {
         </div>
       </div>
 
+      {/* Phase 62 -- Leave Configuration.  Only HR / Super Admin see
+          this card; changes take effect immediately via a shared
+          server cache invalidation. */}
+      <LeaveConfigCard />
+
       <div className="card overflow-x-auto">
         {loading ? <Loader /> :
           items.length === 0 ? <EmptyState title="No leave requests" /> :
@@ -202,6 +207,62 @@ export default function HRLeaves() {
           onClose={() => setViewing(null)}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Phase 62 -- Leave Configuration card.
+ * Currently exposes ONLY the "Restricted During Probation" checklist
+ * (spec item 6).  Never touches leave records, balances, approvals
+ * or attendance.  HR selects any subset of leave types; on Save the
+ * new list is persisted to LeaveConfig and used by the apply-time
+ * gate immediately.
+ */
+function LeaveConfigCard() {
+  const toast = useToast();
+  const [restricted, setRestricted] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    api.get('/leave-config')
+      .then((r) => { setRestricted(r.data?.restrictedDuringProbation || []); setLoaded(true); })
+      .catch(() => setLoaded(true));
+  }, []);
+  const toggle = (t) => setRestricted((cur) =>
+    cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t]);
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.put('/leave-config', { restrictedDuringProbation: restricted });
+      toast.success('Saved');
+    } catch (err) { toast.error(errMsg(err)); }
+    setSaving(false);
+  };
+  const TYPES = [
+    ['paid',   'Paid Leave'],
+    ['casual', 'Casual Leave'],
+    ['sick',   'Sick Leave'],
+    ['unpaid', 'Unpaid Leave'],
+    ['other',  'Other Leave'],
+  ];
+  return (
+    <div className="card card-body">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-800">Leave Configuration</h2>
+          <div className="text-[11px] text-slate-500">Which leave types are blocked while an employee is on probation.</div>
+        </div>
+        <button className="btn-primary" onClick={save} disabled={saving || !loaded}>{saving ? 'Saving…' : 'Save'}</button>
+      </div>
+      <div className="mt-3 flex flex-wrap gap-3">
+        {TYPES.map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2 text-sm border rounded px-3 py-1.5 bg-white">
+            <input type="checkbox" checked={restricted.includes(key)} onChange={() => toggle(key)} />
+            {label}
+          </label>
+        ))}
+      </div>
     </div>
   );
 }

@@ -58,6 +58,9 @@ export default function EmployeeDetail() {
   const [danger, setDanger] = useState(null); // { type:'deactivate'|'activate'|'delete' }
   const [tab, setTab] = useState('overview');
 
+  // Phase 62 -- Probation Status card.
+  const [probation, setProbation] = useState(null);
+
   const load = async () => {
     setLoading(true);
     try {
@@ -69,6 +72,9 @@ export default function EmployeeDetail() {
       setEmp(e.data); setDepartments(d.data); setDesignations(ds.data);
       api.get('/dashboard/hr/pendency', { params: { range: '30', employee: id } })
         .then((r) => setPendency(r.data)).catch(() => setPendency(null));
+      // Phase 62 -- probation window (non-blocking).
+      api.get(`/probation/employee/${id}`)
+        .then((r) => setProbation(r.data)).catch(() => setProbation(null));
     } catch (err) {
       toast.error(errMsg(err));
     } finally {
@@ -86,7 +92,19 @@ export default function EmployeeDetail() {
 
   const saveProfile = async (form) => {
     try {
-      await api.put(`/employees/${id}`, form);
+      // Phase 62 -- normalize the Probation sub-doc the same way
+      // Employees.jsx does, so empty date inputs become null and the
+      // backend derives defaults from joiningDate.
+      const payload = { ...form };
+      if (payload.probation) {
+        const p = payload.probation;
+        payload.probation = {
+          enabled: p.enabled !== false,
+          startDate: p.startDate ? p.startDate : null,
+          endDate:   p.endDate   ? p.endDate   : null,
+        };
+      }
+      await api.put(`/employees/${id}`, payload);
       toast.success('Saved'); setEditOpen(false); load();
     } catch (err) { toast.error(errMsg(err)); }
   };
@@ -166,6 +184,47 @@ export default function EmployeeDetail() {
       {tab === 'leaves' && <EmployeeLeaves employee={emp} />}
 
       {tab === 'overview' && <>
+      {/* Phase 62 -- Probation Status card for HR / Super Admin. */}
+      {probation && (
+        <div className="card card-body">
+          <h2 className="text-sm font-semibold text-slate-800 mb-3">Probation Status</h2>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3 text-sm">
+            <div>
+              <div className="text-[11px] uppercase text-slate-500">Status</div>
+              <div className="mt-0.5">
+                {probation.status === 'active'    && <span className="badge bg-blue-50 text-blue-700">Active</span>}
+                {probation.status === 'completed' && <span className="badge bg-slate-100 text-slate-700">Completed</span>}
+                {probation.status === 'scheduled' && <span className="badge bg-amber-50 text-amber-800">Scheduled</span>}
+                {probation.status === 'disabled'  && <span className="badge bg-slate-100 text-slate-500">Disabled</span>}
+              </div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase text-slate-500">Start Date</div>
+              <div>{probation.startDate ? fmtDate(probation.startDate) : '—'}</div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase text-slate-500">End Date</div>
+              <div>{probation.endDate ? fmtDate(probation.endDate) : '—'}</div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase text-slate-500">Days Remaining</div>
+              <div>{probation.daysRemaining ?? 0}</div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase text-slate-500">Restricted Leave Types</div>
+              <div className="text-xs">
+                {(probation.restrictedLeaveTypes || []).length === 0
+                  ? '—'
+                  : probation.restrictedLeaveTypes.map((t) => {
+                      const label = { paid: 'Paid', casual: 'Casual', sick: 'Sick', unpaid: 'Unpaid', other: 'Other' }[t] || t;
+                      return <span key={t} className="badge bg-slate-100 text-slate-700 mr-1">{label}</span>;
+                    })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Pendency snapshot */}
       {pendency && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

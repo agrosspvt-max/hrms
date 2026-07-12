@@ -182,10 +182,55 @@ function PenaltyWarnings({ penalties, onAcknowledged }) {
   );
 }
 
+/**
+ * Phase 62 -- Probation Period info card for the employee dashboard.
+ * Renders ONLY while the employee is currently inside their probation
+ * window.  Informational -- no action buttons, no side effects.
+ */
+function ProbationInfoCard({ probation }) {
+  if (!probation || !probation.onProbation) return null;
+  const label = {
+    paid: 'Paid Leave',
+    casual: 'Casual Leave',
+    sick: 'Sick Leave',
+    unpaid: 'Unpaid Leave',
+    other: 'Other Leave',
+  };
+  const fmt = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '';
+  return (
+    <div className="border border-blue-300 bg-blue-50 rounded-lg p-3">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-wide font-semibold text-blue-800">
+            Probation Period
+          </div>
+          <div className="mt-1 text-sm text-slate-800">
+            {fmt(probation.startDate)} <span className="mx-2 text-slate-500">↓</span> {fmt(probation.endDate)}
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-[11px] uppercase tracking-wide text-blue-800/70">Days Remaining</div>
+          <div className="text-lg font-semibold text-blue-900">{probation.daysRemaining}</div>
+        </div>
+      </div>
+      {Array.isArray(probation.restrictedLeaveTypes) && probation.restrictedLeaveTypes.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-blue-200/70">
+          <div className="text-[11px] uppercase tracking-wide text-blue-800/80 mb-0.5">Restricted Leave Types</div>
+          <ul className="text-xs text-slate-700 list-disc pl-4">
+            {probation.restrictedLeaveTypes.map((t) => <li key={t}>{label[t] || t}</li>)}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function EmployeeDashboard({ embedded = false } = {}) {
   const [data, setData] = useState(null);
   // Phase 61 -- Penalty Engine feed { active, probable, resolved }.
   const [penalties, setPenalties] = useState({ active: [], probable: [], resolved: [] });
+  // Phase 62 -- Probation window (informational card only).
+  const [probation, setProbation] = useState(null);
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   // Local UI state per task
@@ -597,6 +642,11 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       const pr = await api.get('/penalties/mine');
       setPenalties(pr.data || { active: [], probable: [], resolved: [] });
     } catch (_) { /* card just stays empty */ }
+    // Phase 62 -- probation info card.  Never blocks the dashboard.
+    try {
+      const pb = await api.get('/probation/mine');
+      setProbation(pb.data || null);
+    } catch (_) { /* card just stays hidden */ }
   };
   useEffect(() => { load(); }, []);
 
@@ -1382,6 +1432,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       {!data.onLeave && !data.weeklyOff && !data.holiday && (
         <AttendanceConfirmationCard />
       )}
+
+      {/* Phase 62 -- Probation info card (informational). */}
+      <ProbationInfoCard probation={probation} />
 
       {/* Phase 61 -- Penalty Engine dashboard warning card.  Renders
           only when there's something to show.  The employee can
