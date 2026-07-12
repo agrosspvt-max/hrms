@@ -179,12 +179,24 @@ export default function EmployeeAttendance() {
 
   const saveEdit = async () => {
     if (!editing) return;
+    // Phase 61 -- Absent -> Present transition requires an explicit
+    // Performance Penalty / Neutral Adjustment choice.
+    const isPresentType = editing.status === 'present'
+      || editing.status === 'half_paid'
+      || editing.status === 'half_unpaid';
+    const needsDecision = editing.prevStatus === 'absent' && isPresentType;
+    if (needsDecision && !editing.penaltyDecision) {
+      toast.error('Choose Performance Penalty or Neutral Adjustment first.');
+      return;
+    }
     setEditing((e) => ({ ...e, saving: true }));
     try {
       await api.put(`/attendance/employee/${editing.employee._id}/status`, {
         date: editing.date,
         status: editing.status,
         note: editing.note,
+        // Phase 61 -- only sent on the specific transition.
+        penaltyDecision: needsDecision ? editing.penaltyDecision : undefined,
       });
       toast.success('Attendance updated');
       await fetchAttendance(editing.employee._id);
@@ -472,6 +484,53 @@ export default function EmployeeAttendance() {
             <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-500">
               {STATUS_EFFECT[editing.status]}
             </div>
+
+            {/* Phase 61 -- Manual Attendance Correction.
+                When HR flips Absent -> Present-type on a day the
+                employee never submitted work for, they MUST pick
+                one of the two Phase-61 options.  The backend
+                enforces this by only creating the penalty when
+                penaltyDecision === 'performance_penalty'. */}
+            {editing.prevStatus === 'absent'
+              && (editing.status === 'present' || editing.status === 'half_paid' || editing.status === 'half_unpaid') && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 space-y-2">
+                <div className="text-[11px] uppercase tracking-wide text-amber-800 font-semibold">
+                  Missing-Submission Handling
+                </div>
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="penaltyDecision"
+                    checked={editing.penaltyDecision === 'performance_penalty'}
+                    onChange={() => setEditing({ ...editing, penaltyDecision: 'performance_penalty' })}
+                  />
+                  <span>
+                    <b>Option A · Performance Penalty.</b>{' '}
+                    Available &amp; Earned marks remain unchanged.  A
+                    penalty equal to Earned Marks is recorded so
+                    Final Marks become <b>0</b>.  Affects performance
+                    but keeps the history intact.
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm">
+                  <input
+                    type="radio"
+                    name="penaltyDecision"
+                    checked={editing.penaltyDecision === 'neutral_adjustment'}
+                    onChange={() => setEditing({ ...editing, penaltyDecision: 'neutral_adjustment' })}
+                  />
+                  <span>
+                    <b>Option B · Neutral Adjustment.</b>{' '}
+                    Day is completely ignored.  Available = 0, Earned
+                    = 0, Penalty = 0.  No positive or negative effect
+                    on performance.
+                  </span>
+                </label>
+                <div className="text-[11px] text-amber-800/80">
+                  This decision is stored permanently in the audit log.
+                </div>
+              </div>
+            )}
 
             <div>
               <label className="label">Note / Reason (optional)</label>

@@ -44,6 +44,9 @@ app.use('/api/template-analytics', require('./routes/templateAnalyticsRoutes'));
 // Independent of Tasks / Assignments / Submissions / Notifications so
 // nothing else in the app is affected.
 app.use('/api/attendance-notes', require('./routes/attendanceNoteRoutes'));
+// Phase 61 -- Fines & Penalties module.  Automatic + manual penalty
+// generation, dashboard, employee acknowledgement, analytics.
+app.use('/api/penalties', require('./routes/penaltyRoutes'));
 // Phase 47 — Server-Sent Events stream that pushes cross-user updates
 // (notifications, leave requests, salary slips, attendance edits, etc.)
 // to the affected user(s) so the UI updates without a manual refresh.

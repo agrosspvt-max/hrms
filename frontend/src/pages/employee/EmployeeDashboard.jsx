@@ -94,8 +94,98 @@ const customCompute = (fields, raw) => {
   return ctx;
 };
 
+/**
+ * Phase 60 -- shared Employee Private Remark textarea.  Rendered at
+ * the bottom of every submission form when the template opts in.
+ * The value is submission-scoped and stays hidden from the HOD.
+ */
+function PrivateRemarkBox({ sub, value, onChange }) {
+  if (!sub?.template?.privateRemarkEnabled) return null;
+  const label = sub.template?.privateRemarkLabel || 'Remark';
+  const required = !!sub.template?.privateRemarkRequired;
+  return (
+    <div className="mt-4 border-t pt-4">
+      <label className="label flex items-center gap-2">
+        {label}
+        {required && <span className="text-red-500">*</span>}
+        <span className="text-[11px] text-slate-500 font-normal">(visible only to HR)</span>
+      </label>
+      <textarea
+        className="input"
+        rows={3}
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={required
+          ? 'Required note for HR / Super Admin only. Not shown to your HOD.'
+          : 'Optional note for HR / Super Admin only. Not shown to your HOD.'}
+      />
+    </div>
+  );
+}
+
+/**
+ * Phase 61 -- Penalty warning card for the employee.  Shown at the
+ * top of the Dashboard while there's anything to acknowledge.
+ *   red    -- currently-enforced penalty (Final = 0 that day).
+ *   amber  -- probable warning.
+ *
+ * Cards persist until the employee clicks "I've read this".  A
+ * click POSTs /penalties/:id/acknowledge which stamps
+ * acknowledgedAt server-side.  HR can see the timestamp on the
+ * Fines & Penalties page.
+ */
+function PenaltyWarnings({ penalties, onAcknowledged }) {
+  const unread = [
+    ...(penalties.active   || []).filter((p) => !p.acknowledgedAt),
+    ...(penalties.probable || []).filter((p) => !p.acknowledgedAt),
+  ];
+  if (unread.length === 0) return null;
+  const ack = async (id) => {
+    try {
+      await api.post(`/penalties/${id}/acknowledge`);
+      onAcknowledged?.();
+    } catch (_) { /* silent */ }
+  };
+  return (
+    <div className="space-y-2">
+      {unread.map((p) => {
+        const enforced = !p.probable;
+        const cls = enforced
+          ? 'border-red-300 bg-red-50 text-red-800'
+          : 'border-amber-300 bg-amber-50 text-amber-800';
+        return (
+          <div key={p._id} className={`border rounded-lg p-3 flex items-start justify-between gap-3 ${cls}`}>
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] uppercase tracking-wide font-semibold">
+                {enforced ? 'Performance penalty applied' : 'Warning · possible penalty'}
+              </div>
+              <div className="text-sm mt-0.5">
+                {p.employeeMessage || p.reason || 'A penalty has been recorded on your account.'}
+              </div>
+              {p.targetDate && (
+                <div className="text-[11px] mt-1 opacity-80">
+                  For date: {new Date(p.targetDate).toLocaleDateString()}
+                </div>
+              )}
+            </div>
+            <button
+              className="btn-secondary shrink-0"
+              onClick={() => ack(p._id)}
+              title="Acknowledge and dismiss this card"
+            >
+              I've read this
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function EmployeeDashboard({ embedded = false } = {}) {
   const [data, setData] = useState(null);
+  // Phase 61 -- Penalty Engine feed { active, probable, resolved }.
+  const [penalties, setPenalties] = useState({ active: [], probable: [], resolved: [] });
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   // Local UI state per task
@@ -119,6 +209,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   // and on Submit; the backend upserts new (key) rows into the parent
   // template's extraTaskCatalog so future employees can pick them.
   const [extraTasks, setExtraTasks] = useState({});
+  // Phase 60 -- Employee Private Remark per submission.  Only rendered
+  // when the template has privateRemarkEnabled.  { subId: 'text' }.
+  const [privateRemarks, setPrivateRemarks] = useState({});
   // Product Sales rows per submission: { subId: [{ productId, quantityId }] }
   const [productSales, setProductSales] = useState({});
   // Farmer rows per submission: { subId: [{ name, mobile, ... }] }
@@ -301,6 +394,12 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       selfNote:   selfNote[sub._id],
       idea:       idea[sub._id],
     };
+    // Phase 60 -- include the private remark on every autosave so a
+    // half-typed note isn't lost on page reload.  Backend refuses to
+    // persist it when the template has the field disabled.
+    if (sub.template?.privateRemarkEnabled) {
+      payload.privateRemark = privateRemarks[sub._id] || '';
+    }
     if (sub.templateType === 'custom') {
       const raw = customValues[sub._id] || {};
       const metaForSub = customMeta[sub._id] || {};
@@ -405,7 +504,17 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     // Phase 53 -- reseed extra tasks so a page reload / re-open of the
     // dashboard restores what the employee typed.
     const extraTasksSeed = {};
+    // Phase 60 -- reseed the Employee Private Remark so a partial
+    // autosave survives page reload.
+    const privateRemarksSeed = {};
     (a.data.submissions || []).forEach((s) => {
+      // Phase 60 -- reseed the private remark on every unsubmitted
+      // template that has the feature turned on.  Works for both
+      // task and custom templates because the field lives on the
+      // submission, not on a task row.
+      if (!s.submitted && s.template?.privateRemarkEnabled) {
+        privateRemarksSeed[s._id] = typeof s.privateRemark === 'string' ? s.privateRemark : '';
+      }
       if (s.templateType === 'sheet' && !s.submitted && s.sheet) {
         seed[s._id] = JSON.parse(JSON.stringify(s.sheet));
       }
@@ -475,10 +584,19 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     setExtraTasks((prev) =>   ({ ...extraTasksSeed,    ...prev }));
     setProductSales((prev) => ({ ...productSalesSeed,  ...prev }));
     setFarmerRecords((prev) =>({ ...farmerRecordsSeed, ...prev }));
+    // Phase 60 -- seed the private remark drafts; keep any in-flight
+    // typed text (prev) rather than clobbering with the server copy.
+    setPrivateRemarks((prev) => ({ ...privateRemarksSeed, ...prev }));
     setSheetState(seed);
     setData(a.data);
     setSummary(b.data);
     setLoading(false);
+    // Phase 61 -- pull the caller's own penalty feed for the
+    // dashboard warning card.  Failure is non-fatal.
+    try {
+      const pr = await api.get('/penalties/mine');
+      setPenalties(pr.data || { active: [], probable: [], resolved: [] });
+    } catch (_) { /* card just stays empty */ }
   };
   useEffect(() => { load(); }, []);
 
@@ -545,6 +663,16 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   const submit = async (sub) => {
     setBusy(true);
     try {
+      // Phase 60 -- client-side required check.  Server validates
+      // again so a rogue client can't skip the required flag.
+      if (sub.template?.privateRemarkEnabled && sub.template?.privateRemarkRequired) {
+        const txt = (privateRemarks[sub._id] || '').trim();
+        if (!txt) {
+          toast.error(`${sub.template.privateRemarkLabel || 'Remark'} is required before submitting.`);
+          setBusy(false);
+          return;
+        }
+      }
       if (sub.templateType === 'sheet') {
         const ws = sheetState[sub._id] || sub.sheet;
         // Task rows = scored rows HR flagged with statusTracking.
@@ -580,6 +708,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           selfRating: selfRating[sub._id],
           selfNote: selfNote[sub._id],
           idea: idea[sub._id],
+          // Phase 60 -- optional Employee Private Remark.  Backend
+          // ignores this when the template hasn't enabled it.
+          privateRemark: sub.template?.privateRemarkEnabled ? (privateRemarks[sub._id] || '') : undefined,
         });
       } else if (sub.templateType === 'excel') {
         const values = excelValues[sub._id] || {};
@@ -592,6 +723,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           selfRating: selfRating[sub._id],
           selfNote: selfNote[sub._id],
           idea: idea[sub._id],
+          // Phase 60 -- optional Employee Private Remark.  Backend
+          // ignores this when the template hasn't enabled it.
+          privateRemark: sub.template?.privateRemarkEnabled ? (privateRemarks[sub._id] || '') : undefined,
         });
       } else if (sub.templateType === 'custom') {
         // Custom Assignment: send the employee-entered values; backend
@@ -725,6 +859,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           selfRating: selfRating[sub._id],
           selfNote: selfNote[sub._id],
           idea: idea[sub._id],
+          // Phase 60 -- optional Employee Private Remark.  Backend
+          // ignores this when the template hasn't enabled it.
+          privateRemark: sub.template?.privateRemarkEnabled ? (privateRemarks[sub._id] || '') : undefined,
         });
       } else {
         // Build per-task payload with the new Work Type + Forward To
@@ -788,6 +925,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           selfRating: selfRating[sub._id],
           selfNote: selfNote[sub._id],
           idea: idea[sub._id],
+          // Phase 60 -- optional Employee Private Remark.  Backend
+          // ignores this when the template hasn't enabled it.
+          privateRemark: sub.template?.privateRemarkEnabled ? (privateRemarks[sub._id] || '') : undefined,
         });
       }
       toast.success('Submitted!');
@@ -1243,6 +1383,20 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         <AttendanceConfirmationCard />
       )}
 
+      {/* Phase 61 -- Penalty Engine dashboard warning card.  Renders
+          only when there's something to show.  The employee can
+          acknowledge each warning; acknowledgement time is stored
+          on the Penalty document so HR can see it. */}
+      <PenaltyWarnings
+        penalties={penalties}
+        onAcknowledged={async () => {
+          try {
+            const pr = await api.get('/penalties/mine');
+            setPenalties(pr.data || { active: [], probable: [], resolved: [] });
+          } catch (_) { /* silent */ }
+        }}
+      />
+
       {/* Today's tasks per submission */}
       {!data.onLeave && !data.weeklyOff && !data.holiday && (
         <div className="space-y-4">
@@ -1337,6 +1491,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                   setIdea={(v) => setIdea((s) => ({ ...s, [sub._id]: v }))}
                   busy={busy}
                   onSubmit={() => submit(sub)}
+                  // Phase 60 -- Employee Private Remark plumbing.
+                  privateRemark={privateRemarks[sub._id] || ''}
+                  setPrivateRemark={(v) => setPrivateRemarks((s) => ({ ...s, [sub._id]: v }))}
                 />
               ) : sub.templateType === 'sheet' ? (
                 <>
@@ -1353,6 +1510,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                   {/* Self-observation + Idea moved to a single Daily Reflection
                       card at the top of "Today's Tasks" (Phase 5 refactor). */}
 
+                  {/* Phase 60 -- Employee Private Remark. */}
+                  <PrivateRemarkBox
+                    sub={sub}
+                    value={privateRemarks[sub._id] || ''}
+                    onChange={(v) => setPrivateRemarks((s) => ({ ...s, [sub._id]: v }))}
+                  />
+
                   <div className="mt-4 flex justify-end">
                     <button className="btn-primary" disabled={busy} onClick={() => submit(sub)}>
                       Submit Report
@@ -1368,6 +1532,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                       ...s,
                       [sub._id]: { ...(s[sub._id] || {}), [fieldName]: value },
                     }))}
+                  />
+
+                  {/* Phase 60 -- Employee Private Remark. */}
+                  <PrivateRemarkBox
+                    sub={sub}
+                    value={privateRemarks[sub._id] || ''}
+                    onChange={(v) => setPrivateRemarks((s) => ({ ...s, [sub._id]: v }))}
                   />
 
                   <div className="mt-4 flex justify-end">
@@ -1534,6 +1705,13 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                   {/* Self-observation + Idea moved to a single Daily Reflection
                       card at the top of "Today's Tasks" (Phase 5 refactor). */}
 
+                  {/* Phase 60 -- Employee Private Remark. */}
+                  <PrivateRemarkBox
+                    sub={sub}
+                    value={privateRemarks[sub._id] || ''}
+                    onChange={(v) => setPrivateRemarks((s) => ({ ...s, [sub._id]: v }))}
+                  />
+
                   <div className="mt-4 flex justify-end">
                     <button className="btn-primary" disabled={busy} onClick={() => submit(sub)}>
                       Submit
@@ -1619,6 +1797,9 @@ function CustomTemplateForm({
   products = [], quantities = [], dealers = [],
   selfRating, setSelfRating, selfNote, setSelfNote, idea, setIdea,
   busy, onSubmit,
+  // Phase 60 -- Employee Private Remark inputs.
+  privateRemark = '',
+  setPrivateRemark = () => {},
 }) {
   // Phase 14: scope-aware filter.  The daily engine only seeds
   // customResponses for fields belonging to the assignment's
@@ -1976,6 +2157,13 @@ function CustomTemplateForm({
 
       {/* Self-observation + Idea moved to a single Daily Reflection card
           at the top of "Today's Tasks" (Phase 5 refactor). */}
+
+      {/* Phase 60 -- Employee Private Remark, HR/SA-only downstream. */}
+      <PrivateRemarkBox
+        sub={sub}
+        value={privateRemark}
+        onChange={setPrivateRemark}
+      />
 
       <div className="flex justify-end">
         <button className="btn-primary" disabled={busy} onClick={onSubmit}>Submit Report</button>

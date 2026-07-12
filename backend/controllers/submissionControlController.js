@@ -33,6 +33,10 @@ const { logAudit } = require('../utils/audit');
 // Phase 9: keep already-generated unsubmitted Calling Reports in sync
 // with the live dataset after HR flips any test/delete flag.
 const { rebuildCarryForward } = require('../services/carryForwardRebuild');
+// Phase 60 -- Employee Private Remark visibility gate for HOD reviewers.
+const { scrubPrivateRemark } = require('../utils/privateRemark');
+// Phase 61 -- Final Marks + penalty breakdown on the modal.
+const { attachFinalMarks } = require('../services/penaltyMath');
 
 /** Safe wrapper -- never lets a rebuild failure poison the originating action. */
 const _safeRebuild = async (employeeIds) => {
@@ -110,7 +114,7 @@ const list = asyncHandler(async (req, res) => {
       select: 'name employeeId email role department',
       populate: { path: 'department', select: 'name' },
     })
-    .populate('template',   'title templateType customKind')
+    .populate('template', 'title templateType customKind privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
     .populate('assignment', 'frequency scheduleLabel template')
     .populate('reviewedBy', 'name role')
     .populate('deletedBy',  'name role')
@@ -185,13 +189,21 @@ const list = asyncHandler(async (req, res) => {
 const get = asyncHandler(async (req, res) => {
   const s = await Submission.findById(req.params.id)
     .populate({ path: 'employee', select: 'name employeeId email role department', populate: { path: 'department', select: 'name' } })
-    .populate('template',   'title templateType customKind customSections customFields')
+    .populate('template', 'title templateType customKind customSections customFields privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
     .populate('assignment', 'frequency scheduleLabel template')
     .populate('reviewedBy', 'name role')
     .populate('deletedBy',  'name role')
     .populate('testDataMarkedBy', 'name role')
     .lean();
   if (!s) { res.status(404); throw new Error('Submission not found'); }
+  // Phase 61 -- Final Marks + penalty breakdown so the modal can
+  // show Earned / Penalty / Final side-by-side.
+  try { await attachFinalMarks([s]); }
+  catch (e) { console.error('[submissionControl.get] attachFinalMarks:', e.message); }
+  // Phase 60 -- Submission Control is HR/SA-only per routing, but
+  // the scrub is added defensively so a future feature-permission
+  // grant to a HOD couldn't leak the remark.
+  scrubPrivateRemark(s, req.user);
   res.json(s);
 });
 
@@ -266,6 +278,8 @@ const update = asyncHandler(async (req, res) => {
     targetLabel: `${s.employee} · ${String(s.date).slice(0, 10)}`,
     meta: { fields: touched, note: req.body.note || '' },
   });
+  // Phase 60 -- edit response defensive scrub (HR/SA-only endpoint).
+  scrubPrivateRemark(s, req.user);
   res.json(s);
 });
 
@@ -423,7 +437,7 @@ const exportFiltered = asyncHandler(async (req, res) => {
   const where = buildWhere(req.query);
   const items = await Submission.find(where)
     .populate({ path: 'employee', select: 'name employeeId department', populate: { path: 'department', select: 'name' } })
-    .populate('template', 'title templateType')
+    .populate('template', 'title templateType privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
     .populate('reviewedBy', 'name')
     .populate('deletedBy', 'name')
     .sort({ date: -1, submittedAt: -1 })

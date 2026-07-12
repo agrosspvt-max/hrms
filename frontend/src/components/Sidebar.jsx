@@ -61,6 +61,9 @@ const GRANTED_MODULES = [
   { key: 'auditLog',          to: '/audit',             label: 'Audit Log',         icon: I.audit },
   { key: 'sendAlerts',        to: '/sent-alerts',       label: 'Send Alerts',       icon: I.send },
   { key: 'performance',       to: '/performance',       label: 'Performance',       icon: I.chart },
+  // Phase 61 -- Fines & Penalties module.  HR can grant HODs access
+  // via FeaturePermissions[penalties].enabled.
+  { key: 'penalties',          to: '/penalties',          label: 'Fines & Penalties', icon: I.money },
 ];
 
 /** Build the role-aware grouped navigation tree. */
@@ -139,6 +142,8 @@ function buildNav(user) {
         { to: '/events', label: 'Events & Holidays', icon: I.calendar },
         { to: '/contacts', label: 'Contacts', icon: I.people },
         { to: '/salary', label: 'Salary', icon: I.money },
+        // Phase 61 -- Fines & Penalties module.
+        { to: '/penalties', label: 'Fines & Penalties', icon: I.money },
         ...(isSA ? [
           { to: '/manage-access', label: 'Manage Access', icon: I.admin },
           { to: '/audit', label: 'Audit Log', icon: I.audit },

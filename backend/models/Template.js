@@ -417,6 +417,15 @@ const templateSchema = new mongoose.Schema(
     // grouped under each sub-template via customField.subTemplateId.
     subTemplates:  { type: [subTemplateSchema], default: [] },
 
+    /* ---- Phase 60 — Template-level Employee Private Remark ----
+       Optional per-submission private note visible to HR / Super
+       Admin ONLY (never to the HOD, even when reviewing).  Employees
+       can see the remark they submitted.  Disabled by default so
+       existing templates continue rendering identically. */
+    privateRemarkEnabled:  { type: Boolean, default: false },
+    privateRemarkLabel:    { type: String,  default: 'Remark', trim: true },
+    privateRemarkRequired: { type: Boolean, default: false },
+
     // Lifecycle toggle so HR can deactivate templates without deleting.
     isActive: { type: Boolean, default: true },
 

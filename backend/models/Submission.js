@@ -255,6 +255,18 @@ const submissionSchema = new mongoose.Schema(
     customPenaltyMarks:   { type: Number, default: 0 },
     customFinalMarks:     { type: Number, default: 0 },
 
+    /* ---- Phase 60 — Employee Private Remark ----
+       Free-form note the employee sends with the day's submission.
+       Belongs to the submission (not a task).  Visible ONLY to
+       HR / Super Admin / the submitting employee — every read path
+       that populates a HOD scrubs this field.  Analytics, marks,
+       performance, salary, attendance, completion, pendency and
+       template analytics NEVER read this value. */
+    privateRemark: { type: String, default: '' },
+    // Once set (submit time) — helps the audit log even when the
+    // string is later cleared by an admin edit.
+    privateRemarkSubmittedAt: { type: Date },
+
     /* ---- Phase 53: Extra Tasks ----
        Per-submission ad-hoc tasks the employee added on top of the
        template's predefined `customFields`.  Each row snapshots

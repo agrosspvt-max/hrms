@@ -572,6 +572,11 @@ function SubmissionPanel({ sub, onReload }) {
           <div className="text-[11px] text-slate-500">
             {sub.templateType}{kind ? ` / ${kind}` : ''} · submitted {sub.submittedAt ? new Date(sub.submittedAt).toLocaleString() : ''}
             {sub.totalPoints > 0 && <> · work score <b>{sub.earnedPoints}/{sub.totalPoints}</b></>}
+            {/* Phase 61 -- Final Marks after Penalty Engine deductions.
+                Earned Marks stay intact; Final = max(0, Earned − Σ Penalties). */}
+            {sub.penaltyBreakdown && sub.penaltyBreakdown.totalDeducted > 0 && (
+              <> · <span className="text-red-700">final <b>{sub.finalMarks ?? 0}</b> (−{sub.penaltyBreakdown.totalDeducted} penalty)</span></>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -624,7 +629,78 @@ function SubmissionPanel({ sub, onReload }) {
             {sub.dependencies.map((d) => <DependencyTransferCard key={d._id} dep={d} />)}
           </div>
         )}
+        {/* Verification-audit fix (spec item 5) -- full penalty
+            breakdown card.  Renders when the submission carries
+            any penalty deductions so HR can see exactly how the
+            Final Marks were derived from Earned Marks. */}
+        <PenaltyBreakdownPanel sub={sub} />
+        {/* Phase 60 -- Employee Private Remark.  Backend scrubs this
+            for HOD reviewers so if it's present here, the current
+            viewer is authorized (HR / Super Admin / self). */}
+        <PrivateRemarkPanel sub={sub} />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Verification-audit fix (spec item 5) -- full penalty breakdown card.
+ * Shows Available / Earned / per-category penalties / total / Final so
+ * HR understands exactly why an employee received a reduced score.
+ */
+function PenaltyBreakdownPanel({ sub }) {
+  const bd = sub?.penaltyBreakdown;
+  if (!bd || !bd.totalDeducted) return null;
+  const sumMarks = (list) => (list || []).reduce((s, p) => s + (Number(p.penaltyMarks) || 0), 0);
+  const rows = [
+    ['Available Marks',                       `${sub.totalPoints ?? 0}`,             false],
+    ['Earned Marks',                          `${sub.earnedPoints ?? 0}`,            false],
+    ['Attendance Penalty',                    `−${sumMarks(bd.attendance)}`,         true],
+    ['Dependency Penalty',                    `−${sumMarks(bd.dependency)}`,         true],
+    ['Template Penalty (missing / critical / repeated)', `−${sumMarks(bd.template)}`, true],
+    ['Manual Penalty',                        `−${sumMarks(bd.manual)}`,             true],
+    ['Total Penalty',                         `−${bd.totalDeducted}`,                true],
+    ['Final Marks',                           `${sub.finalMarks ?? 0}`,              false],
+  ];
+  return (
+    <div className="rounded-lg border border-slate-200 p-3 space-y-1.5 bg-slate-50/60">
+      <div className="text-[11px] uppercase tracking-wide text-slate-600 font-semibold">Penalty Breakdown</div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[12px]">
+        {rows.map(([k, v, isPenalty]) => (
+          <div key={k} className="flex justify-between border-b border-dashed border-slate-200 pb-0.5">
+            <span className="text-slate-600">{k}</span>
+            <span className={`font-mono ${isPenalty ? 'text-red-700' : 'text-slate-800'}`}>{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Phase 60 -- Employee Private Remark panel.  A one-line summary
+ * (label + submission time + employee name) plus the free-form note.
+ * Renders only when the field is present -- the backend has already
+ * made sure only authorized viewers see the string.
+ */
+function PrivateRemarkPanel({ sub }) {
+  const text = typeof sub?.privateRemark === 'string' ? sub.privateRemark.trim() : '';
+  if (!text) return null;
+  const label = sub.template?.privateRemarkLabel || 'Employee Private Remark';
+  const submittedAt = sub.privateRemarkSubmittedAt || sub.submittedAt;
+  const submittedTxt = submittedAt ? new Date(submittedAt).toLocaleString() : '';
+  const employeeName = sub.employee?.name || '';
+  return (
+    <div className="border border-amber-200 bg-amber-50 rounded-lg p-3 space-y-1.5">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="text-[11px] uppercase tracking-wide text-amber-800 font-semibold">
+          {label} <span className="normal-case text-amber-700/70 font-normal">(HR / Super Admin only)</span>
+        </div>
+        <div className="text-[11px] text-slate-500">
+          {employeeName}{employeeName && submittedTxt ? ' · ' : ''}{submittedTxt}
+        </div>
+      </div>
+      <div className="text-sm text-slate-800 whitespace-pre-wrap">{text}</div>
     </div>
   );
 }

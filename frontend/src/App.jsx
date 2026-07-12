@@ -28,6 +28,8 @@ import Performance from './pages/hr/Performance.jsx';
 import HRLeaves from './pages/hr/HRLeaves.jsx';
 import EmployeeAttendance from './pages/hr/EmployeeAttendance.jsx';
 import SentAlerts from './pages/hr/SentAlerts.jsx';
+// Phase 61 -- Fines & Penalties module.
+import FinesPenalties from './pages/hr/FinesPenalties.jsx';
 import HRHolidays from './pages/hr/Holidays.jsx';
 import ResetRequests from './pages/hr/ResetRequests.jsx';
 import HRManagement from './pages/superadmin/HRManagement.jsx';
@@ -132,6 +134,8 @@ export default function App() {
         <Route path="/attendance" element={<ProtectedRoute role="hr" feature="attendance"><EmployeeAttendance /></ProtectedRoute>} />
         <Route path="/holidays" element={<ProtectedRoute role="hr" feature="eventsHolidays"><HRHolidays /></ProtectedRoute>} />
         <Route path="/salary" element={<ProtectedRoute role="hr" feature="salary"><HRSalary /></ProtectedRoute>} />
+        {/* Phase 61 -- Fines & Penalties module. */}
+        <Route path="/penalties" element={<ProtectedRoute role="hr" feature="penalties"><FinesPenalties /></ProtectedRoute>} />
 
         {/* HOD (Head of Department) routes - employee + isHOD */}
         <Route path="/team" element={<ProtectedRoute hod><HODEmployees /></ProtectedRoute>} />

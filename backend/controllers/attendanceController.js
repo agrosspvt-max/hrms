@@ -69,11 +69,22 @@ const effectiveStatusForDay = async (employee, day) => {
  * extra - it is purely an attendance-state correction.
  */
 const setStatus = asyncHandler(async (req, res) => {
-  const { date, status, note } = req.body;
+  const { date, status, note, penaltyDecision } = req.body;
   if (!date) { res.status(400); throw new Error('date is required'); }
   if (!MANUAL_STATUSES.includes(status)) {
     res.status(400);
     throw new Error(`status must be one of: ${MANUAL_STATUSES.join(', ')}`);
+  }
+  // Phase 61 -- when HR flips Absent -> Present on a day with no
+  // submission they must pick one of two behaviours.
+  //   'performance_penalty' -- creates attendance_manual penalty.
+  //   'neutral_adjustment'  -- day is fully ignored (0/0/0).
+  // The decision is required only for the specific transition; every
+  // other setStatus call ignores this field.
+  const PENALTY_DECISIONS = ['performance_penalty', 'neutral_adjustment'];
+  if (penaltyDecision && !PENALTY_DECISIONS.includes(penaltyDecision)) {
+    res.status(400);
+    throw new Error(`penaltyDecision must be one of: ${PENALTY_DECISIONS.join(', ')}`);
   }
 
   const employee = await User.findById(req.params.id);
@@ -135,8 +146,54 @@ const setStatus = asyncHandler(async (req, res) => {
       approvedLeaveUnits: approvalUnits,
       leaveDelta: overrideDelta,
       balanceChange,
+      // Phase 61 -- permanent record of HR's penalty choice, if any.
+      penaltyDecision: penaltyDecision || null,
     },
   });
+
+  // Phase 61 -- Manual Attendance Correction.  When HR flips a day
+  // that was Absent (either explicitly or by derivation) into a
+  // present-type status, and the employee never submitted work for
+  // that day, we honour HR's Performance-Penalty vs. Neutral
+  // Adjustment choice.
+  try {
+    const wasAbsent = previousStatus === 'absent';
+    const isPresent = status === 'present' || status === 'half_paid' || status === 'half_unpaid';
+    if (wasAbsent && isPresent && penaltyDecision) {
+      const Submission = require('../models/Submission');
+      const submitted = await Submission.findOne({
+        employee: employee._id, date: day, submitted: true, deleted: { $ne: true },
+      }).select('_id').lean();
+      if (!submitted) {
+        if (penaltyDecision === 'performance_penalty') {
+          // Option A: penalty = whatever the employee had earned
+          // for the day (usually 0).  Final Marks -> 0.
+          const Penalty = require('../models/Penalty');
+          const sub = await Submission.findOne({
+            employee: employee._id, date: day, deleted: { $ne: true },
+          }).select('_id earnedPoints').lean();
+          await Penalty.create({
+            employee: employee._id,
+            category: 'attendance_manual',
+            source: 'manual',
+            probable: false,
+            status: 'active',
+            penaltyMarks: sub ? Number(sub.earnedPoints) || 0 : 0,
+            targetDate: day,
+            submission: sub ? sub._id : null,
+            rule: 'attendance_absent_to_present_v1',
+            reason: 'HR marked absent -> present with no submission (Performance Penalty).',
+            employeeMessage: 'HR marked you present for a day you did not submit work. A performance penalty has been recorded.',
+            createdBy: req.user._id,
+            effectiveDate: new Date(),
+          });
+        }
+        // Option B ('neutral_adjustment') is a no-op here: no
+        // penalty is created; the day is simply ignored.  The
+        // decision is stored on the audit log below.
+      }
+    }
+  } catch (e) { console.error('[attendance] penalty decision:', e.message); }
 
   // Notify the employee that HR changed their attendance.  The
   // notifyEvents helper is a Phase-45 no-op (notification row no longer
@@ -158,6 +215,8 @@ const setStatus = asyncHandler(async (req, res) => {
     previousStatus,
     leaveAccounting: { targetUnits, approvalUnits, overrideDelta, balanceChange },
     leaveBalance: employee.leaveBalance,
+    // Phase 61 -- surface the chosen decision so the UI can confirm.
+    penaltyDecision: penaltyDecision || null,
   });
 });
 

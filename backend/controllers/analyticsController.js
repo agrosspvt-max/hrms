@@ -461,6 +461,17 @@ const completion = asyncHandler(async (req, res) => {
     .select('employee date submittedAt frequency templateType earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus reviewedBy template')
     .lean();
 
+  // Verification-audit fix (spec item 1) -- Performance Analytics is
+  // a user-facing performance screen and must reflect Final Marks
+  // (Earned − Σ Penalties, min 0), NOT raw Earned Marks.  We attach
+  // finalMarks + penaltyBreakdown to every in-scope submission and
+  // then sum `finalMarks` below.  Historical earnedPoints stays
+  // untouched -- the shift is display-only.
+  try {
+    const { attachFinalMarks } = require('../services/penaltyMath');
+    await attachFinalMarks(subs);
+  } catch (e) { console.error('[analytics] attachFinalMarks:', e.message); }
+
   // Phase 6: discipline + innovation marks live exclusively on
   // DailyReview.  Pull every (employee, date) in scope so we can fold
   // them into the per-employee + per-day completion totals below.
@@ -491,9 +502,11 @@ const completion = asyncHandler(async (req, res) => {
 
   const dayMs = 86400000;
   for (const s of subs) {
-    // Work-only marks (per-sub).  Discipline + idea are added below
-    // via the DailyReview join, ONCE per (employee, date) bucket.
-    const e = s.earnedPoints || 0;
+    // Verification-audit fix (spec item 1) -- use Final Marks so the
+    // Performance page reflects penalties.  When the record has no
+    // penalties attached, finalMarks === earnedPoints and every
+    // downstream aggregation matches the pre-Phase-61 behaviour.
+    const e = (typeof s.finalMarks === 'number') ? s.finalMarks : (s.earnedPoints || 0);
     const t = s.totalPoints || 0;
     totalEarned += e; totalTotal += t;
     const pctOne = t > 0 ? (e / t) * 100 : 0;

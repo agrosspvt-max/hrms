@@ -14,6 +14,11 @@ const { startOfDay } = require('../utils/dateHelpers');
 const { liveSubmissionFilter } = require('../utils/submissionFilter');
 // Phase 47 -- realtime fan-out to HR/SA/HOD reviewers.
 const rt = require('../services/realtime');
+// Phase 60 -- Employee Private Remark visibility gate.
+const { scrubPrivateRemark } = require('../utils/privateRemark');
+// Phase 61 -- Penalty Engine hooks.
+const penaltyEngine = require('../services/penaltyEngine');
+const { attachFinalMarks } = require('../services/penaltyMath');
 
 /**
  * Validate + stamp dependency fields onto a scorable unit (task / excel
@@ -172,7 +177,7 @@ const getToday = asyncHandler(async (req, res) => {
   const submissions = await Submission.find({
     employee: employee._id,
     date: today,
-  }).populate('template', 'title customFields customKind customSections');
+  }).populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired');
 
   // Defensive log: surface what the employee form will actually receive,
   // so a missing populate field shows up the moment we serve a request.
@@ -238,6 +243,24 @@ const getToday = asyncHandler(async (req, res) => {
 
   const backlog = await getBacklog(employee._id, today);
 
+  // Phase 61 -- lazy Penalty Engine pass.  Every getToday triggers the
+  // idempotent daily run (yesterday's enforcement + today's probable
+  // warnings) so the employee sees warnings and past-day penalties
+  // without waiting for a cron.  Never blocks the response.
+  try {
+    await penaltyEngine.runDaily({ employeeId: employee._id, day: today });
+    await penaltyEngine.runProbablesForToday({ employeeId: employee._id, day: today });
+  } catch (e) { console.error('[getToday] penaltyEngine:', e.message); }
+
+  // Phase 61 -- attach Final Marks + penalty breakdown for the UI.
+  try { await attachFinalMarks(submissions); }
+  catch (e) { console.error('[getToday] attachFinalMarks:', e.message); }
+
+  // Phase 60 -- getToday is the employee's own view, so scrub is a
+  // no-op for self.  Call it anyway in case a future endpoint reuses
+  // this handler with a non-owning caller.
+  scrubPrivateRemark(submissions, req.user);
+
   res.json({
     date: today,
     onLeave: !!fullDayLeave,
@@ -268,7 +291,7 @@ const getToday = asyncHandler(async (req, res) => {
 const VALID_FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 
 const submitOne = asyncHandler(async (req, res) => {
-  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], extraTasks = [], productSales = [], farmerRecords = [], selfRating, selfNote, idea } = req.body;
+  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], extraTasks = [], productSales = [], farmerRecords = [], selfRating, selfNote, idea, privateRemark } = req.body;
   const sub = await Submission.findOne({ _id: req.params.id, employee: req.user._id });
   if (!sub) { res.status(404); throw new Error('Submission not found'); }
   if (sub.submitted) { res.status(400); throw new Error('Submission already submitted for today'); }
@@ -884,10 +907,52 @@ const submitOne = asyncHandler(async (req, res) => {
   sub.completionPercentage = total > 0 ? (earned / total) * 100 : 0;
   sub.submitted = true;
   sub.submittedAt = new Date();
+  // Phase 61 -- clear any absent_submission penalty (probable or
+  // enforced) attached to this exact submission the moment it lands.
+  try { await penaltyEngine.resolveAbsentSubmissionOnSubmit({ submissionId: sub._id }); }
+  catch (e) { console.error('[submit] penaltyEngine resolve:', e.message); }
   sub.reviewStatus = 'pending';
   if (selfRating !== undefined) sub.selfRating = selfRating;
   if (selfNote !== undefined) sub.selfNote = selfNote;
   if (idea !== undefined) sub.idea = idea;
+
+  // Phase 60 -- Employee Private Remark.  Enabled at the template level.
+  // Only persisted when the template has the feature turned on so a
+  // rogue client can't stash an "invisible" note on a template that
+  // doesn't advertise the field.  Required-mode short-circuits the
+  // submit if the string is empty.
+  const tplPRE = await (async () => {
+    if (!sub.template) return { enabled: false, required: false };
+    const t = await Template.findById(sub.template).select('privateRemarkEnabled privateRemarkRequired').lean();
+    return { enabled: !!t?.privateRemarkEnabled, required: !!t?.privateRemarkRequired };
+  })();
+  if (tplPRE.enabled) {
+    const remarkTxt = typeof privateRemark === 'string' ? privateRemark.trim() : '';
+    if (tplPRE.required && !remarkTxt) {
+      res.status(400);
+      throw new Error('This template requires a private remark before submission.');
+    }
+    if (remarkTxt || sub.privateRemark) {
+      sub.privateRemark = remarkTxt;
+      sub.privateRemarkSubmittedAt = new Date();
+      // Phase 60 -- audit trail note.  For now we simply record that a
+      // remark was attached to this submission; the contents are NOT
+      // captured (they're private and would leak into audit exports).
+      try {
+        const { logAudit } = require('../utils/audit');
+        logAudit(req, {
+          action: 'submission.privateRemark.submit',
+          targetType: 'Submission',
+          targetId: sub._id,
+          targetLabel: `${req.user.name || req.user._id} attached a private remark`,
+          meta: { hasContent: remarkTxt.length > 0, length: remarkTxt.length },
+        });
+      } catch (_) { /* audit failures never block a submit */ }
+    }
+  } else if (privateRemark) {
+    // Template doesn't have the field enabled -- ignore any incoming
+    // value so no back-door data can be smuggled through.
+  }
 
   // ---- Review routing (role-aware) ----
   //   employee / HOD  -> HR  (optionally HOD-first when configured)
@@ -1013,8 +1078,11 @@ const history = asyncHandler(async (req, res) => {
     if (req.query.to) where.date.$lte = startOfDay(new Date(req.query.to));
   }
   const items = await Submission.find(where)
-    .populate('template', 'title customFields customKind customSections')
+    .populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
     .sort({ date: -1 });
+  // Phase 60 -- employee history is self-view, scrub is a no-op but
+  // is called for consistency across every submission read path.
+  scrubPrivateRemark(items, req.user);
   res.json(items);
 });
 
@@ -1080,7 +1148,7 @@ const listForReview = asyncHandler(async (req, res) => {
         { path: 'designation', select: 'title' },
       ],
     })
-    .populate('template', 'title customFields customKind customSections')
+    .populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
     .sort({ submittedAt: -1 });
 
   // Role-aware visibility:
@@ -1116,6 +1184,13 @@ const listForReview = asyncHandler(async (req, res) => {
     return o;
   });
   await attachDependencies(out);
+  // Phase 61 -- surface Final Marks + penalty breakdown so the
+  // reviewer sees Earned / Penalty / Final without an extra fetch.
+  try { await attachFinalMarks(out); }
+  catch (e) { console.error('[listForReview] attachFinalMarks:', e.message); }
+  // Phase 60 -- HR review feed.  HR/SA see the field; anyone else
+  // (feature-permission grants) gets it scrubbed.
+  scrubPrivateRemark(out, req.user);
   res.json(out);
 });
 
@@ -1273,6 +1348,9 @@ const reviewSubmission = asyncHandler(async (req, res) => {
     });
   } catch (_) { /* notify never blocks the response */ }
 
+  // Phase 60 -- reviewSubmission is HR/SA-only; scrub is a no-op but
+  // keeps the call site symmetrical with the HOD path.
+  scrubPrivateRemark(sub, req.user);
   res.json(sub);
 });
 
@@ -1310,7 +1388,7 @@ const listForHodReview = asyncHandler(async (req, res) => {
         { path: 'designation', select: 'title' },
       ],
     })
-    .populate('template', 'title customFields customKind customSections')
+    .populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
     .sort({ submittedAt: -1 });
 
   const out = items.map((it) => {
@@ -1322,6 +1400,12 @@ const listForHodReview = asyncHandler(async (req, res) => {
     return o;
   });
   await attachDependencies(out);
+  // Phase 61 -- Final Marks for the HOD feed too.
+  try { await attachFinalMarks(out); }
+  catch (e) { console.error('[listForHodReview] attachFinalMarks:', e.message); }
+  // Phase 60 -- HOD review feed: ALWAYS scrub. The remark is off-
+  // limits to HOD reviewers per the Phase 60 visibility rule.
+  scrubPrivateRemark(out, req.user);
   res.json(out);
 });
 
@@ -1406,6 +1490,10 @@ const hodReviewSubmission = asyncHandler(async (req, res) => {
   });
 
   await sub.save();
+  // Phase 60 -- HOD review path.  Scrub the Private Remark before
+  // returning the submission JSON so the HOD can never see it, not
+  // even in the response to their own review action.
+  scrubPrivateRemark(sub, req.user);
   res.json(sub);
 });
 
@@ -1551,7 +1639,7 @@ const saveDraft = asyncHandler(async (req, res) => {
     throw new Error('Cannot save a draft on a submission that is already submitted.');
   }
 
-  const { tasks, addedTasks, excelResponses, sheet, customResponses, extraTasks, productSales, farmerRecords, selfRating, selfNote, idea } = req.body || {};
+  const { tasks, addedTasks, excelResponses, sheet, customResponses, extraTasks, productSales, farmerRecords, selfRating, selfNote, idea, privateRemark } = req.body || {};
 
   /* ---- Tasks ---- */
   if (Array.isArray(tasks)) {
@@ -1741,6 +1829,14 @@ const saveDraft = asyncHandler(async (req, res) => {
   if (selfRating !== undefined) sub.selfRating = selfRating === '' ? undefined : Number(selfRating);
   if (selfNote   !== undefined) sub.selfNote   = String(selfNote || '');
   if (idea       !== undefined) sub.idea       = String(idea || '');
+
+  // Phase 60 -- draft passthrough for the Private Remark so autosave
+  // doesn't discard partial keystrokes.  Same defensive check as the
+  // submit path: the template must have privateRemarkEnabled true.
+  if (typeof privateRemark === 'string') {
+    const tpl = await Template.findById(sub.template).select('privateRemarkEnabled').lean();
+    if (tpl?.privateRemarkEnabled) sub.privateRemark = String(privateRemark);
+  }
 
   sub.lastDraftSavedAt = new Date();
   await sub.save();

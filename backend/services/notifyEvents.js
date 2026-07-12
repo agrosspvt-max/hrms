@@ -176,6 +176,47 @@ const notifySalarySlipGenerated = async ({ employeeId, slip, generatedBy }) => {
   }
 };
 
+/**
+ * Phase 61 -- Penalty Engine notifier.  Called for both PROBABLE
+ * (warning) and ACTIVE (enforced) penalties.  The Reduce-Noise
+ * initiative in Phase 45 disabled most background notifications --
+ * penalties are the exception because employees MUST see them.
+ * Dashboard warnings live until the employee acknowledges them,
+ * so the notification message is intentionally terse.
+ */
+const notifyPenalty = async ({ employeeId, penalty, mode /* 'probable' | 'active' */ }) => {
+  try {
+    if (!employeeId || !penalty) return { count: 0 };
+    const isProbable = mode === 'probable';
+    const title = isProbable ? 'Warning: possible penalty' : 'Performance penalty applied';
+    const message = penalty.employeeMessage || penalty.reason
+      || (isProbable
+          ? 'You may receive a penalty tomorrow if this issue is not resolved.'
+          : 'A performance penalty has been applied to your record.');
+    // Priority: warnings are 'normal' inbox pings; enforced penalties are
+    // 'important' so the Dashboard's Priority Notices panel surfaces them
+    // and the employee can't dismiss them until they've read them.
+    const priority = isProbable ? 'normal' : 'important';
+    const result = await _emit([{
+      recipient: employeeId,
+      type: 'general',
+      title,
+      message,
+      priority,
+    }]);
+    rt.publish(employeeId, 'notification:new', { priority });
+    rt.publish(employeeId, 'penalty:changed', {
+      penaltyId: penalty._id,
+      category: penalty.category,
+      probable: !!penalty.probable,
+    });
+    return result;
+  } catch (e) {
+    console.error('[notify] penalty failed:', e.message);
+    return { count: 0 };
+  }
+};
+
 module.exports = {
   notifyLeaveApplied,
   notifyLeaveDecision,
@@ -187,4 +228,5 @@ module.exports = {
   notifyPasswordResetApproved,
   notifyEmployeeCreated,
   notifySalarySlipGenerated,
+  notifyPenalty,
 };

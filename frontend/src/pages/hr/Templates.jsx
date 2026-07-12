@@ -17,7 +17,16 @@ import { EmptyState } from '../../components/Loader.jsx';
  *     the max marks for each.  Employees later fill the report in a
  *     dynamic form (no Excel download/upload).
  */
-const blankTask = { templateType: 'task', title: '', description: '', tasks: [] };
+const blankTask = {
+  templateType: 'task',
+  title: '',
+  description: '',
+  tasks: [],
+  // Phase 60 -- Employee Private Remark defaults on task templates too.
+  privateRemarkEnabled: false,
+  privateRemarkLabel: 'Remark',
+  privateRemarkRequired: false,
+};
 const blankExcel = { templateType: 'excel', title: '', description: '', excelColumns: [], statusTracking: false };
 const blankSheet = {
   templateType: 'sheet',
@@ -44,6 +53,10 @@ const blankCustom = {
   isActive: true,
   subTemplates: [],
   customFields: [],
+  // Phase 60 -- Employee Private Remark defaults.
+  privateRemarkEnabled: false,
+  privateRemarkLabel: 'Remark',
+  privateRemarkRequired: false,
 };
 const FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 // Phase 15: builder UI is intentionally limited to the two field types
@@ -523,6 +536,12 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
           order: Number(s.order) || 0,
         })),
         customFields:  cleaned,
+        // Phase 60 -- Employee Private Remark configuration.  Required
+        // is force-cleared when the feature is disabled so the two
+        // flags never disagree.
+        privateRemarkEnabled:  !!form.privateRemarkEnabled,
+        privateRemarkLabel:    String(form.privateRemarkLabel || '').trim() || 'Remark',
+        privateRemarkRequired: !!form.privateRemarkEnabled && !!form.privateRemarkRequired,
       };
 
       onSave(payload);
@@ -740,6 +759,52 @@ function CustomTemplateForm({ modal, setModal, onSave }) {
               onChange={(e) => set('description', e.target.value)}
               placeholder="Short description for HR and employees"
             />
+          </div>
+
+          {/* Phase 60 -- Employee Private Remark
+              Optional per-template note shown at the BOTTOM of the
+              employee submission form.  Only HR / Super Admin can see
+              the value that comes back -- the HOD scrub happens on
+              every read path.  Analytics never look at it. */}
+          <div className="mt-4 border-t pt-4">
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className="flex items-center gap-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={!!form.privateRemarkEnabled}
+                  onChange={(e) => set('privateRemarkEnabled', e.target.checked)}
+                />
+                Employee Private Remark
+              </label>
+              <span className="text-[11px] text-slate-500">
+                Adds a private note field at the bottom of the submission.  Visible only to HR / Super Admin (not HOD).
+              </span>
+            </div>
+            {form.privateRemarkEnabled && (
+              <div className="grid md:grid-cols-2 gap-3 mt-3">
+                <div>
+                  <label className="label">Field Label</label>
+                  <input
+                    className="input"
+                    value={form.privateRemarkLabel || ''}
+                    onChange={(e) => set('privateRemarkLabel', e.target.value)}
+                    placeholder="Remark"
+                  />
+                  <div className="text-[11px] text-slate-500 mt-1">Default: "Remark".</div>
+                </div>
+                <div>
+                  <label className="label">Required</label>
+                  <label className="flex items-center gap-2 text-sm input bg-white">
+                    <input
+                      type="checkbox"
+                      checked={!!form.privateRemarkRequired}
+                      onChange={(e) => set('privateRemarkRequired', e.target.checked)}
+                    />
+                    Employee must fill the remark before submitting
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
         </Section>
 

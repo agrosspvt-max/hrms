@@ -441,6 +441,27 @@ function ViewSubmissionModal({ id, onClose }) {
             <KV k="Submitted" v={sub.submitted ? 'Yes' : 'No'} />
             <KV k="Review" v={`${sub.reviewStatus || ''} (stage: ${sub.currentReviewStage || '—'})`} />
             <KV k="Scores" v={`${sub.earnedPoints ?? 0} / ${sub.totalPoints ?? 0}`} />
+            {/* Verification-audit fix (spec item 5) -- full breakdown so
+                HR can see EXACTLY which categories deducted marks.
+                Available / Earned / per-category penalties / total /
+                Final are always shown together when any penalty is
+                present.  Historical earnedPoints stays untouched. */}
+            {sub.penaltyBreakdown && sub.penaltyBreakdown.totalDeducted > 0 && (() => {
+              const bd = sub.penaltyBreakdown;
+              const sumMarks = (list) => list.reduce((s, p) => s + (Number(p.penaltyMarks) || 0), 0);
+              return (
+                <>
+                  <KV k="Available Marks" v={`${sub.totalPoints ?? 0}`} />
+                  <KV k="Earned Marks"    v={`${sub.earnedPoints ?? 0}`} />
+                  <KV k="Attendance Penalty"     v={`−${sumMarks(bd.attendance)}`} />
+                  <KV k="Dependency Penalty"     v={`−${sumMarks(bd.dependency)}`} />
+                  <KV k="Template Penalty (missing / critical / repeated)" v={`−${sumMarks(bd.template)}`} />
+                  <KV k="Manual Penalty"         v={`−${sumMarks(bd.manual)}`} />
+                  <KV k="Total Penalty"          v={`−${bd.totalDeducted}`} />
+                  <KV k="Final Marks"            v={`${sub.finalMarks ?? 0}`} />
+                </>
+              );
+            })()}
             <KV k="Deleted" v={sub.deleted ? `Yes — by ${sub.deletedBy?.name || ''} on ${sub.deletedAt ? new Date(sub.deletedAt).toLocaleString() : ''}` : 'No'} />
             <KV k="Test Data" v={sub.isTestData ? `Yes — by ${sub.testDataMarkedBy?.name || ''}` : 'No'} />
           </Section>
@@ -506,6 +527,31 @@ function ViewSubmissionModal({ id, onClose }) {
           {Array.isArray(sub.tasks) && sub.tasks.length > 0 && (
             <Section title={`Tasks (${sub.tasks.length})`}>
               <pre className="bg-slate-50 border border-slate-200 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(sub.tasks, null, 2)}</pre>
+            </Section>
+          )}
+          {/* Phase 60 -- Employee Private Remark.  Backend never
+              serves this to a HOD; if the field is present the
+              current viewer is HR / Super Admin, so it's safe to
+              render as its own Section. */}
+          {typeof sub.privateRemark === 'string' && sub.privateRemark.trim() && (
+            <Section title={sub.template?.privateRemarkLabel
+              ? `${sub.template.privateRemarkLabel} (private)`
+              : 'Employee Private Remark (private)'}>
+              <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs space-y-1.5">
+                <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600 flex-wrap">
+                  <span className="uppercase tracking-wide font-semibold text-amber-800">
+                    HR / Super Admin only
+                  </span>
+                  <span>
+                    {sub.employee?.name || ''}
+                    {sub.employee?.name && (sub.privateRemarkSubmittedAt || sub.submittedAt) ? ' · ' : ''}
+                    {sub.privateRemarkSubmittedAt
+                      ? new Date(sub.privateRemarkSubmittedAt).toLocaleString()
+                      : (sub.submittedAt ? new Date(sub.submittedAt).toLocaleString() : '')}
+                  </span>
+                </div>
+                <div className="text-sm text-slate-800 whitespace-pre-wrap">{sub.privateRemark}</div>
+              </div>
             </Section>
           )}
           {Array.isArray(sub.reviewHistory) && sub.reviewHistory.length > 0 && (

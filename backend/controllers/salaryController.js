@@ -54,9 +54,20 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
     submitted: true,
     ...liveSubmissionFilter({}),
   });
+  // Verification-audit fix (spec item 1) -- salary's performance
+  // component now sums Final Marks (Earned − Σ Penalties, min 0)
+  // instead of raw Earned Marks.  Historical earnedPoints stays
+  // intact on the submission document -- this is a read-side
+  // derivation so removing a penalty later automatically restores
+  // the same salary figure.
+  try {
+    const { attachFinalMarks } = require('../services/penaltyMath');
+    await attachFinalMarks(submissions);
+  } catch (e) { console.error('[salary] attachFinalMarks:', e.message); }
   // Phase 6: work scoring sums from submissions; day-level discipline
   // + innovation come from DailyReview, ONCE per (employee, date).
-  let earned = submissions.reduce((s, x) => s + (Number(x.earnedPoints) || 0), 0);
+  let earned = submissions.reduce((s, x) => s
+    + ((typeof x.finalMarks === 'number') ? x.finalMarks : (Number(x.earnedPoints) || 0)), 0);
   let total  = submissions.reduce((s, x) => s + (Number(x.totalPoints)  || 0), 0);
   const DailyReview = require('../models/DailyReview');
   const dailyReviews = await DailyReview.find({

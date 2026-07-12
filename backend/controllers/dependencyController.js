@@ -2,6 +2,10 @@ const asyncHandler = require('express-async-handler');
 const DependencyTask = require('../models/DependencyTask');
 const User = require('../models/User');
 const { resolveDependencyTask } = require('../services/dependencyEngine');
+// Phase 61 -- Penalty Engine: dependency resolution may end a
+// currently-active dependency_pending penalty when the last
+// overdue task closes.
+const penaltyEngine = require('../services/penaltyEngine');
 
 const isReviewer = (user) => ['hr', 'super_admin'].includes(user.role);
 
@@ -123,6 +127,14 @@ const resolve = asyncHandler(async (req, res) => {
   if (dep.currentStatus === 'resolved') return res.json(dep);
 
   await resolveDependencyTask(dep, req.user, req.body.note || '');
+  // Phase 61 -- try to lift the daily dependency_pending penalty
+  // if this was the last overdue task.  Never blocks the response.
+  try {
+    await penaltyEngine.onDependencyResolved({
+      employeeId: dep.assignedTo,
+      dependencyId: dep._id,
+    });
+  } catch (e) { console.error('[dependency.resolve] penaltyEngine:', e.message); }
   res.json(dep);
 });
 

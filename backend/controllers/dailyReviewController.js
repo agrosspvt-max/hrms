@@ -39,6 +39,8 @@ const { liveSubmissionFilter } = require('../utils/submissionFilter');
 const { isScheduledOn } = require('../utils/scheduleHelpers');
 const { logAudit }   = require('../utils/audit');
 const notify         = require('../services/notifyEvents');
+// Phase 60 -- HOD visibility gate for the Employee Private Remark.
+const { scrubPrivateRemark } = require('../utils/privateRemark');
 
 /**
  * Phase 23.3 — Attach dependent-task hand-offs to each submission so the
@@ -180,7 +182,7 @@ const listGrouped = asyncHandler(async (req, res) => {
   const allowedOwnerRoles = role === 'super_admin' ? ['employee', 'hr'] : (role === 'hr' ? ['employee'] : ['employee']);
 
   const subs = await Submission.find(subWhere)
-    .populate('template', 'title templateType customKind customSections customFields')
+    .populate('template', 'title templateType customKind customSections customFields privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
     .populate('assignment', 'frequency scheduleLabel')
     // Phase 16: surface the HOD reviewer's identity so HR sees who
     // approved / returned each submission without an extra round-trip.
@@ -343,7 +345,7 @@ const listGrouped = asyncHandler(async (req, res) => {
       if (e.department) orList.push({ targetType: 'department', targetRef: e.department._id || e.department });
       if (e.designation) orList.push({ targetType: 'designation', targetRef: e.designation });
       const assignments = await Assignment.find({ active: true, $or: orList })
-        .populate('template', 'title customKind templateType').lean();
+        .populate('template', 'title customKind templateType privateRemarkEnabled privateRemarkLabel privateRemarkRequired').lean();
 
       // Filter to those scheduled today (recurrence + start/end window).
       // On weekly-off / holiday days, only holidayOverride assignments
@@ -413,6 +415,12 @@ const listGrouped = asyncHandler(async (req, res) => {
     return res.json({ cards: notSubmittedCards, summary });
   }
 
+  // Phase 60 -- scrub Private Remark from every submission in every
+  // card before responding.  HR/SA see everything; HOD + feature-
+  // granted reviewers get the field zeroed out.  Self-view isn't a
+  // concern here because the grouped feed never returns cards for the
+  // current caller.
+  for (const c of out) scrubPrivateRemark(c.submissions || [], req.user);
   res.json(out);
 });
 
@@ -438,7 +446,7 @@ const getDay = asyncHandler(async (req, res) => {
 
   const [submissions, reflection, review] = await Promise.all([
     Submission.find({ employee: employee._id, date: day, ...liveSubmissionFilter({}) })
-      .populate('template', 'title templateType customKind customSections customFields')
+      .populate('template', 'title templateType customKind customSections customFields privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
       .populate('assignment', 'frequency scheduleLabel')
       .populate('hodReview.reviewedBy', 'name role')
       .sort({ submittedAt: 1, _id: 1 }).lean(),
@@ -449,6 +457,8 @@ const getDay = asyncHandler(async (req, res) => {
   // Phase 23.3: enrich submissions with dependent-task hand-offs.
   await _attachDependencies(submissions);
 
+  // Phase 60 -- HOD scrub before responding.
+  scrubPrivateRemark(submissions, req.user);
   res.json({ employee, date: day, submissions, reflection: reflection || null, review: review || null });
 });
 
@@ -1071,7 +1081,7 @@ const editSubmissionValue = asyncHandler(async (req, res) => {
   if (!key || typeof key !== 'string') {
     res.status(400); throw new Error('key is required.');
   }
-  const sub = await Submission.findById(submissionId).populate('template', 'title customFields customKind customSections');
+  const sub = await Submission.findById(submissionId).populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired');
   if (!sub) { res.status(404); throw new Error('Submission not found.'); }
   if (sub.templateType !== 'custom') {
     res.status(400); throw new Error('This endpoint only edits Custom Assignment submissions.');

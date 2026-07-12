@@ -222,6 +222,14 @@ const normalisePayload = (body) => {
       out.department = null;
     }
   }
+  // Phase 60 — Employee Private Remark configuration.  Available on
+  // both Task and Custom templates.  Label defaults to "Remark" so
+  // toggling on gives HR a working default without extra typing.
+  // Required is coerced to false when the remark is disabled so the
+  // two flags stay consistent regardless of what the client sent.
+  out.privateRemarkEnabled  = !!body.privateRemarkEnabled;
+  out.privateRemarkLabel    = String(body.privateRemarkLabel || '').trim() || 'Remark';
+  out.privateRemarkRequired = !!out.privateRemarkEnabled && !!body.privateRemarkRequired;
   return out;
 };
 
