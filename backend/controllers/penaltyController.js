@@ -400,13 +400,30 @@ const decideReopen = asyncHandler(async (req, res) => {
   if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only'); }
   const p = await Penalty.findById(req.params.id);
   if (!p) { res.status(404); throw new Error('Penalty not found'); }
-  if (!p.reopenRequest?.requested) {
-    res.status(400); throw new Error('This penalty has no pending reopen request.');
-  }
   const decision = req.body.decision;
   const note = String(req.body.note || '').trim();
   if (!['approved', 'rejected'].includes(decision)) {
     res.status(400); throw new Error("decision must be 'approved' or 'rejected'");
+  }
+  // Submission Review UI integration -- HR can initiate a "Send Back
+  // to Employee" flow WITHOUT the employee having raised a request
+  // first.  When there is no pending reopenRequest and HR is approving
+  // (decision='approved'), we synthesize the request sub-doc as
+  // HR-initiated.  Rejects with no request still make no sense.
+  if (!p.reopenRequest?.requested) {
+    if (decision === 'rejected') {
+      res.status(400); throw new Error('This penalty has no pending reopen request.');
+    }
+    p.reopenRequest = {
+      requested:    true,
+      reason:       note || 'Reopened by HR from Submission Review',
+      requestedAt:  new Date(),
+      decision:     'pending',
+      decidedBy:    null,
+      decidedAt:    null,
+      decisionNote: '',
+      completedAt:  null,
+    };
   }
   p.reopenRequest.decision   = decision;
   p.reopenRequest.decidedBy  = req.user._id;

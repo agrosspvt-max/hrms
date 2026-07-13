@@ -177,10 +177,27 @@ const getToday = asyncHandler(async (req, res) => {
     await ensureDailySubmissions(employee, today);
   }
 
-  const submissions = await Submission.find({
-    employee: employee._id,
-    date: today,
-  }).populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired');
+  // Submission Review UI integration -- also surface any PAST-day
+  // unsubmitted submissions whose missed_submission penalty has an
+  // APPROVED reopen request.  The employee fills those exactly like
+  // a normal same-day submission; the existing late-submission gate
+  // (Phase 64.4 Gap 2) allows the POST because the reopen was
+  // approved.  Uses ONLY existing collections + fields; no schema
+  // changes.
+  let reopenedIds = [];
+  try {
+    const approvedReopens = await Penalty.find({
+      employee: employee._id,
+      category: { $in: ['missed_submission', 'absent_submission'] },
+      'reopenRequest.decision': 'approved',
+    }).select('submission').lean();
+    reopenedIds = approvedReopens.map((p) => p.submission).filter(Boolean);
+  } catch (e) { console.error('[getToday] reopen lookup:', e.message); }
+  const subWhere = reopenedIds.length > 0
+    ? { employee: employee._id, $or: [{ date: today }, { _id: { $in: reopenedIds }, submitted: false }] }
+    : { employee: employee._id, date: today };
+  const submissions = await Submission.find(subWhere)
+    .populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired');
 
   // Defensive log: surface what the employee form will actually receive,
   // so a missing populate field shows up the moment we serve a request.

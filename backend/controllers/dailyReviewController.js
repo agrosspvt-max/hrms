@@ -496,6 +496,37 @@ const listGrouped = asyncHandler(async (req, res) => {
         .sort((a, b) => (b.missingCount - a.missingCount)
                      || (a.employee.name || '').localeCompare(b.employee.name || ''));
 
+      // Submission Review UI integration -- attach the per-day
+      // missed_submission penalty IDs onto each range card so HR
+      // can Send Back individual days from the aggregated view.
+      try {
+        const Penalty = require('../models/Penalty');
+        const empIds = [...new Set(cards.map((c) => String(c.employee._id)))];
+        const allDates = [...new Set(cards.flatMap((c) => (c.missingDates || []).map((d) => new Date(d).getTime())))]
+          .map((t) => new Date(t));
+        const pens = await Penalty.find({
+          employee: { $in: empIds },
+          category: { $in: ['missed_submission', 'absent_submission'] },
+          targetDate: { $in: allDates },
+          source: 'automatic',
+          probable: false,
+        }).select('employee targetDate reopenRequest').lean();
+        const _key = (empId, d) => `${String(empId)}|${new Date(d).toISOString().slice(0, 10)}`;
+        const byKey = new Map(pens.map((p) => [_key(p.employee, p.targetDate), p]));
+        for (const c of cards) {
+          c.missingPenalties = (c.missingDates || []).map((d) => {
+            const m = byKey.get(_key(c.employee._id, d));
+            return {
+              date: d,
+              penaltyId: m ? m._id : null,
+              reopenDecision: m?.reopenRequest?.decision || '',
+            };
+          });
+        }
+      } catch (e) {
+        console.error('[dailyReview] range penalty enrich:', e.message);
+      }
+
       // Range-level summary tiles the spec calls for.
       const employeesWithMissing = cards.length;
       const totalMissingDays = cards.reduce((s, c) => s + c.missingCount, 0);
@@ -596,6 +627,40 @@ const listGrouped = asyncHandler(async (req, res) => {
         attendance: result.attendanceLabel,
         leave: null,
       });
+    }
+
+    // Submission Review UI integration -- enrich every Not-Submitted
+    // card with the (employee, date) missed_submission penalty ID +
+    // reopen state so HR can click "Send Back to Employee" without
+    // a second round-trip.  Uses the EXISTING Penalty collection --
+    // no new schema, no new endpoint.  Card gets:
+    //   penaltyId          -- the ObjectId of the missed_submission row
+    //   reopenDecision     -- '' | 'pending' | 'approved' | 'rejected' |
+    //                         'completed' | 'cancelled'
+    // Both fields are `null` / '' when the compliance engine hasn't
+    // materialised a penalty for that (employee, date) yet, in which
+    // case the frontend disables the Send Back button.
+    try {
+      const Penalty = require('../models/Penalty');
+      const empIds = [...new Set(notSubmittedCards.map((c) => String(c.employee._id)))];
+      const days = [...new Set(notSubmittedCards.map((c) => new Date(c.date).getTime()))]
+        .map((t) => new Date(t));
+      const pens = await Penalty.find({
+        employee: { $in: empIds },
+        category: { $in: ['missed_submission', 'absent_submission'] },
+        targetDate: { $in: days },
+        source: 'automatic',
+        probable: false,
+      }).select('employee targetDate reopenRequest').lean();
+      const _key = (empId, d) => `${String(empId)}|${new Date(d).toISOString().slice(0, 10)}`;
+      const byKey = new Map(pens.map((p) => [_key(p.employee, p.targetDate), p]));
+      for (const c of notSubmittedCards) {
+        const match = byKey.get(_key(c.employee._id, c.date));
+        c.penaltyId      = match ? match._id : null;
+        c.reopenDecision = match?.reopenRequest?.decision || '';
+      }
+    } catch (e) {
+      console.error('[dailyReview] penalty enrich:', e.message);
     }
 
     return res.json({ cards: notSubmittedCards, summary });

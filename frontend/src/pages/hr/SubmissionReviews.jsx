@@ -364,6 +364,7 @@ export default function SubmissionReviews() {
               <NotSubmittedCard
                 key={String(c.employee._id) + String(c.date)}
                 card={c}
+                onReload={load}
               />
             ) : (
               /* Phase 49 -- openId now uses cardKey (employeeId|date)
@@ -413,15 +414,77 @@ export default function SubmissionReviews() {
  * Submission / DailyReview document exists yet — the only meaningful HR
  * action here is "follow up", which is contextual to each org.
  * ===================================================================== */
-function NotSubmittedCard({ card }) {
+/**
+ * Submission Review UI integration -- shared recovery dialog.
+ * HR picks Restore / Information / Neutral, adds an optional note,
+ * then confirms.  Posts to the EXISTING
+ * POST /api/penalties/:id/reopen-decision endpoint with
+ * decision='approved' + the chosen evaluationMode.  No new endpoints,
+ * no new business logic -- it hits the same code path that
+ * applyEvaluationMode uses everywhere else.
+ */
+function SendBackDialog({ penaltyId, dateLabel, onClose, onDone }) {
+  const toast = useToast();
+  const [mode, setMode] = useState('restore');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/penalties/${penaltyId}/reopen-decision`, {
+        decision: 'approved',
+        evaluationMode: mode,
+        note,
+      });
+      toast.success('Sent back to employee');
+      onDone?.();
+    } catch (e) { toast.error(errMsg(e)); }
+    setBusy(false);
+  };
+  return (
+    <div className="fixed inset-0 z-40 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-lg w-full max-w-md p-4 space-y-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Send Back to Employee</h2>
+          <button className="btn-ghost" onClick={onClose}>Close</button>
+        </div>
+        <div className="text-xs text-slate-500">Reopens the submission for <b>{dateLabel}</b>.  After the employee refiles it, the day is reviewed like any normal submission.</div>
+        <div>
+          <label className="label">Evaluation Mode <span className="text-red-500">*</span></label>
+          <select className="input" value={mode} onChange={(e) => setMode(e.target.value)}>
+            <option value="restore">Restore Marks (Performance restored)</option>
+            <option value="information">Information Only (analytics receive values; marks stay 0)</option>
+            <option value="neutral">Neutral Day (day is ignored)</option>
+          </select>
+        </div>
+        <div>
+          <label className="label">Note (optional)</label>
+          <textarea className="input" rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="Internal reason (audited)" />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn-primary" onClick={confirm} disabled={busy}>Confirm</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NotSubmittedCard({ card, onReload }) {
   const { employee, date, assignments = [], attendance, leave } = card;
-  // Phase 63 -- range-mode extras.  When the backend returned a
-  // range-aggregated card, `isRange` is true and `missingDates` is a
-  // sorted list of the days that qualified.  Single-date cards keep
-  // the exact same layout as before (spec item 11).
+  const toast = useToast();
+  // Phase 63 -- range-mode extras.
   const isRange = !!card.isRange;
   const missingDates = Array.isArray(card.missingDates) ? card.missingDates : [];
   const missingCount = card.missingCount || missingDates.length;
+  const missingPenalties = Array.isArray(card.missingPenalties) ? card.missingPenalties : [];
+
+  // Submission Review UI integration -- Send Back to Employee.
+  // Opens the shared recovery dialog and posts to the EXISTING
+  // reopen-decision endpoint (relaxed to allow HR-initiated
+  // approvals when no employee request was raised first).
+  const [sendBackOpen, setSendBackOpen] = useState(null); // { penaltyId, dateLabel }
+  const canSendBack = !isRange ? !!card.penaltyId : missingPenalties.some((mp) => mp.penaltyId);
 
   const ATT_META = {
     present:        { label: 'Present',     cls: 'bg-green-50 text-green-700  border-green-200' },
@@ -462,28 +525,88 @@ function NotSubmittedCard({ card }) {
           {isRange
             ? <span className="badge-red">Not Submitted · {missingCount} day{missingCount === 1 ? '' : 's'}</span>
             : <span className="badge-red">Not Submitted</span>}
+          {/* Submission Review UI integration -- "Send Back to Employee"
+              reuses the EXISTING /penalties/:id/reopen-decision endpoint.
+              Single-date cards send back the one missed day; range cards
+              open a per-date picker so HR can send back individual days. */}
+          {!isRange && card.penaltyId && (
+            <>
+              {card.reopenDecision === 'approved' && (
+                <span className="badge bg-blue-50 text-blue-700 text-[11px]">Reopened</span>
+              )}
+              {card.reopenDecision === 'pending' && (
+                <span className="badge bg-amber-50 text-amber-700 text-[11px]">Reopen requested</span>
+              )}
+              <button
+                className="btn-secondary !py-1 !text-xs"
+                onClick={() => setSendBackOpen({ penaltyId: card.penaltyId, dateLabel: fmtFull(date) })}
+                title="Reopen this day's submission with an evaluation mode"
+              >
+                Send Back to Employee
+              </button>
+            </>
+          )}
+          {/* Submission Review UX audit -- in range mode the Missing
+              Dates strip below acts as a per-day picker.  The header
+              badge just tells HR to use it; no click handler here so
+              we can't accidentally send back the wrong day. */}
+          {isRange && canSendBack && (
+            <span
+              className="badge bg-slate-100 text-slate-600 text-[11px]"
+              title="Click any Missing Date pill below to send that specific day back"
+            >
+              Click a date to send back
+            </span>
+          )}
         </div>
       </div>
 
       {/* Phase 63 -- range-mode Missing Dates strip.  Shows every date
           the employee failed to submit inside the selected window so
           HR can immediately see which days are missing without opening
-          each employee (spec item 5). */}
+          each employee (spec item 5).
+
+          Submission Review UX audit -- each pill is now the click
+          target for "Send Back to Employee" for THAT specific day
+          (Scenario 2).  When the compliance engine hasn't materialised
+          a penalty yet the pill stays non-interactive and shows a
+          hover hint. */}
       {isRange && missingDates.length > 0 && (
         <div className="px-5 py-3 text-sm border-t border-red-100">
           <div className="text-[11px] uppercase tracking-wide text-red-700 font-semibold mb-1">
-            Missing Dates ({missingCount})
+            Missing Dates ({missingCount}) <span className="normal-case text-red-600/70 font-normal">— click a date to send it back</span>
           </div>
           <div className="flex flex-wrap gap-1.5">
-            {missingDates.map((d) => (
-              <span
-                key={String(d)}
-                title={fmtFull(d)}
-                className="inline-flex items-center rounded-md border border-red-200 bg-red-50 text-red-700 text-[11px] font-medium px-2 py-0.5"
-              >
-                {fmtShort(d)}
-              </span>
-            ))}
+            {missingDates.map((d) => {
+              const mp = missingPenalties.find((x) => new Date(x.date).getTime() === new Date(d).getTime());
+              const penaltyId = mp?.penaltyId || null;
+              const decision  = mp?.reopenDecision || '';
+              const badge = decision === 'approved' ? ' · Reopened'
+                          : decision === 'completed' ? ' · Reopened & Submitted'
+                          : decision === 'pending' ? ' · Requested'
+                          : '';
+              const clickable = !!penaltyId;
+              return (
+                <button
+                  type="button"
+                  key={String(d)}
+                  title={clickable
+                    ? `${fmtFull(d)} — click to Send Back to Employee${badge}`
+                    : `${fmtFull(d)} — compliance engine hasn't recorded this day yet`}
+                  disabled={!clickable}
+                  onClick={() => clickable && setSendBackOpen({
+                    penaltyId,
+                    dateLabel: fmtFull(d),
+                  })}
+                  className={`inline-flex items-center rounded-md border text-[11px] font-medium px-2 py-0.5
+                    ${clickable
+                      ? 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100 cursor-pointer'
+                      : 'border-slate-200 bg-slate-50 text-slate-500 cursor-not-allowed'}`}
+                >
+                  {fmtShort(d)}{badge}
+                </button>
+              );
+            })}
           </div>
         </div>
       )}
@@ -505,6 +628,15 @@ function NotSubmittedCard({ card }) {
           </ul>
         </div>
       )}
+
+      {sendBackOpen && (
+        <SendBackDialog
+          penaltyId={sendBackOpen.penaltyId}
+          dateLabel={sendBackOpen.dateLabel}
+          onClose={() => setSendBackOpen(null)}
+          onDone={() => { setSendBackOpen(null); onReload?.(); }}
+        />
+      )}
     </div>
   );
 }
@@ -516,6 +648,27 @@ function EmployeeDayCard({ card, open, onToggle, onReload, selected = false, onS
   const { employee, date, submissions, reflection, review } = card;
   const reviewed = review && review.reviewStatus === 'reviewed';
   const types = submissions.map((s) => (s.template?.customKind || s.templateType));
+
+  // Submission Review UX audit -- indicate that this day was
+  // originally a Missed Submission that HR sent back and the
+  // employee has now re-submitted.  We inspect the submission's
+  // penaltyBreakdown (already attached by the backend via
+  // attachFinalMarks) for a missed_submission / absent_submission
+  // row whose reopen lifecycle reached 'approved' or 'completed'.
+  // No new endpoint / schema -- pure UI derivation.
+  const reopenState = (() => {
+    for (const s of (submissions || [])) {
+      const rows = s.penaltyBreakdown?.template || [];
+      for (const p of rows) {
+        if (p.category !== 'missed_submission' && p.category !== 'absent_submission') continue;
+        const dec = p.reopenRequest?.decision || '';
+        if (dec === 'completed') return { label: 'Reopened Historical Submission', cls: 'bg-blue-50 text-blue-700 border-blue-200', mode: p.evaluationMode || '' };
+        if (dec === 'approved')  return { label: 'Reopened (awaiting resubmit)',   cls: 'bg-amber-50 text-amber-700 border-amber-200', mode: p.evaluationMode || '' };
+        if (dec === 'pending')   return { label: 'Reopen requested by employee',    cls: 'bg-amber-50 text-amber-700 border-amber-200', mode: '' };
+      }
+    }
+    return null;
+  })();
   // Phase 16: roll-up HOD state for the day.  Awaiting beats Returned
   // beats Approved so HR's attention is drawn to anything still waiting
   // on the HOD layer.
@@ -563,6 +716,18 @@ function EmployeeDayCard({ card, open, onToggle, onReload, selected = false, onS
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {/* Submission Review UX audit -- Reopened Historical
+                Submission badge (Scenario 1).  Rendered before the
+                HR Reviewed/Pending badge so it's the first thing HR
+                sees.  Backend state derived from penaltyBreakdown. */}
+            {reopenState && (
+              <span
+                className={`badge text-[11px] border ${reopenState.cls}`}
+                title={reopenState.mode ? `Evaluation mode: ${reopenState.mode}` : reopenState.label}
+              >
+                {reopenState.label}{reopenState.mode ? ` · ${reopenState.mode}` : ''}
+              </span>
+            )}
             {hodRollup && (
               <span className={`badge text-[11px] border ${hodRollup.cls}`} title={`Day-level HOD status: ${hodRollup.label}`}>
                 <span className="mr-1">{hodRollup.dot}</span>{hodRollup.label}
