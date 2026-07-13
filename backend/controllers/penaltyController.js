@@ -398,8 +398,43 @@ const requestReopening = asyncHandler(async (req, res) => {
  */
 const decideReopen = asyncHandler(async (req, res) => {
   if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only'); }
-  const p = await Penalty.findById(req.params.id);
-  if (!p) { res.status(404); throw new Error('Penalty not found'); }
+
+  // Backward-compat lazy path.  When the sentinel `:id === 'ensure'`
+  // is passed, HR is acting on a historical Not-Submitted day that
+  // pre-dated the penalty system and therefore has no Penalty
+  // document yet.  We invoke the EXISTING enforceAbsentSubmission
+  // helper (same code path the daily scheduler uses) to create the
+  // missed_submission row, then continue with the normal decision
+  // flow.  No new endpoint, no duplicated business rules -- the
+  // caller gets exactly the same response shape as the direct path.
+  let p;
+  if (req.params.id === 'ensure') {
+    const { employee, date } = req.body || {};
+    if (!employee || !date) {
+      res.status(400);
+      throw new Error("'employee' and 'date' are required when :id is 'ensure'.");
+    }
+    const target = require('../utils/dateHelpers').startOfDay(new Date(date));
+    // Idempotent creation via the existing engine helper.
+    try {
+      const engine = require('../services/penaltyEngine');
+      await engine.enforceAbsentSubmission({ employeeId: employee, previousDay: target });
+    } catch (e) { console.error('[decideReopen ensure] engine:', e.message); }
+    p = await Penalty.findOne({
+      employee,
+      category: { $in: ['missed_submission', 'absent_submission'] },
+      targetDate: target,
+      source: 'automatic',
+      probable: false,
+    });
+    if (!p) {
+      res.status(404);
+      throw new Error('Could not locate or create a Missed-Submission record for that day.  The day may not qualify (leave / holiday / weekly-off / already submitted).');
+    }
+  } else {
+    p = await Penalty.findById(req.params.id);
+    if (!p) { res.status(404); throw new Error('Penalty not found'); }
+  }
   const decision = req.body.decision;
   const note = String(req.body.note || '').trim();
   if (!['approved', 'rejected'].includes(decision)) {

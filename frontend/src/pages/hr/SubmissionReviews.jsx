@@ -423,7 +423,7 @@ export default function SubmissionReviews() {
  * no new business logic -- it hits the same code path that
  * applyEvaluationMode uses everywhere else.
  */
-function SendBackDialog({ penaltyId, dateLabel, onClose, onDone }) {
+function SendBackDialog({ penaltyId, dateLabel, employeeId, date, onClose, onDone }) {
   const toast = useToast();
   const [mode, setMode] = useState('restore');
   const [note, setNote] = useState('');
@@ -431,11 +431,27 @@ function SendBackDialog({ penaltyId, dateLabel, onClose, onDone }) {
   const confirm = async () => {
     setBusy(true);
     try {
-      await api.post(`/penalties/${penaltyId}/reopen-decision`, {
-        decision: 'approved',
-        evaluationMode: mode,
-        note,
-      });
+      // Backward-compat lazy path.  Historical Not-Submitted days
+      // that pre-dated the penalty system have no penaltyId; we hit
+      // the sentinel `ensure` variant of the SAME endpoint, which
+      // creates the missed_submission row via the shared engine
+      // helper and then applies the decision in one round-trip.
+      // HR never has to know which path was used.
+      if (penaltyId) {
+        await api.post(`/penalties/${penaltyId}/reopen-decision`, {
+          decision: 'approved',
+          evaluationMode: mode,
+          note,
+        });
+      } else {
+        await api.post('/penalties/ensure/reopen-decision', {
+          employee: employeeId,
+          date,
+          decision: 'approved',
+          evaluationMode: mode,
+          note,
+        });
+      }
       toast.success('Sent back to employee');
       onDone?.();
     } catch (e) { toast.error(errMsg(e)); }
@@ -483,8 +499,13 @@ function NotSubmittedCard({ card, onReload }) {
   // Opens the shared recovery dialog and posts to the EXISTING
   // reopen-decision endpoint (relaxed to allow HR-initiated
   // approvals when no employee request was raised first).
-  const [sendBackOpen, setSendBackOpen] = useState(null); // { penaltyId, dateLabel }
-  const canSendBack = !isRange ? !!card.penaltyId : missingPenalties.some((mp) => mp.penaltyId);
+  //
+  // Legacy backward-compat: when `penaltyId` is null the dialog
+  // falls back to the `ensure` variant of the endpoint which
+  // creates the historical missed_submission row via the shared
+  // engine helper before applying the decision.  HR simply clicks
+  // and it works.
+  const [sendBackOpen, setSendBackOpen] = useState(null);
 
   const ATT_META = {
     present:        { label: 'Present',     cls: 'bg-green-50 text-green-700  border-green-200' },
@@ -529,7 +550,7 @@ function NotSubmittedCard({ card, onReload }) {
               reuses the EXISTING /penalties/:id/reopen-decision endpoint.
               Single-date cards send back the one missed day; range cards
               open a per-date picker so HR can send back individual days. */}
-          {!isRange && card.penaltyId && (
+          {!isRange && (
             <>
               {card.reopenDecision === 'approved' && (
                 <span className="badge bg-blue-50 text-blue-700 text-[11px]">Reopened</span>
@@ -537,9 +558,17 @@ function NotSubmittedCard({ card, onReload }) {
               {card.reopenDecision === 'pending' && (
                 <span className="badge bg-amber-50 text-amber-700 text-[11px]">Reopen requested</span>
               )}
+              {/* Backward-compat -- historical days without a penaltyId
+                  still get the button; the dialog transparently uses
+                  the ensure variant of the reopen-decision endpoint. */}
               <button
                 className="btn-secondary !py-1 !text-xs"
-                onClick={() => setSendBackOpen({ penaltyId: card.penaltyId, dateLabel: fmtFull(date) })}
+                onClick={() => setSendBackOpen({
+                  penaltyId: card.penaltyId || null,
+                  dateLabel: fmtFull(date),
+                  employeeId: employee._id,
+                  date,
+                })}
                 title="Reopen this day's submission with an evaluation mode"
               >
                 Send Back to Employee
@@ -547,10 +576,8 @@ function NotSubmittedCard({ card, onReload }) {
             </>
           )}
           {/* Submission Review UX audit -- in range mode the Missing
-              Dates strip below acts as a per-day picker.  The header
-              badge just tells HR to use it; no click handler here so
-              we can't accidentally send back the wrong day. */}
-          {isRange && canSendBack && (
+              Dates strip below acts as a per-day picker. */}
+          {isRange && (
             <span
               className="badge bg-slate-100 text-slate-600 text-[11px]"
               title="Click any Missing Date pill below to send that specific day back"
@@ -566,15 +593,15 @@ function NotSubmittedCard({ card, onReload }) {
           HR can immediately see which days are missing without opening
           each employee (spec item 5).
 
-          Submission Review UX audit -- each pill is now the click
-          target for "Send Back to Employee" for THAT specific day
-          (Scenario 2).  When the compliance engine hasn't materialised
-          a penalty yet the pill stays non-interactive and shows a
-          hover hint. */}
+          Submission Review UX audit -- each pill is the click target
+          for "Send Back to Employee" for THAT specific day.  Legacy
+          historical days without a stored penalty are handled by the
+          `ensure` variant of the reopen-decision endpoint, so every
+          pill is clickable regardless of when the day occurred. */}
       {isRange && missingDates.length > 0 && (
         <div className="px-5 py-3 text-sm border-t border-red-100">
           <div className="text-[11px] uppercase tracking-wide text-red-700 font-semibold mb-1">
-            Missing Dates ({missingCount}) <span className="normal-case text-red-600/70 font-normal">— click a date to send it back</span>
+            Missing Dates ({missingCount}) <span className="normal-case text-red-600/70 font-normal">— click any date to send it back to the employee</span>
           </div>
           <div className="flex flex-wrap gap-1.5">
             {missingDates.map((d) => {
@@ -585,23 +612,20 @@ function NotSubmittedCard({ card, onReload }) {
                           : decision === 'completed' ? ' · Reopened & Submitted'
                           : decision === 'pending' ? ' · Requested'
                           : '';
-              const clickable = !!penaltyId;
+              // Backward-compat: legacy days without a penaltyId
+              // still open the dialog; the ensure path handles them.
               return (
                 <button
                   type="button"
                   key={String(d)}
-                  title={clickable
-                    ? `${fmtFull(d)} — click to Send Back to Employee${badge}`
-                    : `${fmtFull(d)} — compliance engine hasn't recorded this day yet`}
-                  disabled={!clickable}
-                  onClick={() => clickable && setSendBackOpen({
+                  title={`${fmtFull(d)} — click to Send Back to Employee${badge}`}
+                  onClick={() => setSendBackOpen({
                     penaltyId,
                     dateLabel: fmtFull(d),
+                    employeeId: employee._id,
+                    date: d,
                   })}
-                  className={`inline-flex items-center rounded-md border text-[11px] font-medium px-2 py-0.5
-                    ${clickable
-                      ? 'border-red-200 bg-red-50 text-red-700 hover:bg-red-100 cursor-pointer'
-                      : 'border-slate-200 bg-slate-50 text-slate-500 cursor-not-allowed'}`}
+                  className="inline-flex items-center rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 text-[11px] font-medium px-2 py-0.5 cursor-pointer"
                 >
                   {fmtShort(d)}{badge}
                 </button>
