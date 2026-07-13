@@ -671,10 +671,42 @@ const completion = asyncHandler(async (req, res) => {
   const mostCollaborative = collaboration[0] || null;
   const fastestResolver = resolverPerf[0] || null;
 
+  // Phase 64.1 Item 1+6 -- fetch every completion_adjustment (and
+  // legacy manual_completion) that overlaps the query window, then
+  // route through the shared helper so this endpoint agrees with
+  // every other consumer.
+  let completionAdjustments = [];
+  let completionTrio = { original: 0, adjustment: 0, final: 0 };
+  try {
+    const Penalty = require('../models/Penalty');
+    const { applyCompletionAdjustment } = require('../services/penaltyMath');
+    const rawAdj = await Penalty.find({
+      employee: { $in: empIds },
+      category: { $in: ['completion_adjustment', 'manual_completion'] },
+      status: 'active',
+    }).select('employee category status completionPercent evaluationPeriod').lean();
+    completionAdjustments = rawAdj;
+    const originalPct = totalTotal > 0 ? (totalEarned / totalTotal) * 100 : 0;
+    // Fold across every scoped employee's adjustments -- the query
+    // window is the same for all of them, so we can pass the whole
+    // pool and the helper's overlap math weights each contribution.
+    // For a per-employee display the caller can compute the trio
+    // per-employee via applyCompletionAdjustment separately.
+    completionTrio = applyCompletionAdjustment(originalPct, rawAdj, from, addDays(to, -1));
+  } catch (e) { console.error('[analytics] completion adjustment:', e.message); }
+
   res.json({
     range: { from: formatYMD(from), to: formatYMD(addDays(to, -1)) },
     cards: {
-      avgCompletionScore: totalTotal > 0 ? round1((totalEarned / totalTotal) * 100) : 0,
+      // Phase 64.1 Item 6 -- expose the trio so the Performance page
+      // never silently reduces percentages.  `avgCompletionScore`
+      // preserves the pre-Phase-64 field for backward compatibility
+      // and holds the FINAL value; the new fields let the UI show
+      // Original / Adjustment / Final together.
+      avgCompletionScore: totalTotal > 0 ? round1(completionTrio.final) : 0,
+      avgCompletionOriginal: round1(completionTrio.original),
+      avgCompletionAdjustment: round1(completionTrio.adjustment),
+      avgCompletionFinal: round1(completionTrio.final),
       avgQualityRating: totalTotal > 0 ? round1((totalEarned / totalTotal) * 100) : 0,
       mostConsistentEmployee: mostConsistent ? { name: mostConsistent.name, consistency: mostConsistent.consistency } : null,
       highestScoringDepartment: byDepartment[0] || null,

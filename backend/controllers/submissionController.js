@@ -19,6 +19,9 @@ const { scrubPrivateRemark } = require('../utils/privateRemark');
 // Phase 61 -- Penalty Engine hooks.
 const penaltyEngine = require('../services/penaltyEngine');
 const { attachFinalMarks } = require('../services/penaltyMath');
+// Phase 64.4 Gap 2 -- late-submission gate consults the Penalty
+// collection before accepting a submit for a past date.
+const Penalty = require('../models/Penalty');
 
 /**
  * Validate + stamp dependency fields onto a scorable unit (task / excel
@@ -297,6 +300,35 @@ const submitOne = asyncHandler(async (req, res) => {
   if (sub.submitted) { res.status(400); throw new Error('Submission already submitted for today'); }
 
   const today = startOfDay(new Date());
+
+  // Phase 64.4 Gap 2 -- late-submission workflow gate.  When the
+  // submission's date is in the past AND a missed_submission /
+  // absent_submission penalty exists for it, the employee must have
+  // an APPROVED reopen request before we accept the submit.  This
+  // enforces the spec's "Request Reopening -> HR Approves ->
+  // Employee Submits" order at the API layer so a client cannot
+  // bypass the workflow by POSTing directly.  Same-day submissions
+  // are untouched (that's the normal flow).
+  if (sub.date && startOfDay(sub.date).getTime() < today.getTime()) {
+    const missPenalty = await Penalty.findOne({
+      submission: sub._id,
+      category: { $in: ['missed_submission', 'absent_submission'] },
+      status: { $in: ['active', 'pending', 'scheduled'] },
+    }).select('reopenRequest').lean();
+    if (missPenalty) {
+      const decision = missPenalty.reopenRequest?.decision || '';
+      if (decision !== 'approved') {
+        res.status(400);
+        throw new Error(
+          decision === 'pending'
+            ? 'A reopen request is still pending HR review.  You cannot re-submit until it is approved.'
+            : decision === 'rejected'
+              ? 'HR rejected your reopen request.  Contact HR to raise a new request.'
+              : 'This day\'s submission window has closed.  Open Fines & Penalties to request reopening from HR.'
+        );
+      }
+    }
+  }
 
   // Block submission on a holiday (in case the row was created earlier
   // and HR added a holiday after the fact).
@@ -828,6 +860,21 @@ const submitOne = asyncHandler(async (req, res) => {
   } else {
     const updateMap = new Map(tasks.map((t) => [String(t.taskId), t]));
 
+    // Phase 64 Part 3 -- pre-load the working-day context ONCE outside
+    // the forEach callback (forEach can't await) so any pending task
+    // in this submission can stamp resolveBy synchronously below.
+    let _wdCtx = null;
+    let _addWorkingDays = null;
+    try {
+      const { addWorkingDays, loadWorkingDayContext } = require('../utils/workingDays');
+      _addWorkingDays = addWorkingDays;
+      _wdCtx = await loadWorkingDayContext({
+        employee: { _id: sub.employee, weeklyOff: req.user.weeklyOff || [0] },
+        from: today,
+        to: new Date(today.getTime() + 90 * 86400000),
+      });
+    } catch (_) { /* fallback: resolveBy stays null on the tasks */ }
+
     sub.tasks.forEach((t) => {
       const upd = updateMap.get(String(t._id));
       if (!upd) return;
@@ -846,6 +893,23 @@ const submitOne = asyncHandler(async (req, res) => {
         t.status = 'pending';
         t.pendingReason = upd.pendingReason || '';
         t.pendingSince = today;
+        // Phase 64 Part 3 -- default 3 working days to resolve.  We
+        // stamp `resolveBy` ONCE at submit time so the frontend never
+        // has to redo the working-day arithmetic on each page load.
+        // HR can later override `resolveWithin` inside Submission
+        // Review; the override handler recomputes resolveBy.
+        if (!t.resolveWithin || t.resolveWithin <= 0) t.resolveWithin = 3;
+        // Uses the pre-loaded working-day context so the forEach
+        // stays synchronous.  Falls back to null when the context
+        // couldn't be built (e.g. Mongo hiccup) -- the UI degrades
+        // gracefully.
+        try {
+          t.resolveBy = (_addWorkingDays && _wdCtx)
+            ? _addWorkingDays(today, t.resolveWithin, _wdCtx)
+            : null;
+        } catch (_) {
+          t.resolveBy = null;
+        }
         total += t.points;
         if (!t.pendingReason) {
           res.status(400);
@@ -1061,6 +1125,10 @@ const completeBacklogTask = asyncHandler(async (req, res) => {
   task.completedAt = new Date();
   // No marks adjustment per spec - late completion gives no points.
   await sub.save();
+  // Phase 64 Part 3 -- the Performance Lock automatically ends when
+  // every overdue pending task clears.  Never blocks the response.
+  try { await penaltyEngine.onPendingTaskResolved({ employeeId: req.user._id }); }
+  catch (e) { console.error('[completeBacklog] onPendingTaskResolved:', e.message); }
   res.json({ message: 'Backlog task completed', task });
 });
 

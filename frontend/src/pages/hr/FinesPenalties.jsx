@@ -21,13 +21,43 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { Loader } from '../../components/Loader.jsx';
 
 const CATEGORY_LABEL = {
-  absent_submission:    'Missing Submission',
-  dependency_pending:   'Pending Dependency (3+ days)',
-  attendance_manual:    'Attendance Correction',
-  critical_threshold:   'Critical Task Threshold',
-  repeated_missing:     'Repeated Missing Submission',
-  manual_marks:         'Manual · Marks',
-  manual_completion:    'Manual · Completion %',
+  // Phase 64 Part 4 -- classification per spec:
+  //   Manual Penalties · Missed Submission · Performance Lock ·
+  //   Completion Adjustments · Marks Adjustments
+  missed_submission:     'Missed Submission',
+  absent_submission:     'Missed Submission (legacy)',
+  performance_lock:      'Performance Lock',
+  dependency_pending:    'Pending Dependency (3+ days)',
+  attendance_manual:     'Attendance Correction',
+  critical_threshold:    'Critical Task Threshold',
+  repeated_missing:      'Repeated Missing Submission',
+  manual_marks:          'Manual · Marks (legacy)',
+  marks_adjustment:      'Marks Adjustment',
+  manual_completion:     'Manual · Completion % (legacy)',
+  completion_adjustment: 'Completion Adjustment',
+};
+
+// Phase 64 Part 4 -- grouping used by the classification chips at the
+// top of each row so HR sees the spec's five buckets clearly.
+const CATEGORY_GROUP = {
+  missed_submission:     'Missed Submission',
+  absent_submission:     'Missed Submission',
+  performance_lock:      'Performance Lock',
+  dependency_pending:    'Performance Lock',
+  attendance_manual:     'Manual Penalties',
+  critical_threshold:    'Manual Penalties',
+  repeated_missing:      'Missed Submission',
+  manual_marks:          'Marks Adjustments',
+  marks_adjustment:      'Marks Adjustments',
+  manual_completion:     'Completion Adjustments',
+  completion_adjustment: 'Completion Adjustments',
+};
+const GROUP_BADGE = {
+  'Manual Penalties':       'bg-red-50 text-red-700',
+  'Missed Submission':      'bg-amber-50 text-amber-700',
+  'Performance Lock':       'bg-red-50 text-red-700',
+  'Completion Adjustments': 'bg-purple-50 text-purple-700',
+  'Marks Adjustments':      'bg-purple-50 text-purple-700',
 };
 
 const STATUS_BADGE = {
@@ -148,22 +178,50 @@ export default function FinesPenalties() {
                         <div className="text-[11px] text-slate-500">{p.employee?.employeeId || ''}</div>
                       </td>
                       <td>
-                        <span className={`badge ${p.probable ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-700'}`}>
-                          {CATEGORY_LABEL[p.category] || p.category}
-                        </span>
+                        <div className="flex flex-col gap-0.5">
+                          {/* Phase 64 Part 4 -- group chip. */}
+                          <span className={`badge text-[10px] ${GROUP_BADGE[CATEGORY_GROUP[p.category]] || 'bg-slate-100 text-slate-600'}`}>
+                            {CATEGORY_GROUP[p.category] || 'Other'}
+                          </span>
+                          <span className={`badge ${p.probable ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-700'}`}>
+                            {CATEGORY_LABEL[p.category] || p.category}
+                          </span>
+                          {/* Phase 64 Part 2 -- surface reopen state on the row. */}
+                          {p.reopenRequest?.requested && p.reopenRequest?.decision === 'pending' && (
+                            <span className="badge bg-blue-50 text-blue-700 text-[10px]">Reopen requested</span>
+                          )}
+                        </div>
                       </td>
                       <td>{p.targetDate ? fmtDate(p.targetDate) : '—'}</td>
                       <td className="font-mono">
-                        {p.category === 'manual_completion'
+                        {(p.category === 'manual_completion' || p.category === 'completion_adjustment')
                           ? `${p.completionPercent}%`
                           : (Number(p.penaltyMarks) || 0)}
                       </td>
                       <td><span className={`badge ${STATUS_BADGE[p.status] || 'bg-slate-100 text-slate-700'}`}>{p.status}</span></td>
-                      <td className="max-w-md text-xs text-slate-600">{p.reason || '—'}</td>
+                      <td className="max-w-md text-xs text-slate-600">
+                        {p.reason || '—'}
+                        {p.reopenRequest?.requested && (
+                          <div className="mt-1 text-[11px] text-blue-700">
+                            Employee reason: {p.reopenRequest.reason || '—'}
+                          </div>
+                        )}
+                        {p.evaluationMode && (
+                          <div className="mt-1 text-[11px] text-purple-700">
+                            Evaluation: {p.evaluationMode}
+                          </div>
+                        )}
+                      </td>
                       <td className="text-xs">{p.effectiveDate ? new Date(p.effectiveDate).toLocaleString() : ''}</td>
                       <td className="text-xs">{p.resolvedAt ? new Date(p.resolvedAt).toLocaleString() : (p.cancelledAt ? new Date(p.cancelledAt).toLocaleString() : '')}</td>
                       {isAdmin && (
                         <td>
+                          {/* Phase 64 Part 2 -- Approve / Reject a
+                              pending reopen request; can also pick an
+                              evaluation mode directly. */}
+                          {p.reopenRequest?.requested && p.reopenRequest?.decision === 'pending' && (
+                            <ReopenActions penalty={p} onDone={load} />
+                          )}
                           {['active', 'pending', 'scheduled'].includes(p.status) && (
                             <button className="btn-ghost text-red-600" onClick={() => doCancel(p._id)}>Cancel</button>
                           )}
@@ -183,6 +241,56 @@ export default function FinesPenalties() {
           onCreated={() => { setOpenManual(false); load(); }}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * Phase 64 Part 2 -- HR-side Approve / Reject controls for a pending
+ * Request Reopening.  Approve requires the HR user to pick one of
+ * the three shared evaluation modes so the missed-submission /
+ * performance-lock recovery workflow is applied consistently.
+ */
+function ReopenActions({ penalty, onDone }) {
+  const toast = useToast();
+  const [mode, setMode] = useState('restore');
+  const [note, setNote] = useState('');
+  const [busy, setBusy] = useState(false);
+  const submit = async (decision) => {
+    if (decision === 'approved' && !mode) { toast.error('Pick an evaluation mode'); return; }
+    setBusy(true);
+    try {
+      await api.post(`/penalties/${penalty._id}/reopen-decision`, {
+        decision,
+        evaluationMode: decision === 'approved' ? mode : null,
+        note,
+      });
+      toast.success(`Reopen ${decision}`);
+      onDone?.();
+    } catch (e) { toast.error(errMsg(e)); }
+    setBusy(false);
+  };
+  return (
+    <div className="flex flex-col gap-1 text-[11px]">
+      <select
+        className="input h-7 !py-0 !text-[11px]"
+        value={mode}
+        onChange={(e) => setMode(e.target.value)}
+      >
+        <option value="restore">Restore Performance</option>
+        <option value="information">Information Only</option>
+        <option value="neutral">Neutral Day</option>
+      </select>
+      <input
+        className="input h-7 !py-0 !text-[11px]"
+        placeholder="Note (optional)"
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+      />
+      <div className="flex gap-1">
+        <button className="btn-primary !py-0.5 !px-2 !text-[11px]" disabled={busy} onClick={() => submit('approved')}>Approve</button>
+        <button className="btn-ghost text-red-600 !py-0.5 !px-2 !text-[11px]" disabled={busy} onClick={() => submit('rejected')}>Reject</button>
+      </div>
     </div>
   );
 }
@@ -208,7 +316,10 @@ function ManualPenaltyModal({ onClose, onCreated }) {
     employee: '', type: 'marks',
     marks: '', completionPercent: '',
     reason: '', employeeMessage: '',
-    graceHours: '', durationDays: '',
+    graceHours: '',
+    // Phase 64 Part 5 -- Completion Adjustment uses a past-only date
+    // range instead of an auto-expiry duration.
+    evaluationStart: '', evaluationEnd: '',
   });
   useEffect(() => {
     api.get('/employees', { params: { activeOnly: 'true' } })
@@ -218,7 +329,15 @@ function ManualPenaltyModal({ onClose, onCreated }) {
   const submit = async () => {
     if (!form.employee) { toast.error('Pick an employee'); return; }
     if (form.type === 'marks' && !form.marks) { toast.error('Enter marks'); return; }
-    if (form.type === 'completion' && !form.completionPercent) { toast.error('Enter completion %'); return; }
+    if (form.type === 'completion') {
+      if (!form.completionPercent) { toast.error('Enter adjustment %'); return; }
+      if (!form.evaluationStart || !form.evaluationEnd) { toast.error('Pick the evaluation period'); return; }
+      const today = new Date(); today.setHours(0, 0, 0, 0);
+      if (new Date(form.evaluationStart) > today || new Date(form.evaluationEnd) > today) {
+        toast.error('Evaluation period must be strictly in the past.');
+        return;
+      }
+    }
     try {
       await api.post('/penalties/manual', {
         employee: form.employee,
@@ -228,9 +347,11 @@ function ManualPenaltyModal({ onClose, onCreated }) {
         reason: form.reason,
         employeeMessage: form.employeeMessage,
         graceHours: Number(form.graceHours) || 0,
-        durationDays: Number(form.durationDays) || 0,
+        // Phase 64 Part 5 -- past-only evaluation range.
+        evaluationStart: form.evaluationStart || undefined,
+        evaluationEnd:   form.evaluationEnd   || undefined,
       });
-      toast.success('Penalty created');
+      toast.success(form.type === 'completion' ? 'Completion adjustment created' : 'Marks adjustment created');
       onCreated();
     } catch (e) { toast.error(errMsg(e)); }
   };
@@ -252,8 +373,8 @@ function ManualPenaltyModal({ onClose, onCreated }) {
         <div>
           <label className="label">Penalty Type <span className="text-red-500">*</span></label>
           <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
-            <option value="marks">Marks Penalty</option>
-            <option value="completion">Completion Score Penalty</option>
+            <option value="marks">Marks Adjustment</option>
+            <option value="completion">Completion Score Adjustment</option>
           </select>
         </div>
         {form.type === 'marks' ? (
@@ -270,14 +391,37 @@ function ManualPenaltyModal({ onClose, onCreated }) {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Reduce Completion (%) <span className="text-red-500">*</span></label>
-              <input type="number" min="0" max="100" className="input" value={form.completionPercent} onChange={(e) => setForm({ ...form, completionPercent: e.target.value })} />
+            <div className="col-span-2">
+              <label className="label">Adjustment % <span className="text-red-500">*</span></label>
+              <input
+                type="number"
+                className="input"
+                value={form.completionPercent}
+                onChange={(e) => setForm({ ...form, completionPercent: e.target.value })}
+                placeholder="e.g. 5 for −5%"
+              />
+              <div className="text-[11px] text-slate-500 mt-1">Percentage points to subtract from displayed Completion Score inside the evaluation period.  No auto-expiry -- adjustment lives forever unless cancelled.</div>
             </div>
             <div>
-              <label className="label">Duration (days) <span className="text-red-500">*</span></label>
-              <input type="number" min="1" className="input" value={form.durationDays} onChange={(e) => setForm({ ...form, durationDays: e.target.value })} />
-              <div className="text-[11px] text-slate-500 mt-1">Auto-expires after this window.</div>
+              <label className="label">Evaluation Start <span className="text-red-500">*</span></label>
+              <input
+                type="date"
+                className="input"
+                max={new Date().toISOString().slice(0, 10)}
+                value={form.evaluationStart}
+                onChange={(e) => setForm({ ...form, evaluationStart: e.target.value })}
+              />
+            </div>
+            <div>
+              <label className="label">Evaluation End <span className="text-red-500">*</span></label>
+              <input
+                type="date"
+                className="input"
+                max={new Date().toISOString().slice(0, 10)}
+                value={form.evaluationEnd}
+                onChange={(e) => setForm({ ...form, evaluationEnd: e.target.value })}
+              />
+              <div className="text-[11px] text-slate-500 mt-1">Past dates only.  Multiple overlapping adjustments stack.</div>
             </div>
           </div>
         )}

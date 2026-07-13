@@ -160,6 +160,11 @@ const createEmployee = asyncHandler(async (req, res) => {
   if ('hodPermissions' in body) body.hodPermissions = normalizeHodPermissions(body.hodPermissions);
   // Stamp the creator so the Manage Access table can show "Created By".
   body.createdByUser = req.user._id;
+  // Phase 64 -- Attendance Review is the default for every new
+  // employee.  Existing employees keep whatever mode they already
+  // have (this only applies at CREATE time; the update path in
+  // updateEmployee still honours whatever HR explicitly picks).
+  if (!body.attendanceMode) body.attendanceMode = 'attendance_review';
   const user = await User.create(body);
   await syncHodAssignment(user);
   logAudit(req, {

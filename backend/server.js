@@ -189,6 +189,14 @@ const start = async () => {
     const { verifyTransporterAtBoot } = require('./utils/emailService');
     verifyTransporterAtBoot();
   } catch (e) { console.error('[smtp] boot verify error:', e.message); }
+  // Phase 64.4 Gap 1 -- kick off the system-driven daily compliance
+  // scheduler.  Runs the EXISTING penaltyEngine.runDaily helper for
+  // every active employee at boot and every 24 hours.  Idempotent
+  // via the partial-unique indexes; safe to restart at any time.
+  try {
+    const { start: startCompliance } = require('./services/dailyComplianceScheduler');
+    startCompliance();
+  } catch (e) { console.error('[compliance-scheduler] boot error:', e.message); }
   app.listen(PORT, () => console.log(`[server] HRMS API running on :${PORT}`));
 };
 

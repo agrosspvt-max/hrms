@@ -182,8 +182,18 @@ const _isPresentAttendance = async (employeeId, day) => {
  * Sweep across every unsubmitted submission for `day` and emit
  * probable penalties.  Called from the employee's getToday so we
  * don't need a separate cron for warnings.
+ *
+ * Phase 64 Part 2 update -- spec explicitly says "Drafts NEVER
+ * count as a submission.  No penalty.  No warning.  No performance
+ * impact." while the day is still ongoing.  The function is kept
+ * for backward compat (callers still invoke it) but now returns []
+ * without creating any probable warnings.  Enforcement moves
+ * entirely to the DAY-AFTER path (enforceMissedSubmission).
  */
 const sweepProbableAbsentSubmission = async ({ employeeId, day }) => {
+  // Phase 64 Part 2: no same-day warnings; day-1 is a draft window.
+  return [];
+  // eslint-disable-next-line no-unreachable
   const target = startOfDay(day);
   const present = await _isPresentAttendance(employeeId, target);
   if (!present) return [];
@@ -256,7 +266,10 @@ const enforceAbsentSubmission = async ({ employeeId, previousDay }) => {
 
     const p = await _upsertAutoPenalty({
       employee: employeeId,
-      category: 'absent_submission',
+      // Phase 64 Part 2 -- new category name.  Old 'absent_submission'
+      // records stay in place (Part 8 backward compat); the enum keeps
+      // both values so historical rows still classify correctly.
+      category: 'missed_submission',
       source: 'automatic',
       probable: false,
       status: 'active',
@@ -267,9 +280,9 @@ const enforceAbsentSubmission = async ({ employeeId, previousDay }) => {
       penaltyMarks: Number(s.earnedPoints) || 0,
       targetDate: target,
       submission: s._id,
-      rule: 'submission_missing_v1',
+      rule: 'missed_submission_v1',
       reason: 'Present but work not submitted.',
-      employeeMessage: 'A performance penalty was applied: you were marked present but did not submit yesterday\'s work.',
+      employeeMessage: 'Missed Submission -- you were marked Present yesterday but did not submit work.  Open Fines & Penalties to request reopening.',
       effectiveDate: startOfDay(new Date()),
     });
     if (p) {
@@ -283,8 +296,12 @@ const enforceAbsentSubmission = async ({ employeeId, previousDay }) => {
     }
 
     // Any probable record for this same tuple is now resolved.
+    // Includes both the legacy 'absent_submission' probables and the
+    // Phase-64 shape for defensive cleanup.
     await Penalty.updateMany(
-      { employee: employeeId, category: 'absent_submission', probable: true, submission: s._id },
+      { employee: employeeId,
+        category: { $in: ['absent_submission', 'missed_submission'] },
+        probable: true, submission: s._id },
       { $set: { status: 'resolved', resolvedAt: new Date() } }
     );
   }
@@ -292,14 +309,29 @@ const enforceAbsentSubmission = async ({ employeeId, previousDay }) => {
 };
 
 /**
- * Resolve outstanding absent_submission penalties the moment the
- * employee submits work for the target day.  Called from
- * submitOne / saveDraft on transition.
+ * Resolve outstanding missed_submission / absent_submission penalties
+ * the moment the employee submits work for the target day.  Called
+ * from submitOne / saveDraft on transition.
  */
 const resolveAbsentSubmissionOnSubmit = async ({ submissionId }) => {
   await Penalty.updateMany(
-    { submission: submissionId, category: 'absent_submission', status: { $in: ['active', 'pending', 'scheduled'] } },
+    { submission: submissionId,
+      category: { $in: ['absent_submission', 'missed_submission'] },
+      status: { $in: ['active', 'pending', 'scheduled'] } },
     { $set: { status: 'resolved', resolvedAt: new Date() } }
+  );
+  // Phase 64.1 Item 7 -- when the employee re-submits after HR
+  // approved their reopen request, the request lifecycle advances
+  // to 'completed' (the loop end-state).  Idempotent -- only rows
+  // still in 'approved' progress.
+  await Penalty.updateMany(
+    { submission: submissionId,
+      'reopenRequest.decision': 'approved',
+      'reopenRequest.completedAt': null },
+    { $set: {
+        'reopenRequest.decision': 'completed',
+        'reopenRequest.completedAt': new Date(),
+      } }
   );
 };
 
@@ -380,6 +412,144 @@ const onDependencyResolved = async ({ employeeId, dependencyId }) => {
   );
 };
 
+/* ================================================================
+ *  R3 -- PERFORMANCE_LOCK  (Phase 64 Part 3)
+ *
+ *  While ANY of the employee's submissions has an overdue pending
+ *  task (i.e. `resolveBy < today` AND status='pending'), every
+ *  future day gets a lock penalty that wipes Final Marks.
+ *  Employee's submissions still go through the normal review
+ *  pipeline unchanged (Analytics still counts them).
+ * ================================================================ */
+
+/**
+ * Find every overdue pending task for `employeeId` as-of `day`.
+ * Returns an array of { submissionId, taskId, title, pendingSince, resolveBy }.
+ */
+const _overduePendingTasks = async (employeeId, day) => {
+  const target = startOfDay(day);
+  const subs = await Submission.find({
+    employee: employeeId,
+    'tasks.status': 'pending',
+    deleted: { $ne: true },
+  }).select('_id date tasks').lean();
+  const out = [];
+  for (const s of subs) {
+    for (const t of (s.tasks || [])) {
+      if (t.status !== 'pending') continue;
+      if (!t.resolveBy) continue;
+      if (new Date(t.resolveBy) < target) {
+        out.push({
+          submissionId: s._id,
+          taskId: t._id,
+          title: t.title,
+          pendingSince: t.pendingSince,
+          resolveBy: t.resolveBy,
+        });
+      }
+    }
+  }
+  return out;
+};
+
+/**
+ * Daily enforcement.  If any overdue pending task exists for
+ * `employeeId` on `day`, we create/refresh a performance_lock
+ * penalty for that day.  Idempotent through the partial unique
+ * index on (employee, category, targetDate, submission).
+ */
+const enforcePerformanceLock = async ({ employeeId, day }) => {
+  const target = startOfDay(day);
+  const overdue = await _overduePendingTasks(employeeId, target);
+  if (!overdue.length) return null;
+
+  // Phase 64.2 Item 4 -- lock must skip approved leave, official
+  // holiday and weekly-off / weekend days.  Working-day math is
+  // authoritative (spec: "There must not be any place using calendar
+  // days.").  We only need a one-day context here.
+  try {
+    const { loadWorkingDayContext, isWorkingDay } = require('../utils/workingDays');
+    const employee = await require('../models/User').findById(employeeId).select('weeklyOff').lean();
+    const ctx = await loadWorkingDayContext({
+      employee: { _id: employeeId, weeklyOff: employee?.weeklyOff || [0] },
+      from: target,
+      to: target,
+    });
+    if (!isWorkingDay(target, ctx)) return null;
+  } catch (e) {
+    console.error('[penaltyEngine] enforcePerformanceLock working-day:', e.message);
+  }
+
+  // Attach the lock to the employee's PRIMARY submission for the day
+  // (deterministic: first chronological).  If nothing exists yet, the
+  // penalty still records but `submission` stays null; the moment the
+  // day's submission is created, attachFinalMarks will pick it up
+  // via the day-level penalty query.
+  const primary = await Submission.findOne({
+    employee: employeeId,
+    date: target,
+    deleted: { $ne: true },
+  }).select('_id earnedPoints').lean();
+  // Phase 64.2 Item 4 -- when no submission was even seeded for the
+  // day (holiday/off), don't materialise a null-anchored lock row.
+  // The unique index would still permit it, but it becomes an orphan.
+  if (!primary) return null;
+
+  const oldest = overdue.reduce((min, o) =>
+    (!min || new Date(o.pendingSince) < new Date(min.pendingSince)) ? o : min, null);
+
+  const p = await _upsertAutoPenalty({
+    employee: employeeId,
+    category: 'performance_lock',
+    source: 'automatic',
+    probable: false,
+    status: 'active',
+    penaltyMarks: primary ? Number(primary.earnedPoints) || 0 : 0,
+    targetDate: target,
+    submission: primary ? primary._id : null,
+    rule: 'performance_lock_v1',
+    reason: `Overdue pending task: ${oldest?.title || 'unknown'}`,
+    employeeMessage: `Performance Lock active -- ${overdue.length} pending task${overdue.length === 1 ? '' : 's'} past the Resolve By deadline.`,
+    effectiveDate: target,
+    overdueRef: oldest ? {
+      submissionId: oldest.submissionId,
+      taskId: oldest.taskId,
+      taskTitle: oldest.title,
+      pendingSince: oldest.pendingSince,
+      resolveBy: oldest.resolveBy,
+    } : {},
+  });
+  if (p) notify.notifyPenalty({ employeeId, penalty: p, mode: 'active' });
+  return p;
+};
+
+/**
+ * Called when a pending task becomes Done / Ongoing (i.e. the
+ * employee cleared the overdue backlog).  If no overdue tasks
+ * remain, resolve all active performance_lock penalties.
+ */
+const onPendingTaskResolved = async ({ employeeId, day = new Date() }) => {
+  const overdue = await _overduePendingTasks(employeeId, day);
+  if (overdue.length > 0) return;
+  const result = await Penalty.updateMany(
+    { employee: employeeId, category: 'performance_lock', status: 'active' },
+    { $set: { status: 'resolved', resolvedAt: new Date() } }
+  );
+  // Phase 64.2 Item 7 -- push a realtime nudge so the employee's
+  // dashboard, Fines & Penalties feed, and any HR page watching
+  // this employee refresh instantly (spec: "without requiring a
+  // manual refresh").  Silent on failure -- never blocks.
+  if (result?.modifiedCount > 0) {
+    try {
+      const rt = require('./realtime');
+      rt.publish(employeeId, 'penalty:changed', {
+        event: 'performance_lock_cleared',
+        count: result.modifiedCount,
+      });
+    } catch (_) { /* silent */ }
+  }
+};
+
 /**
  * Probable warning: dependency pending for exactly 2 days -> warn
  * that day 3 will trigger a penalty.  Same idempotent upsert.
@@ -451,6 +621,12 @@ const runDaily = async ({ employeeId, day = new Date() }) => {
     const dp = await enforceDependencyPending({ employeeId, day: target });
     if (dp) results.enforced.push(dp);
   } catch (e) { console.error('[penaltyEngine] enforce dependency:', e.message); }
+  // Phase 64 Part 3 -- Performance Lock renews daily until every
+  // overdue pending task clears.
+  try {
+    const pl = await enforcePerformanceLock({ employeeId, day: target });
+    if (pl) results.enforced.push(pl);
+  } catch (e) { console.error('[penaltyEngine] enforce lock:', e.message); }
   return results;
 };
 
@@ -459,6 +635,9 @@ module.exports = {
   runDaily,
   resolveAbsentSubmissionOnSubmit,
   onDependencyResolved,
+  // Phase 64 -- performance lock.
+  enforcePerformanceLock,
+  onPendingTaskResolved,
   // Exposed for direct testing / bulk backfill.
   enforceAbsentSubmission,
   enforceDependencyPending,

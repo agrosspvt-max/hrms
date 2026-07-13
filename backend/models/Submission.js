@@ -66,6 +66,20 @@ const submissionTaskSchema = new mongoose.Schema(
     // `points` directly.
     addedByEmployee: { type: Boolean, default: false },
     awardedMarks: { type: Number, default: 0 },
+    /* -------- Phase 64 -- Pending task compliance (Part 3) -------- */
+    /**
+     * `resolveWithin` -- number of WORKING days the employee has to
+     * resolve this pending task before it becomes overdue.  Default
+     * 3 per spec.  HR may override during review (Submission Review
+     * modal); the change also recomputes resolveBy.
+     * `resolveBy` -- absolute UTC-midnight date computed ONCE when
+     * the task flips to Pending (spec: "not recalculated every page
+     * load").  If HR later changes resolveWithin, we recompute this
+     * field and persist it, so the frontend never has to do the
+     * working-day math itself.
+     */
+    resolveWithin: { type: Number, default: 3, min: 0 },
+    resolveBy:     { type: Date,   default: null },
     ...dependencyFields,
   },
   { _id: true }

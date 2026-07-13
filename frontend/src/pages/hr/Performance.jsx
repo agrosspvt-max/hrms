@@ -88,6 +88,10 @@ export default function Performance() {
 
   const [opts, setOpts] = useState({ departments: [], designations: [], employees: [] });
   const [data, setData] = useState(null);
+  // Phase 64.1 Item 9 -- penalty KPI tiles (Total Marks Lost, Locked
+  // Employees, Missed Submissions, Overdue Pending, Completion
+  // Adjustments, Manual Marks Adjustments, Avg Marks Lost / Employee).
+  const [penaltyKpi, setPenaltyKpi] = useState(null);
   const [loading, setLoading] = useState(true);
   const [drill, setDrill] = useState(null); // { metricId, title }
   // Phase 25: Calling Analytics drill-downs.  Held separately from the
@@ -153,6 +157,19 @@ export default function Performance() {
     api.get(url, { params })
       .then(({ data }) => { setData(data); setLoading(false); })
       .catch(() => setLoading(false));
+    // Phase 64.1 Item 9 -- Penalty KPI fetch (analytics-only).  Runs
+    // in parallel to the main analytics load; failure is silent so
+    // the page still renders without KPI tiles.
+    try {
+      const kpiParams = {};
+      if (params.from) kpiParams.from = params.from;
+      if (params.to)   kpiParams.to   = params.to;
+      if (department)  kpiParams.department = department;
+      if (employee)    kpiParams.employee   = employee;
+      api.get('/penalties/analytics/summary', { params: kpiParams })
+        .then((r) => setPenaltyKpi(r.data?.kpi || null))
+        .catch(() => setPenaltyKpi(null));
+    } catch (_) { setPenaltyKpi(null); }
   }, [mode, range, from, to, department, designation, employee, scope, scopeValue, templateType, recurrence, includeTest]);
 
   // Phase 57 -- populated-only scope options for the Pendency /
@@ -536,7 +553,21 @@ function CompletionMode({ data, onDrill }) {
   return (
     <>
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
-        <ClickableCard onClick={() => onDrill('avgCompletionScore')}><StatCard label="Avg Completion Score" value={`${c.avgCompletionScore}%`} accent={scoreAccent(c.avgCompletionScore)} /></ClickableCard>
+        {/* Phase 64.1 Item 6 -- Completion Score card shows the full
+            Original / Adjustment / Final trio whenever HR has any
+            Completion Adjustment overlapping the current window; when
+            no adjustments apply we degrade to the plain percentage
+            (identical to the pre-Phase-64 look, spec Item 11). */}
+        <ClickableCard onClick={() => onDrill('avgCompletionScore')}>
+          <StatCard
+            label="Avg Completion Score"
+            value={`${c.avgCompletionScore}%`}
+            accent={scoreAccent(c.avgCompletionScore)}
+            sub={(c.avgCompletionAdjustment !== undefined && c.avgCompletionAdjustment !== 0)
+              ? `Original ${c.avgCompletionOriginal}% · Adj ${c.avgCompletionAdjustment > 0 ? '+' : ''}${c.avgCompletionAdjustment}%`
+              : ''}
+          />
+        </ClickableCard>
         <ClickableCard onClick={() => onDrill('avgQualityRating')}><StatCard label="Avg Quality Rating" value={`${c.avgQualityRating}%`} accent={scoreAccent(c.avgQualityRating)} /></ClickableCard>
         <ClickableCard onClick={() => onDrill('mostConsistentEmployee')}><StatCard label="Most Consistent" value={c.mostConsistentEmployee?.name || '—'} accent="green" sub={c.mostConsistentEmployee ? `${c.mostConsistentEmployee.consistency}% steady` : ''} /></ClickableCard>
         <ClickableCard onClick={() => onDrill('highestScoringDepartment')}><StatCard label="Highest Scoring Dept" value={c.highestScoringDepartment?.name || '—'} accent="blue" sub={c.highestScoringDepartment ? `${c.highestScoringDepartment.score}%` : ''} /></ClickableCard>
@@ -547,6 +578,22 @@ function CompletionMode({ data, onDrill }) {
         <ClickableCard onClick={() => onDrill('avgDisciplineScore')}><StatCard label="Avg Discipline" value={`${c.avgDisciplineScore}%`} accent={scoreAccent(c.avgDisciplineScore)} /></ClickableCard>
         <ClickableCard onClick={() => onDrill('reviewApprovalRate')}><StatCard label="Review Approval Rate" value={`${c.reviewApprovalRate}%`} accent="amber" /></ClickableCard>
       </div>
+
+      {/* Phase 64.1 Item 9 -- Penalty KPI strip.  Analytics-only,
+          derived from /penalties/analytics/summary.  Renders whenever
+          the fetch returned; degrades to nothing (existing UI) if the
+          endpoint fails or the caller has no penalty scope. */}
+      {penaltyKpi && (
+        <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-4">
+          <StatCard label="Total Marks Lost" value={penaltyKpi.totalMarksLost || 0} accent="red" />
+          <StatCard label="Currently Locked" value={penaltyKpi.employeesCurrentlyLocked || 0} accent="red" />
+          <StatCard label="Missed Submissions" value={penaltyKpi.missedSubmissionCases || 0} accent="amber" />
+          <StatCard label="Overdue Pending" value={penaltyKpi.overduePendingTasks || 0} accent="red" />
+          <StatCard label="Completion Adj." value={penaltyKpi.completionAdjustmentsApplied || 0} accent="brand" />
+          <StatCard label="Marks Adj." value={penaltyKpi.manualMarksAdjustments || 0} accent="brand" />
+          <StatCard label="Avg Marks Lost / Emp" value={penaltyKpi.averageMarksLostPerEmployee || 0} accent="amber" />
+        </div>
+      )}
 
       <div className="grid md:grid-cols-2 gap-4">
         <ChartCard title="Completion Trend" subtitle={`${data.range.from} → ${data.range.to}`} onClick={() => onDrill('completionTrend')}>

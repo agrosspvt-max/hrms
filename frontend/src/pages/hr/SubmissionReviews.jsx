@@ -205,10 +205,11 @@ export default function SubmissionReviews() {
                 checked={mode === 'range'}
                 onChange={() => {
                   setMode('range');
-                  // Not Submitted is a per-day concept -- switching to
-                  // range clears it so counters and cards match the
-                  // range semantics.
-                  if (status === 'not_submitted') setStatus('');
+                  // Phase 63 -- Not Submitted is now supported in
+                  // Date Range mode too (aggregated per employee
+                  // with a missing-dates list).  Keep the current
+                  // status selection instead of forcing it back to
+                  // 'All' like the pre-63 behaviour.
                   setSelected(new Set());
                 }}
               />
@@ -252,10 +253,12 @@ export default function SubmissionReviews() {
             <option value="">All</option>
             <option value="pending">Pending</option>
             <option value="reviewed">Reviewed</option>
-            {/* Phase 28 -- Not Submitted.  Phase 49 -- hidden in range
-                mode because it's a per-day concept that would either
-                collapse to a single day or explode across N days. */}
-            {mode === 'single' && <option value="not_submitted">Not Submitted</option>}
+            {/* Phase 28 -- Not Submitted.  Phase 63 -- also available
+                in Date Range mode: the backend evaluates each day
+                independently using the SAME eligibility rules and the
+                UI aggregates one card per employee with a missing-
+                dates list. */}
+            <option value="not_submitted">Not Submitted</option>
           </select>
         </div>
         {/* Phase 23.5 -- HOD review status filter */}
@@ -318,6 +321,28 @@ export default function SubmissionReviews() {
           <div className="rounded-lg border border-blue-200 dark:border-blue-500/30 bg-blue-50/60 dark:bg-blue-500/10 px-4 py-3">
             <div className="text-[10px] uppercase tracking-wide text-blue-700 dark:text-blue-300">On Approved Leave</div>
             <div className="text-2xl font-bold text-blue-700 dark:text-blue-300">{summary.onApprovedLeave ?? 0}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Phase 63 -- Range-mode-only aggregate tiles.  Rendered next
+          to the per-employee-day strip above so HR sees both the raw
+          per-day totals AND the aggregated per-employee counters the
+          spec asked for (Employees with Missing / Total Missing Days /
+          Avg per Employee). */}
+      {summary && status === 'not_submitted' && mode === 'range' && (
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <div className="rounded-lg border border-red-200 dark:border-red-500/30 bg-red-50/60 dark:bg-red-500/10 px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-300">Employees with Missing Submissions</div>
+            <div className="text-2xl font-bold text-red-700 dark:text-red-300">{summary.employeesWithMissing ?? 0}</div>
+          </div>
+          <div className="rounded-lg border border-red-200 dark:border-red-500/30 bg-red-50/60 dark:bg-red-500/10 px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-300">Total Missing Submission Days</div>
+            <div className="text-2xl font-bold text-red-700 dark:text-red-300">{summary.totalMissingDays ?? 0}</div>
+          </div>
+          <div className="rounded-lg border border-red-200 dark:border-red-500/30 bg-red-50/60 dark:bg-red-500/10 px-4 py-3">
+            <div className="text-[10px] uppercase tracking-wide text-red-700 dark:text-red-300">Average Missing Days per Employee</div>
+            <div className="text-2xl font-bold text-red-700 dark:text-red-300">{summary.avgMissingDays ?? 0}</div>
           </div>
         </div>
       )}
@@ -390,6 +415,14 @@ export default function SubmissionReviews() {
  * ===================================================================== */
 function NotSubmittedCard({ card }) {
   const { employee, date, assignments = [], attendance, leave } = card;
+  // Phase 63 -- range-mode extras.  When the backend returned a
+  // range-aggregated card, `isRange` is true and `missingDates` is a
+  // sorted list of the days that qualified.  Single-date cards keep
+  // the exact same layout as before (spec item 11).
+  const isRange = !!card.isRange;
+  const missingDates = Array.isArray(card.missingDates) ? card.missingDates : [];
+  const missingCount = card.missingCount || missingDates.length;
+
   const ATT_META = {
     present:        { label: 'Present',     cls: 'bg-green-50 text-green-700  border-green-200' },
     half_paid:      { label: 'Half Paid',   cls: 'bg-amber-50 text-amber-700  border-amber-200' },
@@ -401,6 +434,12 @@ function NotSubmittedCard({ card }) {
     absent:         { label: 'Absent',      cls: 'bg-red-50   text-red-700    border-red-200' },
   };
   const att = ATT_META[attendance] || { label: attendance || '—', cls: 'bg-slate-50 text-slate-700 border-slate-200' };
+
+  // Short "02 Jul" style for the compact list; full "02 Jul 2026"
+  // available on hover via title attribute.
+  const fmtShort = (d) => new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  const fmtFull  = (d) => new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
   return (
     <div className="card overflow-hidden ring-1 ring-red-200">
       <div className="px-5 py-3 bg-red-50/40 dark:bg-red-500/10 flex items-center justify-between gap-3 flex-wrap">
@@ -409,18 +448,51 @@ function NotSubmittedCard({ card }) {
             {employee.name} <span className="text-slate-400 font-normal">({employee.employeeId})</span>
           </div>
           <div className="text-[12px] text-slate-500">
-            {employee.department || '—'} · {fmtDate(date)} · {assignments.length} assignment(s)
+            {employee.department || '—'}
+            {isRange
+              ? <> · <b className="text-red-700">{missingCount}</b> missing day{missingCount === 1 ? '' : 's'} · {assignments.length} assignment(s)</>
+              : <> · {fmtDate(date)} · {assignments.length} assignment(s)</>}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
-          <span className={`badge text-[11px] border ${att.cls}`}>Attendance: {att.label}</span>
-          <span className="badge text-[11px] border bg-slate-50 text-slate-700 border-slate-200">Leave: {leave ? 'Approved' : 'None'}</span>
-          <span className="badge-red">Not Submitted</span>
+          {/* Attendance + Leave badges apply only to the single-day card;
+              in range mode the day-level state varies across the window. */}
+          {!isRange && <span className={`badge text-[11px] border ${att.cls}`}>Attendance: {att.label}</span>}
+          {!isRange && <span className="badge text-[11px] border bg-slate-50 text-slate-700 border-slate-200">Leave: {leave ? 'Approved' : 'None'}</span>}
+          {isRange
+            ? <span className="badge-red">Not Submitted · {missingCount} day{missingCount === 1 ? '' : 's'}</span>
+            : <span className="badge-red">Not Submitted</span>}
         </div>
       </div>
+
+      {/* Phase 63 -- range-mode Missing Dates strip.  Shows every date
+          the employee failed to submit inside the selected window so
+          HR can immediately see which days are missing without opening
+          each employee (spec item 5). */}
+      {isRange && missingDates.length > 0 && (
+        <div className="px-5 py-3 text-sm border-t border-red-100">
+          <div className="text-[11px] uppercase tracking-wide text-red-700 font-semibold mb-1">
+            Missing Dates ({missingCount})
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {missingDates.map((d) => (
+              <span
+                key={String(d)}
+                title={fmtFull(d)}
+                className="inline-flex items-center rounded-md border border-red-200 bg-red-50 text-red-700 text-[11px] font-medium px-2 py-0.5"
+              >
+                {fmtShort(d)}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       {assignments.length > 0 && (
         <div className="px-5 py-3 text-sm">
-          <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold mb-1">Expected Assignments</div>
+          <div className="text-[11px] uppercase tracking-wide text-slate-500 font-semibold mb-1">
+            {isRange ? 'Expected Assignments (any missing day)' : 'Expected Assignments'}
+          </div>
           <ul className="space-y-0.5 text-slate-700 dark:text-slate-200">
             {assignments.map((a) => (
               <li key={String(a._id)} className="flex items-center gap-2">

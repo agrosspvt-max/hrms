@@ -767,7 +767,7 @@ export function EmployeeForm({ mode, initial, departments, designations, onCance
         <div className="md:col-span-2">
           <label className="label">Attendance Mode</label>
           <select className="input max-w-md"
-            value={form.attendanceMode || 'submission_based'}
+            value={form.attendanceMode || 'attendance_review'}
             onChange={(e) => set('attendanceMode', e.target.value)}>
             <option value="submission_based">Submission Based (default)</option>
             <option value="attendance_review">Attendance Review</option>

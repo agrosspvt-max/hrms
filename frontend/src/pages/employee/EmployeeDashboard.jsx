@@ -135,19 +135,75 @@ function PrivateRemarkBox({ sub, value, onChange }) {
  * Fines & Penalties page.
  */
 function PenaltyWarnings({ penalties, onAcknowledged }) {
+  // Phase 64.1 Item 5 -- Performance Lock cards are always shown
+  // (never merely "0 Marks"; the spec requires a full explanation)
+  // even after the employee has acknowledged.  Every OTHER active /
+  // probable row keeps the existing acknowledge-to-dismiss behaviour.
+  const activeLocks = (penalties.active || []).filter((p) => p.category === 'performance_lock' && p.status === 'active');
+  const activeMissed = (penalties.active || []).filter((p) => p.category === 'missed_submission' || p.category === 'absent_submission');
   const unread = [
-    ...(penalties.active   || []).filter((p) => !p.acknowledgedAt),
+    ...(penalties.active   || []).filter((p) => !p.acknowledgedAt && p.category !== 'performance_lock'),
     ...(penalties.probable || []).filter((p) => !p.acknowledgedAt),
   ];
-  if (unread.length === 0) return null;
+  if (unread.length === 0 && activeLocks.length === 0 && activeMissed.length === 0) return null;
   const ack = async (id) => {
     try {
       await api.post(`/penalties/${id}/acknowledge`);
       onAcknowledged?.();
     } catch (_) { /* silent */ }
   };
+  // Phase 64.1 Item 5 -- Performance Lock explanation card.  Never
+  // shows only "Performance Locked" -- always spells out the task,
+  // pending-since, allowed window, resolve-by, current overdue days
+  // and what the employee must do to unlock.
+  const fmtDay = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) : '—';
+  const daysBetween = (a, b) => {
+    if (!a || !b) return 0;
+    return Math.max(0, Math.round((new Date(b) - new Date(a)) / 86400000));
+  };
+  const now = new Date();
+
   return (
     <div className="space-y-2">
+      {/* Phase 64.1 Item 5 -- always-visible Performance Lock cards. */}
+      {activeLocks.map((p) => {
+        const ref = p.overdueRef || {};
+        const overdueDays = daysBetween(ref.resolveBy, now);
+        return (
+          <div key={p._id} className="border rounded-lg p-3 bg-red-50 border-red-300 text-red-800">
+            <div className="text-[11px] uppercase tracking-wide font-semibold">
+              Performance Lock Active
+            </div>
+            <div className="text-sm mt-1">
+              <b>Task:</b> {ref.taskTitle || p.reason || '—'}
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2 text-[12px]">
+              <div><span className="opacity-70">Pending Since:</span> {fmtDay(ref.pendingSince)}</div>
+              <div><span className="opacity-70">Resolve By:</span> {fmtDay(ref.resolveBy)}</div>
+              <div><span className="opacity-70">Overdue:</span> {overdueDays} day{overdueDays === 1 ? '' : 's'}</div>
+              <div><span className="opacity-70">Reason:</span> {p.reason || '—'}</div>
+            </div>
+            <div className="text-[11px] mt-2 opacity-80">
+              Resolve this task to restore future performance.
+            </div>
+          </div>
+        );
+      })}
+      {/* Phase 64.1 Item 5 -- Missed Submission cards get their own
+          always-visible strip so the employee sees the reopen prompt
+          without clicking through Fines & Penalties. */}
+      {activeMissed.map((p) => (
+        <div key={p._id} className="border rounded-lg p-3 bg-amber-50 border-amber-300 text-amber-800">
+          <div className="text-[11px] uppercase tracking-wide font-semibold">Missed Submission</div>
+          <div className="text-sm mt-0.5">{p.employeeMessage || p.reason || 'Yesterday\'s submission was not filed.'}</div>
+          {p.targetDate && (
+            <div className="text-[11px] mt-1 opacity-80">For date: {fmtDay(p.targetDate)}</div>
+          )}
+          <div className="text-[11px] mt-2 opacity-80">
+            Open Fines &amp; Penalties to request reopening.
+          </div>
+        </div>
+      ))}
       {unread.map((p) => {
         const enforced = !p.probable;
         const cls = enforced

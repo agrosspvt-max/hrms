@@ -87,6 +87,82 @@ const _attachDependencies = async (submissions) => {
 
 const _resolveDay = (raw) => startOfDay(raw ? new Date(raw) : new Date());
 
+/**
+ * Phase 63 -- Not Submitted eligibility for ONE (employee, day) pair.
+ *
+ * Encodes the seven-condition spec from Phase 28 in a single pure
+ * function so BOTH the single-date branch (unchanged behaviour) and
+ * the new range branch reuse the exact same rules.  Never touches the
+ * DB itself -- the caller pre-fetches everything and passes it via
+ * `ctx`.
+ *
+ *   ctx = {
+ *     day:            Date  (UTC midnight)
+ *     employee:       full employee row (weeklyOff, attendanceMode, department, designation, ...)
+ *     holiday:        Holiday for `day` (or null)
+ *     submitted:      boolean  -- did the employee submit for `day`?
+ *     confirmed:      boolean  -- attendance_review only: did they file confirmation?
+ *     leave:          approved Leave overlapping `day` (or null)
+ *     assignments:    Array of Assignment docs already populated with `template`
+ *     attendance:     Attendance row for `day` (or null)
+ *   }
+ *
+ * Returns:
+ *   {
+ *     eligible:        boolean -- should we surface a "Not Submitted" card?
+ *     onLeave:         boolean
+ *     hasAssignments:  boolean -- employee was expected to submit
+ *     submitted:       boolean -- alias so callers avoid re-checking
+ *     scheduledToday:  Array of Assignment docs actually scheduled on `day`
+ *     attendanceLabel: string  -- for the card badge
+ *   }
+ *
+ * "Reuse the same validation logic" per spec item 12 (backward compat).
+ */
+const _evaluateNotSubmittedForDay = (ctx) => {
+  const { day, employee: e, holiday, submitted, confirmed, leave, assignments, attendance } = ctx;
+  const isWeeklyOff = (e.weeklyOff || [0]).includes(day.getUTCDay());
+  const nonWorking  = isWeeklyOff || !!holiday;
+
+  const scheduledToday = (assignments || []).filter((a) => {
+    if (!a.template) return false;
+    if (nonWorking) {
+      if (a.holidayOverride !== true) return false;
+      if (a.overrideScope !== 'all') {
+        const start = a.startDate ? startOfDay(a.startDate) : null;
+        if (!start || start.getTime() !== day.getTime()) return false;
+      }
+    }
+    return isScheduledOn(a, day);
+  });
+
+  // attendance_review employees don't need template assignments to
+  // qualify -- their daily attendance confirmation is the work item.
+  const hasAssignments = e.attendanceMode === 'attendance_review'
+    ? true
+    : scheduledToday.length > 0;
+
+  const submittedToday = e.attendanceMode === 'attendance_review'
+    ? !!confirmed
+    : !!submitted;
+
+  const onLeave = !!leave;
+  const eligible = !onLeave && !submittedToday && hasAssignments;
+
+  const attendanceLabel = attendance
+    ? attendance.status
+    : (isWeeklyOff ? 'weekly_off' : (holiday ? 'holiday' : 'absent'));
+
+  return {
+    eligible,
+    onLeave,
+    hasAssignments,
+    submitted: submittedToday,
+    scheduledToday,
+    attendanceLabel,
+  };
+};
+
 // Phase 44.3 -- helper used by every role gate in this controller so an
 // employee granted the named feature passes through the same path as
 // HR / Super Admin / HOD without needing parallel branches.
@@ -257,21 +333,10 @@ const listGrouped = asyncHandler(async (req, res) => {
    * backward compatibility with the existing frontend.
    * ================================================================== */
   if (status === 'not_submitted') {
-    // Phase 49 -- "Not Submitted" is a per-day computation.  If the
-    // caller supplied a range we collapse to the end date (last day of
-    // the range) because "not submitted across N days" is a different
-    // semantic and would materially change the counters.  The frontend
-    // hides Not Submitted while in Date Range mode; this is the
-    // defensive fallback if a stale client still sends it.
-    const day = dayEnd;
-    // Pull employees again with the fields the per-day check needs
-    // (designation + weeklyOff + attendanceMode), within the same
-    // role-scoped where.
     // Phase 29.5: 'auto_attendance' employees never appear in Not
     // Submitted because they don't need submissions to be marked
     // Present.  'attendance_review' employees still appear here when
-    // they haven't filed their Attendance Confirmation yet -- HR
-    // wants to see them so they can chase or mark attendance directly.
+    // they haven't filed their Attendance Confirmation yet.
     const empWhereNS = {
       ...empWhere,
       role: { $ne: 'super_admin' },
@@ -281,116 +346,237 @@ const listGrouped = asyncHandler(async (req, res) => {
       .select('_id name employeeId role department designation weeklyOff attendanceMode')
       .populate('department', 'name')
       .lean();
+    const empIdList = fullEmployees.map((e) => e._id);
 
-    // Employees with at least one submission today (any status).
-    const submittedEmpIds = new Set(
-      (await Submission.find({
-        employee: { $in: fullEmployees.map((e) => e._id) },
-        date: day,
+    // Pre-load assignments ONCE per employee, then filter per day
+    // inside the evaluator -- the same input the dailyEngine uses.
+    const assignmentsByEmp = new Map();
+    for (const e of fullEmployees) {
+      const orList = [{ targetType: 'employee', targetRef: e._id }];
+      if (e.department) orList.push({ targetType: 'department', targetRef: e.department._id || e.department });
+      if (e.designation) orList.push({ targetType: 'designation', targetRef: e.designation });
+      const rows = await Assignment.find({ active: true, $or: orList })
+        .populate('template', 'title customKind templateType privateRemarkEnabled privateRemarkLabel privateRemarkRequired').lean();
+      assignmentsByEmp.set(String(e._id), rows);
+    }
+
+    const AttendanceConfirmation = require('../models/AttendanceConfirmation');
+    const _dayKeyStr = (d) => new Date(d).toISOString().slice(0, 10);
+
+    // ================================================================
+    // Phase 63 -- Range branch.  When the caller is in Date Range mode
+    // we iterate every day in [dayStart, dayEnd], run the SAME per-day
+    // eligibility check as single-date, then aggregate per employee.
+    // Single-date path (below) uses the same helper for a single day
+    // so the two branches never drift.
+    // ================================================================
+    if (isRange) {
+      // Batch-load everything we need for the whole window.
+      const submissionsRange = await Submission.find({
+        employee: { $in: empIdList },
+        date: { $gte: dayStart, $lte: dayEnd },
         submitted: true,
         ...liveSubmissionFilter({}),
-      }).select('employee').lean()).map((s) => String(s.employee))
-    );
-    // Phase 29.5: attendance_review employees count as "submitted" if
-    // they've filed (or HR has already resolved) today's Attendance
-    // Confirmation -- so they don't appear in Not Submitted any more.
-    const AttendanceConfirmation = require('../models/AttendanceConfirmation');
+      }).select('employee date').lean();
+      const submittedByEmpDay = new Set(
+        submissionsRange.map((s) => `${String(s.employee)}__${_dayKeyStr(s.date)}`)
+      );
+
+      const confsRange = await AttendanceConfirmation.find({
+        employee: { $in: fullEmployees.filter((e) => e.attendanceMode === 'attendance_review').map((e) => e._id) },
+        date: { $gte: dayStart, $lte: dayEnd },
+      }).select('employee date status').lean();
+      const confirmedByEmpDay = new Set(
+        confsRange.map((c) => `${String(c.employee)}__${_dayKeyStr(c.date)}`)
+      );
+
+      const leavesRange = await Leave.find({
+        employee: { $in: empIdList },
+        status: 'approved',
+        fromDate: { $lte: dayEnd },
+        toDate:   { $gte: dayStart },
+      }).lean();
+
+      const holidaysRange = await Holiday.find({
+        date: { $gte: dayStart, $lte: dayEnd },
+      }).lean();
+      const holidayByDay = new Map(holidaysRange.map((h) => [_dayKeyStr(h.date), h]));
+
+      // Aggregate per employee across the range.
+      const perEmp = new Map(); // empId -> { employee, missingDates:[], assignmentsUnion:Map(id -> a) }
+      // Range-wide summary (per-employee-day counts, not per-employee).
+      const summary = { expectedToSubmit: 0, submitted: 0, notSubmitted: 0, onApprovedLeave: 0 };
+
+      const DAY_MS = 86400000;
+      for (let t = dayStart.getTime(); t <= dayEnd.getTime(); t += DAY_MS) {
+        const day = new Date(t);
+        const dk = _dayKeyStr(day);
+        // Slice per-day inputs from the batched sets.
+        const dayHoliday = holidayByDay.get(dk) || null;
+
+        for (const e of fullEmployees) {
+          if (String(e._id) === String(req.user._id)) continue;
+
+          // Approved leave overlapping THIS day for this employee.
+          const empId = String(e._id);
+          const leave = leavesRange.find((lv) =>
+            String(lv.employee) === empId
+            && new Date(lv.fromDate) <= day
+            && new Date(lv.toDate)   >= day
+          ) || null;
+
+          const result = _evaluateNotSubmittedForDay({
+            day,
+            employee: e,
+            holiday: dayHoliday,
+            submitted:  submittedByEmpDay.has(`${empId}__${dk}`),
+            confirmed:  confirmedByEmpDay.has(`${empId}__${dk}`),
+            leave,
+            assignments: assignmentsByEmp.get(empId) || [],
+            attendance: null, // range cards don't show per-day badge
+          });
+
+          // Summary buckets tally per-employee-day, matching the
+          // single-date semantics extended to the window.
+          if (result.onLeave) summary.onApprovedLeave += 1;
+          if (!result.onLeave && result.hasAssignments) {
+            summary.expectedToSubmit += 1;
+            if (result.submitted) summary.submitted += 1;
+            else summary.notSubmitted += 1;
+          }
+
+          if (!result.eligible) continue;
+
+          // First time we see this employee in the range -- open bucket.
+          if (!perEmp.has(empId)) {
+            perEmp.set(empId, {
+              employee: {
+                _id: e._id,
+                name: e.name,
+                employeeId: e.employeeId,
+                department: e.department?.name || '',
+              },
+              missingDates: [],
+              assignmentsUnion: new Map(),
+            });
+          }
+          const bucket = perEmp.get(empId);
+          bucket.missingDates.push(day);
+          // Union the assignments that were expected on any missing
+          // day so the card shows the full scope.
+          for (const a of result.scheduledToday) {
+            bucket.assignmentsUnion.set(String(a._id), a);
+          }
+        }
+      }
+
+      // Build cards; sort by highest missing count first (spec).
+      const cards = [...perEmp.values()]
+        .map((b) => ({
+          notSubmitted: true,
+          isRange: true,
+          employee: b.employee,
+          // Preserve the first missing day as `date` so the frontend
+          // (which uses `card.date` as a React key) keeps working.
+          date: b.missingDates[0],
+          from: dayStart,
+          to:   dayEnd,
+          missingCount: b.missingDates.length,
+          missingDates: b.missingDates,
+          assignments: [...b.assignmentsUnion.values()].map((a) => ({
+            _id: a._id,
+            title: a.template?.title || '(untitled)',
+            templateType: a.template?.templateType || '',
+            customKind: a.template?.customKind || '',
+            scheduleLabel: a.scheduleLabel || '',
+          })),
+          attendance: null,
+          leave: null,
+        }))
+        .sort((a, b) => (b.missingCount - a.missingCount)
+                     || (a.employee.name || '').localeCompare(b.employee.name || ''));
+
+      // Range-level summary tiles the spec calls for.
+      const employeesWithMissing = cards.length;
+      const totalMissingDays = cards.reduce((s, c) => s + c.missingCount, 0);
+      const avgMissingDays = employeesWithMissing > 0
+        ? Math.round((totalMissingDays / employeesWithMissing) * 10) / 10
+        : 0;
+
+      return res.json({
+        cards,
+        summary: {
+          ...summary,
+          // Range-specific tiles used by the top summary strip.
+          employeesWithMissing,
+          totalMissingDays,
+          avgMissingDays,
+        },
+      });
+    }
+
+    // ================================================================
+    // Single-date path (behaviour preserved 1:1 -- spec item 11).
+    // Uses the same helper as the range branch above; the output
+    // shape has never changed, so the existing UI still works.
+    // ================================================================
+    const day = dayEnd;
+    const submittedRows = await Submission.find({
+      employee: { $in: empIdList },
+      date: day,
+      submitted: true,
+      ...liveSubmissionFilter({}),
+    }).select('employee').lean();
+    const submittedEmpIds = new Set(submittedRows.map((s) => String(s.employee)));
+
     const reviewModeConfs = await AttendanceConfirmation.find({
       employee: { $in: fullEmployees.filter((e) => e.attendanceMode === 'attendance_review').map((e) => e._id) },
       date: day,
     }).select('employee status').lean();
     const confirmedEmpIds = new Set(reviewModeConfs.map((c) => String(c.employee)));
 
-    // Approved leaves covering this day for the scoped employee set.
-    // Includes both full-day and half-day -- per spec, ANY approved
-    // leave excludes the employee from the Not Submitted list.
     const leavesToday = await Leave.find({
-      employee: { $in: fullEmployees.map((e) => e._id) },
+      employee: { $in: empIdList },
       status: 'approved',
       fromDate: { $lte: day },
       toDate:   { $gte: day },
     }).lean();
     const leaveByEmp = new Map();
     for (const lv of leavesToday) {
-      // Keep first / longest leave per employee for display labelling.
       const k = String(lv.employee);
       if (!leaveByEmp.has(k)) leaveByEmp.set(k, lv);
     }
 
-    // Attendance records on this date (manual overrides).  Used purely
-    // for display so HR sees the latest attendance state.
     const attRecords = await Attendance.find({
-      employee: { $in: fullEmployees.map((e) => e._id) },
+      employee: { $in: empIdList },
       date: day,
     }).lean();
     const attByEmp = new Map(attRecords.map((a) => [String(a.employee), a]));
-
-    // Holiday lookup -- same gate the dailyEngine uses to decide whether
-    // a day even expects work without holidayOverride assignments.
     const holiday = await Holiday.findOne({ date: day });
 
-    // Pre-load assignments once per employee.  Uses the same set the
-    // dailyEngine builds (direct / department / designation orList).
     const notSubmittedCards = [];
     const summary = { expectedToSubmit: 0, submitted: 0, notSubmitted: 0, onApprovedLeave: 0 };
-
     for (const e of fullEmployees) {
       if (String(e._id) === String(req.user._id)) continue;
-      const leave = leaveByEmp.get(String(e._id));
-      const isOnLeave = !!leave;
-      const isWeeklyOff = (e.weeklyOff || [0]).includes(day.getUTCDay());
-
-      // Build orList per dailyEngine.assignmentsForEmployee semantics.
-      const orList = [{ targetType: 'employee', targetRef: e._id }];
-      if (e.department) orList.push({ targetType: 'department', targetRef: e.department._id || e.department });
-      if (e.designation) orList.push({ targetType: 'designation', targetRef: e.designation });
-      const assignments = await Assignment.find({ active: true, $or: orList })
-        .populate('template', 'title customKind templateType privateRemarkEnabled privateRemarkLabel privateRemarkRequired').lean();
-
-      // Filter to those scheduled today (recurrence + start/end window).
-      // On weekly-off / holiday days, only holidayOverride assignments
-      // count -- this matches the dailyEngine "nonWorking" gate.
-      const nonWorking = isWeeklyOff || !!holiday;
-      const scheduledToday = assignments.filter((a) => {
-        if (!a.template) return false;
-        if (nonWorking) {
-          if (a.holidayOverride !== true) return false;
-          if (a.overrideScope !== 'all') {
-            const start = a.startDate ? startOfDay(a.startDate) : null;
-            if (!start || start.getTime() !== day.getTime()) return false;
-          }
-        }
-        return isScheduledOn(a, day);
+      const empId = String(e._id);
+      const result = _evaluateNotSubmittedForDay({
+        day,
+        employee: e,
+        holiday,
+        submitted:  submittedEmpIds.has(empId),
+        confirmed:  confirmedEmpIds.has(empId),
+        leave:      leaveByEmp.get(empId) || null,
+        assignments: assignmentsByEmp.get(empId) || [],
+        attendance:  attByEmp.get(empId) || null,
       });
 
-      // Phase 29.5: for attendance_review mode the Attendance
-      // Confirmation IS the "I'm submitting myself for today" action.
-      // submission_based mode still uses the Submission collection.
-      const submittedToday = e.attendanceMode === 'attendance_review'
-        ? confirmedEmpIds.has(String(e._id))
-        : submittedEmpIds.has(String(e._id));
-      // attendance_review employees don't need template assignments to
-      // qualify -- their daily attendance confirmation is the work item.
-      const hasAssignments = e.attendanceMode === 'attendance_review'
-        ? true
-        : scheduledToday.length > 0;
-
-      // Summary buckets reflect the full role-scoped employee universe,
-      // not just the not-submitted list -- so HR sees how many people
-      // were on the hook vs. how many actually delivered.
-      if (isOnLeave) summary.onApprovedLeave += 1;
-      if (!isOnLeave && hasAssignments) {
+      if (result.onLeave) summary.onApprovedLeave += 1;
+      if (!result.onLeave && result.hasAssignments) {
         summary.expectedToSubmit += 1;
-        if (submittedToday) summary.submitted += 1;
+        if (result.submitted) summary.submitted += 1;
         else summary.notSubmitted += 1;
       }
-
-      // Card eligibility -- the four ALL-of conditions from the spec.
-      if (isOnLeave) continue;
-      if (submittedToday) continue;
-      if (!hasAssignments) continue;
-
-      const att = attByEmp.get(String(e._id));
+      if (!result.eligible) continue;
       notSubmittedCards.push({
         notSubmitted: true,
         employee: {
@@ -400,14 +586,14 @@ const listGrouped = asyncHandler(async (req, res) => {
           department: e.department?.name || '',
         },
         date: day,
-        assignments: scheduledToday.map((a) => ({
+        assignments: result.scheduledToday.map((a) => ({
           _id: a._id,
           title: a.template?.title || '(untitled)',
           templateType: a.template?.templateType || '',
           customKind: a.template?.customKind || '',
           scheduleLabel: a.scheduleLabel || '',
         })),
-        attendance: att ? att.status : (isWeeklyOff ? 'weekly_off' : (holiday ? 'holiday' : 'absent')),
+        attendance: result.attendanceLabel,
         leave: null,
       });
     }

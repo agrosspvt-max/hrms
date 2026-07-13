@@ -19,6 +19,9 @@ router.use(protect);
 // Employee-facing
 router.get('/mine', c.mine);
 router.post('/:id/acknowledge', c.acknowledge);
+// Phase 64 Part 2 -- Dismiss + Request Reopening.
+router.post('/:id/dismiss', c.dismissNotification);
+router.post('/:id/reopen-request', c.requestReopening);
 
 // HR / SA / permitted HOD
 router.get('/dashboard', c.dashboard);
@@ -27,5 +30,11 @@ router.get('/analytics/summary', c.analyticsSummary);
 // HR / SA only (controller enforces via role check)
 router.post('/manual', c.createManual);
 router.post('/:id/cancel', c.cancel);
+// Phase 64 -- HR decides on a reopen request.
+router.post('/:id/reopen-decision', c.decideReopen);
+// Phase 64 Part 3 -- HR overrides a pending task's Resolve Within.
+router.patch('/pending-task/deadline', c.overridePendingDeadline);
+// Phase 64.4 Gap 3 -- Bulk Performance Restore across a date range.
+router.post('/restore-range', c.restoreRange);
 
 module.exports = router;
