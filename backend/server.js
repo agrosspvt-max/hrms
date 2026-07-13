@@ -197,13 +197,6 @@ const start = async () => {
     const { start: startCompliance } = require('./services/dailyComplianceScheduler');
     startCompliance();
   } catch (e) { console.error('[compliance-scheduler] boot error:', e.message); }
-  // One-time backward-compat backfill of missed_submission penalties
-  // for historical Not-Submitted days that pre-dated the penalty
-  // system.  Idempotent + async so server boot is never blocked.
-  try {
-    const { start: startBackfill } = require('./services/missedSubmissionBackfill');
-    startBackfill();
-  } catch (e) { console.error('[missed-submission-backfill] boot error:', e.message); }
   app.listen(PORT, () => console.log(`[server] HRMS API running on :${PORT}`));
 };
 

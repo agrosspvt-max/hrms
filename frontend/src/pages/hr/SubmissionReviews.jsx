@@ -415,15 +415,13 @@ export default function SubmissionReviews() {
  * action here is "follow up", which is contextual to each org.
  * ===================================================================== */
 /**
- * Submission Review UI integration -- shared recovery dialog.
+ * Submission Review recovery dialog.
  * HR picks Restore / Information / Neutral, adds an optional note,
- * then confirms.  Posts to the EXISTING
- * POST /api/penalties/:id/reopen-decision endpoint with
- * decision='approved' + the chosen evaluationMode.  No new endpoints,
- * no new business logic -- it hits the same code path that
- * applyEvaluationMode uses everywhere else.
+ * then confirms.  Posts to POST /api/penalties/:id/reopen-decision
+ * with decision='approved' + the chosen evaluationMode.  Same code
+ * path used everywhere else that applies an evaluation mode.
  */
-function SendBackDialog({ penaltyId, dateLabel, employeeId, date, onClose, onDone }) {
+function SendBackDialog({ penaltyId, dateLabel, onClose, onDone }) {
   const toast = useToast();
   const [mode, setMode] = useState('restore');
   const [note, setNote] = useState('');
@@ -431,36 +429,11 @@ function SendBackDialog({ penaltyId, dateLabel, employeeId, date, onClose, onDon
   const confirm = async () => {
     setBusy(true);
     try {
-      // Route selection rules:
-      //   penaltyId present    -> POST /penalties/:id/reopen-decision
-      //                           (never touch the ensure sentinel)
-      //   penaltyId null/empty -> POST /penalties/ensure/reopen-decision
-      //                           with { employee, date } so the
-      //                           backend can materialise the legacy
-      //                           missed_submission row via the shared
-      //                           engine helper.
-      if (penaltyId) {
-        await api.post(`/penalties/${penaltyId}/reopen-decision`, {
-          decision: 'approved',
-          evaluationMode: mode,
-          note,
-        });
-      } else {
-        // Defensive guard: the ensure endpoint returns a 400 with
-        // "'employee' and 'date' are required" if either is missing.
-        // We fail fast here with a clear message so the source of a
-        // wiring bug is obvious.
-        if (!employeeId || !date) {
-          throw new Error('Missing employee or date for legacy reopen. Please refresh and try again.');
-        }
-        await api.post('/penalties/ensure/reopen-decision', {
-          employee: employeeId,
-          date,
-          decision: 'approved',
-          evaluationMode: mode,
-          note,
-        });
-      }
+      await api.post(`/penalties/${penaltyId}/reopen-decision`, {
+        decision: 'approved',
+        evaluationMode: mode,
+        note,
+      });
       toast.success('Sent back to employee');
       onDone?.();
     } catch (e) { toast.error(errMsg(e)); }
@@ -504,16 +477,11 @@ function NotSubmittedCard({ card, onReload }) {
   const missingCount = card.missingCount || missingDates.length;
   const missingPenalties = Array.isArray(card.missingPenalties) ? card.missingPenalties : [];
 
-  // Submission Review UI integration -- Send Back to Employee.
-  // Opens the shared recovery dialog and posts to the EXISTING
-  // reopen-decision endpoint (relaxed to allow HR-initiated
-  // approvals when no employee request was raised first).
-  //
-  // Legacy backward-compat: when `penaltyId` is null the dialog
-  // falls back to the `ensure` variant of the endpoint which
-  // creates the historical missed_submission row via the shared
-  // engine helper before applying the decision.  HR simply clicks
-  // and it works.
+  // Submission Review "Send Back to Employee".  Opens the shared
+  // recovery dialog when a Missed Submission Penalty record exists
+  // for this (employee, date).  When no penalty exists the day is
+  // treated as a read-only historical record and the button is not
+  // shown.
   const [sendBackOpen, setSendBackOpen] = useState(null);
 
   const ATT_META = {
@@ -559,7 +527,7 @@ function NotSubmittedCard({ card, onReload }) {
               reuses the EXISTING /penalties/:id/reopen-decision endpoint.
               Single-date cards send back the one missed day; range cards
               open a per-date picker so HR can send back individual days. */}
-          {!isRange && (
+          {!isRange && card.penaltyId && (
             <>
               {card.reopenDecision === 'approved' && (
                 <span className="badge bg-blue-50 text-blue-700 text-[11px]">Reopened</span>
@@ -567,16 +535,11 @@ function NotSubmittedCard({ card, onReload }) {
               {card.reopenDecision === 'pending' && (
                 <span className="badge bg-amber-50 text-amber-700 text-[11px]">Reopen requested</span>
               )}
-              {/* Backward-compat -- historical days without a penaltyId
-                  still get the button; the dialog transparently uses
-                  the ensure variant of the reopen-decision endpoint. */}
               <button
                 className="btn-secondary !py-1 !text-xs"
                 onClick={() => setSendBackOpen({
-                  penaltyId: card.penaltyId || null,
+                  penaltyId: card.penaltyId,
                   dateLabel: fmtFull(date),
-                  employeeId: employee._id,
-                  date,
                 })}
                 title="Reopen this day's submission with an evaluation mode"
               >
@@ -584,9 +547,9 @@ function NotSubmittedCard({ card, onReload }) {
               </button>
             </>
           )}
-          {/* Submission Review UX audit -- in range mode the Missing
-              Dates strip below acts as a per-day picker. */}
-          {isRange && (
+          {/* Range mode: the Missing Dates strip below acts as a
+              per-day picker.  Header shows a passive hint. */}
+          {isRange && missingPenalties.some((mp) => mp.penaltyId) && (
             <span
               className="badge bg-slate-100 text-slate-600 text-[11px]"
               title="Click any Missing Date pill below to send that specific day back"
@@ -602,15 +565,14 @@ function NotSubmittedCard({ card, onReload }) {
           HR can immediately see which days are missing without opening
           each employee (spec item 5).
 
-          Submission Review UX audit -- each pill is the click target
-          for "Send Back to Employee" for THAT specific day.  Legacy
-          historical days without a stored penalty are handled by the
-          `ensure` variant of the reopen-decision endpoint, so every
-          pill is clickable regardless of when the day occurred. */}
+          Each pill is the click target for "Send Back to Employee"
+          for THAT specific day.  Only days that have a Missed
+          Submission Penalty record are clickable; days without a
+          penalty are read-only historical records. */}
       {isRange && missingDates.length > 0 && (
         <div className="px-5 py-3 text-sm border-t border-red-100">
           <div className="text-[11px] uppercase tracking-wide text-red-700 font-semibold mb-1">
-            Missing Dates ({missingCount}) <span className="normal-case text-red-600/70 font-normal">— click any date to send it back to the employee</span>
+            Missing Dates ({missingCount}) <span className="normal-case text-red-600/70 font-normal">— click a date to send it back to the employee</span>
           </div>
           <div className="flex flex-wrap gap-1.5">
             {missingDates.map((d) => {
@@ -621,8 +583,19 @@ function NotSubmittedCard({ card, onReload }) {
                           : decision === 'completed' ? ' · Reopened & Submitted'
                           : decision === 'pending' ? ' · Requested'
                           : '';
-              // Backward-compat: legacy days without a penaltyId
-              // still open the dialog; the ensure path handles them.
+              if (!penaltyId) {
+                // No Missed Submission Penalty for this day -- render
+                // as a read-only historical pill.
+                return (
+                  <span
+                    key={String(d)}
+                    title={fmtFull(d)}
+                    className="inline-flex items-center rounded-md border border-slate-200 bg-slate-50 text-slate-500 text-[11px] font-medium px-2 py-0.5"
+                  >
+                    {fmtShort(d)}
+                  </span>
+                );
+              }
               return (
                 <button
                   type="button"
@@ -631,8 +604,6 @@ function NotSubmittedCard({ card, onReload }) {
                   onClick={() => setSendBackOpen({
                     penaltyId,
                     dateLabel: fmtFull(d),
-                    employeeId: employee._id,
-                    date: d,
                   })}
                   className="inline-flex items-center rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 text-[11px] font-medium px-2 py-0.5 cursor-pointer"
                 >
@@ -664,18 +635,8 @@ function NotSubmittedCard({ card, onReload }) {
 
       {sendBackOpen && (
         <SendBackDialog
-          /* Forward the FULL opener payload so the dialog can decide
-             between the direct `/penalties/:id/reopen-decision` path
-             (when a stored penaltyId exists) and the backward-compat
-             `/penalties/ensure/reopen-decision` path (which needs
-             employee + date to materialise the missed_submission
-             row on the fly).  Missing employeeId / date was causing
-             the ensure endpoint to reject legacy days with:
-             "'employee' and 'date' are required when :id is 'ensure'." */
           penaltyId={sendBackOpen.penaltyId}
           dateLabel={sendBackOpen.dateLabel}
-          employeeId={sendBackOpen.employeeId}
-          date={sendBackOpen.date}
           onClose={() => setSendBackOpen(null)}
           onDone={() => { setSendBackOpen(null); onReload?.(); }}
         />
