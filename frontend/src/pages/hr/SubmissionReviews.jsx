@@ -431,12 +431,14 @@ function SendBackDialog({ penaltyId, dateLabel, employeeId, date, onClose, onDon
   const confirm = async () => {
     setBusy(true);
     try {
-      // Backward-compat lazy path.  Historical Not-Submitted days
-      // that pre-dated the penalty system have no penaltyId; we hit
-      // the sentinel `ensure` variant of the SAME endpoint, which
-      // creates the missed_submission row via the shared engine
-      // helper and then applies the decision in one round-trip.
-      // HR never has to know which path was used.
+      // Route selection rules:
+      //   penaltyId present    -> POST /penalties/:id/reopen-decision
+      //                           (never touch the ensure sentinel)
+      //   penaltyId null/empty -> POST /penalties/ensure/reopen-decision
+      //                           with { employee, date } so the
+      //                           backend can materialise the legacy
+      //                           missed_submission row via the shared
+      //                           engine helper.
       if (penaltyId) {
         await api.post(`/penalties/${penaltyId}/reopen-decision`, {
           decision: 'approved',
@@ -444,6 +446,13 @@ function SendBackDialog({ penaltyId, dateLabel, employeeId, date, onClose, onDon
           note,
         });
       } else {
+        // Defensive guard: the ensure endpoint returns a 400 with
+        // "'employee' and 'date' are required" if either is missing.
+        // We fail fast here with a clear message so the source of a
+        // wiring bug is obvious.
+        if (!employeeId || !date) {
+          throw new Error('Missing employee or date for legacy reopen. Please refresh and try again.');
+        }
         await api.post('/penalties/ensure/reopen-decision', {
           employee: employeeId,
           date,
@@ -655,8 +664,18 @@ function NotSubmittedCard({ card, onReload }) {
 
       {sendBackOpen && (
         <SendBackDialog
+          /* Forward the FULL opener payload so the dialog can decide
+             between the direct `/penalties/:id/reopen-decision` path
+             (when a stored penaltyId exists) and the backward-compat
+             `/penalties/ensure/reopen-decision` path (which needs
+             employee + date to materialise the missed_submission
+             row on the fly).  Missing employeeId / date was causing
+             the ensure endpoint to reject legacy days with:
+             "'employee' and 'date' are required when :id is 'ensure'." */
           penaltyId={sendBackOpen.penaltyId}
           dateLabel={sendBackOpen.dateLabel}
+          employeeId={sendBackOpen.employeeId}
+          date={sendBackOpen.date}
           onClose={() => setSendBackOpen(null)}
           onDone={() => { setSendBackOpen(null); onReload?.(); }}
         />
