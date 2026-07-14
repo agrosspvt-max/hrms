@@ -1909,28 +1909,83 @@ function HodReviewDetails({ sub }) {
 /* Tiny presentational helpers                                            */
 /* ===================================================================== */
 /* =====================================================================
- * Phase 29 — Attendance Reviews section
+ * Phase 29 + Phase 66 + Phase 67 — Attendance Review
  *
- * Companion to the Submission Reviews list above.  Lists every
- * attendance_review-mode employee in scope for the selected date and
- * lets HR / Super Admin act on each one with Approve Present / Mark
- * Absent / Mark Half Day Paid|Unpaid / Mark Leave Paid|Unpaid.  Each
- * action writes a manual Attendance record so the existing
- * deriveAttendance + salary pipelines pick up the resolution.
+ * Single source of truth for attendance management on the Submission
+ * Reviews page.  The queue endpoint (unchanged URL, enriched payload)
+ * classifies every attendance_review-mode employee for the selected
+ * date via a priority chain:
+ *
+ *   Holiday > Weekly Off > Approved Paid Leave > Approved Unpaid Leave
+ *     > Existing Attendance Record > Awaiting Review > Not Confirmed
+ *
+ * so an employee on leave / holiday / weekly-off never appears as
+ * "Not Confirmed" anymore.  HR can edit attendance at any time (not
+ * just once) and revoke it back to the derived state.  Bulk actions
+ * mirror the Submission Review select-all pattern.  Every write goes
+ * through the /attendance-confirmation/act (or /bulk-act) endpoint,
+ * which routes through the exact same leave-accounting helpers HR's
+ * manual override path uses -- the Attendance record itself stays
+ * the single source of truth read by Salary / Compliance / Missed
+ * Submission detection.
  * ===================================================================== */
+
+// Concrete status labels + colours the card badge uses.  Keys match
+// what the enriched /queue endpoint returns as `effectiveStatus`.
+const ATT_STATUS_META = {
+  present:        { label: 'Present',          cls: 'bg-green-50 text-green-700 border-green-200' },
+  absent:         { label: 'Absent',           cls: 'bg-red-50   text-red-700   border-red-200' },
+  half_paid:      { label: 'Half Day · Paid',  cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  half_unpaid:    { label: 'Half Day · Unpaid',cls: 'bg-amber-50 text-amber-700 border-amber-200' },
+  full_paid:      { label: 'Paid Leave',       cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+  full_unpaid:    { label: 'Unpaid Leave',     cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+  weekly_off:     { label: 'Weekly Off',       cls: 'bg-slate-50 text-slate-600 border-slate-200' },
+  holiday:        { label: 'Holiday',          cls: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
+  awaiting:       { label: 'Awaiting Review',  cls: 'bg-amber-50 text-amber-800 border-amber-300' },
+  not_confirmed:  { label: 'Not Confirmed',    cls: 'bg-slate-50 text-slate-600 border-slate-200' },
+};
+
+// Filter dropdown options, in the order the spec calls for.
+const ATT_FILTER_OPTIONS = [
+  { value: 'all',            label: 'All' },
+  { value: 'awaiting',       label: 'Awaiting Review' },
+  { value: 'reviewed',       label: 'Reviewed' },
+  { value: 'present',        label: 'Present' },
+  { value: 'absent',         label: 'Absent' },
+  { value: 'half_paid',      label: 'Half Day Paid' },
+  { value: 'half_unpaid',    label: 'Half Day Unpaid' },
+  { value: 'full_paid',      label: 'Paid Leave' },
+  { value: 'full_unpaid',    label: 'Unpaid Leave' },
+  { value: 'holiday',        label: 'Holiday' },
+  { value: 'weekly_off',     label: 'Weekly Off' },
+  { value: 'not_confirmed',  label: 'Not Confirmed' },
+];
+
+// Bulk-action list surfaced in the toolbar + card action buttons.
+// Values are the exact `action` strings the /act endpoint accepts.
+const ATT_ACTIONS = [
+  { action: 'approve_present',   label: 'Mark Present',       tone: 'primary' },
+  { action: 'mark_absent',       label: 'Mark Absent',        tone: 'secondary' },
+  { action: 'mark_half_paid',    label: 'Half Day · Paid',    tone: 'ghost' },
+  { action: 'mark_half_unpaid',  label: 'Half Day · Unpaid',  tone: 'ghost' },
+  { action: 'mark_paid_leave',   label: 'Leave · Paid',       tone: 'ghost' },
+  { action: 'mark_unpaid_leave', label: 'Leave · Unpaid',     tone: 'ghost' },
+  { action: 'revoke',            label: 'Revoke Attendance',  tone: 'danger' },
+];
+const TONE_CLASS = { primary: 'btn-primary', secondary: 'btn-secondary', ghost: 'btn-ghost', danger: 'btn-ghost text-red-600' };
+
 function AttendanceReviewsSection() {
-  // Phase 66 -- Attendance Review now has its own dedicated tab with
-  // its own filters (Date / Status / Department / Employee).  Data
-  // still comes from the SAME /attendance-confirmation/queue endpoint
-  // -- no backend change.  Non-date filters are applied client-side.
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(today);
-  const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'awaiting' | 'reviewed'
+  const [statusFilter, setStatusFilter] = useState('all');
   const [deptFilter, setDeptFilter] = useState('');
   const [empQuery, setEmpQuery] = useState('');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [busyId, setBusyId] = useState('');
+  // Selection: Set of employee IDs, mirrors the Submission Review pattern.
+  const [selected, setSelected] = useState(() => new Set());
+  const [busyBulk, setBusyBulk] = useState(false);
+  const [busyRow, setBusyRow] = useState('');
   const toast = useToast();
 
   const load = async () => {
@@ -1942,28 +1997,17 @@ function AttendanceReviewsSection() {
     finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [date]);
-  // Phase 47 -- HR's attendance edits trigger an attendance:changed
-  // push; the confirmation queue is the same dataset (one row per
-  // attendance-review employee) so refresh whenever those land too.
+  // Realtime: HR's own attendance edits (anywhere in the app) fan out
+  // an attendance:changed push; the queue is the same dataset so we
+  // just re-fetch whenever one lands.
   useEffect(() => subscribe('attendance:changed', load), [date]);
+  // Any date change invalidates the current selection so a stale ID
+  // never accidentally receives a bulk action against a new day.
+  useEffect(() => { setSelected(new Set()); }, [date]);
 
-  const act = async (row, action) => {
-    if (!row.confirmation) {
-      toast.error('Employee has not confirmed attendance for this day yet.');
-      return;
-    }
-    setBusyId(String(row.confirmation._id));
-    try {
-      await api.post(`/attendance-confirmation/${row.confirmation._id}/review`, { action });
-      toast.success('Attendance reviewed');
-      await load();
-    } catch (err) { toast.error(errMsg(err)); }
-    finally { setBusyId(''); }
-  };
-
-  // Departments dropdown is built from the loaded rows so the filter
-  // list always reflects the actual scope the endpoint returned (HOD,
-  // HR full org, feature-permission scope, etc.).
+  // Departments dropdown built from the loaded rows so the filter
+  // always reflects the actual scope the endpoint returned (HR full
+  // org / HOD dept / feature-granted user).
   const departments = useMemo(() => {
     const s = new Set();
     for (const r of rows) if (r.employee?.department) s.add(r.employee.department);
@@ -1973,12 +2017,23 @@ function AttendanceReviewsSection() {
   const filteredRows = useMemo(() => {
     const q = empQuery.trim().toLowerCase();
     return rows.filter((r) => {
-      // Status filter: awaiting = no confirmation yet OR confirmation.status === 'pending'.
-      if (statusFilter === 'awaiting') {
-        const s = r.confirmation?.status;
-        if (r.confirmation && s !== 'pending') return false;
-      } else if (statusFilter === 'reviewed') {
-        if (!r.confirmation || r.confirmation.status === 'pending') return false;
+      // Status filter -- routed by resolvedState OR effectiveStatus
+      // depending on what the option maps to.
+      if (statusFilter !== 'all') {
+        if (statusFilter === 'awaiting') {
+          if (r.resolvedState !== 'awaiting') return false;
+        } else if (statusFilter === 'reviewed') {
+          if (r.resolvedState !== 'reviewed') return false;
+        } else if (statusFilter === 'not_confirmed') {
+          if (r.resolvedState !== 'not_confirmed') return false;
+        } else if (statusFilter === 'holiday') {
+          if (r.resolvedState !== 'holiday') return false;
+        } else if (statusFilter === 'weekly_off') {
+          if (r.resolvedState !== 'weekly_off') return false;
+        } else {
+          // present / absent / half_paid / half_unpaid / full_paid / full_unpaid
+          if (r.effectiveStatus !== statusFilter) return false;
+        }
       }
       if (deptFilter && (r.employee?.department || '') !== deptFilter) return false;
       if (q) {
@@ -1989,17 +2044,68 @@ function AttendanceReviewsSection() {
     });
   }, [rows, statusFilter, deptFilter, empQuery]);
 
-  const pending  = filteredRows.filter((r) => !r.confirmation || r.confirmation.status === 'pending').length;
-  const reviewed = filteredRows.length - pending;
+  // Selection helpers -- mirror the Submission Review Set-of-keys pattern.
+  const empKey = (r) => String(r.employee._id);
+  const toggleOne = (r) => setSelected((cur) => {
+    const k = empKey(r);
+    const n = new Set(cur);
+    if (n.has(k)) n.delete(k); else n.add(k);
+    return n;
+  });
+  const allSelected  = filteredRows.length > 0 && filteredRows.every((r) => selected.has(empKey(r)));
+  const someSelected = filteredRows.some((r) => selected.has(empKey(r)));
+  const toggleSelectAll = () => setSelected((cur) => {
+    if (allSelected) return new Set();
+    const n = new Set(cur);
+    filteredRows.forEach((r) => n.add(empKey(r)));
+    return n;
+  });
+  const clearSelection = () => setSelected(new Set());
 
-  const STATUS_META = {
-    pending:              { label: 'Awaiting Review', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-    approved_present:     { label: 'Approved Present', cls: 'bg-green-50 text-green-700 border-green-200' },
-    marked_absent:        { label: 'Marked Absent',    cls: 'bg-red-50   text-red-700   border-red-200' },
-    marked_half_paid:     { label: 'Half Paid',        cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-    marked_half_unpaid:   { label: 'Half Unpaid',      cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-    marked_paid_leave:    { label: 'Paid Leave',       cls: 'bg-blue-50  text-blue-700  border-blue-200' },
-    marked_unpaid_leave:  { label: 'Unpaid Leave',     cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+  // Summary tiles reflect the filtered rows so what HR sees on-screen
+  // matches the counters at the top of the section.
+  const summary = useMemo(() => {
+    const s = { awaiting: 0, reviewed: 0, notConfirmed: 0, onLeave: 0, holidayOrOff: 0 };
+    for (const r of filteredRows) {
+      if (r.resolvedState === 'awaiting') s.awaiting += 1;
+      else if (r.resolvedState === 'reviewed') s.reviewed += 1;
+      else if (r.resolvedState === 'not_confirmed') s.notConfirmed += 1;
+      else if (r.resolvedState === 'leave_paid' || r.resolvedState === 'leave_unpaid') s.onLeave += 1;
+      else if (r.resolvedState === 'holiday' || r.resolvedState === 'weekly_off') s.holidayOrOff += 1;
+    }
+    return s;
+  }, [filteredRows]);
+
+  // Per-row action.  Any action, any time -- backend enforces business
+  // rules (e.g. cannot revoke a leave-driven attendance record).
+  const actRow = async (row, action) => {
+    setBusyRow(empKey(row));
+    try {
+      await api.post('/attendance-confirmation/act', {
+        employeeId: row.employee._id, date, action,
+      });
+      toast.success(action === 'revoke' ? 'Attendance revoked' : 'Attendance updated');
+      await load();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusyRow(''); }
+  };
+
+  const bulkAct = async (action) => {
+    if (selected.size === 0) return;
+    setBusyBulk(true);
+    try {
+      const { data } = await api.post('/attendance-confirmation/bulk-act', {
+        employeeIds: [...selected], date, action,
+      });
+      if (data.failedCount > 0) {
+        toast.error(`${data.succeededCount}/${data.requested} succeeded, ${data.failedCount} failed`);
+      } else {
+        toast.success(`${data.succeededCount} row(s) updated`);
+      }
+      clearSelection();
+      await load();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusyBulk(false); }
   };
 
   return (
@@ -2007,17 +2113,23 @@ function AttendanceReviewsSection() {
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Attendance Reviews</h2>
-          <p className="text-xs text-slate-500">Employees on Attendance Review mode for {fmtDate(date)}.</p>
+          <p className="text-xs text-slate-500">Single source of truth for attendance on {fmtDate(date)}. HR can edit or revoke any day at any time.</p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="badge bg-amber-50 text-amber-700">{pending} pending</span>
-          <span className="badge-green">{reviewed} resolved</span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="badge bg-amber-50 text-amber-800 border border-amber-300">{summary.awaiting} awaiting</span>
+          <span className="badge-green">{summary.reviewed} reviewed</span>
+          {summary.notConfirmed > 0 && (
+            <span className="badge bg-slate-50 text-slate-600 border border-slate-200">{summary.notConfirmed} not confirmed</span>
+          )}
+          {summary.onLeave > 0 && (
+            <span className="badge bg-blue-50 text-blue-700 border border-blue-200">{summary.onLeave} on leave</span>
+          )}
+          {summary.holidayOrOff > 0 && (
+            <span className="badge bg-indigo-50 text-indigo-700 border border-indigo-200">{summary.holidayOrOff} holiday / off</span>
+          )}
         </div>
       </div>
 
-      {/* Phase 66 -- Attendance-only filter row.  Kept fully separate
-          from the Submission Review filter card above so the two
-          workflows never share state. */}
       <div className="card card-body flex flex-wrap items-end gap-3">
         <div>
           <label className="label">Date</label>
@@ -2025,10 +2137,8 @@ function AttendanceReviewsSection() {
         </div>
         <div>
           <label className="label">Status</label>
-          <select className="input max-w-[180px]" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
-            <option value="all">All</option>
-            <option value="awaiting">Awaiting Review</option>
-            <option value="reviewed">Reviewed</option>
+          <select className="input max-w-[200px]" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            {ATT_FILTER_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
         <div>
@@ -2050,6 +2160,33 @@ function AttendanceReviewsSection() {
         </div>
       </div>
 
+      {/* Select-all + bulk action toolbar -- mirrors Submission Review. */}
+      {!loading && filteredRows.length > 0 && (
+        <div className="flex items-center justify-between gap-2 flex-wrap text-xs text-slate-600">
+          <label className="flex items-center gap-2 select-none cursor-pointer">
+            <input type="checkbox" checked={allSelected}
+              ref={(el) => { if (el) el.indeterminate = !allSelected && someSelected; }}
+              onChange={toggleSelectAll} />
+            {selected.size > 0 ? <>{selected.size} selected</> : <>Select all on this page</>}
+          </label>
+          {selected.size > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button className="btn-secondary !py-1 !text-xs" onClick={clearSelection} disabled={busyBulk}>Clear</button>
+              {ATT_ACTIONS.map((a) => (
+                <button
+                  key={a.action}
+                  className={`!py-1 !text-xs ${TONE_CLASS[a.tone] || 'btn-ghost'}`}
+                  disabled={busyBulk}
+                  onClick={() => bulkAct(a.action)}
+                >
+                  {a.label} ({selected.size})
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {loading ? <Loader /> : filteredRows.length === 0 ? (
         <EmptyState title={
           rows.length === 0
@@ -2059,35 +2196,65 @@ function AttendanceReviewsSection() {
       ) : (
         <div className="space-y-2">
           {filteredRows.map((row) => {
-            const meta = row.confirmation ? STATUS_META[row.confirmation.status] : null;
-            const noConfirmation = !row.confirmation;
-            const isPending = row.confirmation?.status === 'pending';
+            const rowKey = empKey(row);
+            const meta   = ATT_STATUS_META[row.effectiveStatus] || ATT_STATUS_META.not_confirmed;
+            const isSelected = selected.has(rowKey);
+            const isBusy = busyRow === rowKey;
+            const isAwaiting = row.resolvedState === 'awaiting';
+            const isReadOnly = row.resolvedState === 'holiday' || row.resolvedState === 'weekly_off';
+            const leaveDriven = row.attendance?.source === 'leave';
             return (
-              <div key={String(row.employee._id)} className={`card overflow-hidden ${isPending ? 'ring-1 ring-amber-200' : ''}`}>
+              <div key={rowKey} className={`card overflow-hidden ${isAwaiting ? 'ring-1 ring-amber-200' : ''}`}>
                 <div className="px-5 py-3 flex items-center justify-between gap-3 flex-wrap bg-slate-50 dark:bg-slate-800/40">
-                  <div className="min-w-0">
-                    <div className="font-semibold text-slate-800 dark:text-slate-100">
-                      {row.employee.name} <span className="text-slate-400 font-normal">({row.employee.employeeId})</span>
-                    </div>
-                    <div className="text-[12px] text-slate-500">
-                      {row.employee.department || '—'}
-                      {row.confirmation?.confirmedAt && <> · Confirmed {new Date(row.confirmation.confirmedAt).toLocaleString()}</>}
-                      {row.confirmation?.reviewedAt && <> · Reviewed {new Date(row.confirmation.reviewedAt).toLocaleString()} {row.confirmation.reviewedBy ? `by ${row.confirmation.reviewedBy.name}` : ''}</>}
+                  <div className="flex items-start gap-3 min-w-0">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={isSelected}
+                      onChange={() => toggleOne(row)}
+                    />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-slate-800 dark:text-slate-100">
+                        {row.employee.name} <span className="text-slate-400 font-normal">({row.employee.employeeId})</span>
+                      </div>
+                      <div className="text-[12px] text-slate-500">
+                        {row.employee.department || '—'}
+                        {row.confirmation?.confirmedAt && <> · Confirmed {new Date(row.confirmation.confirmedAt).toLocaleString()}</>}
+                        {row.attendance?.setBy && <> · Set by {row.attendance.setBy.name}</>}
+                        {row.confirmation?.reviewedAt && !row.attendance?.setBy && (
+                          <> · Reviewed {new Date(row.confirmation.reviewedAt).toLocaleString()}{row.confirmation.reviewedBy ? ` by ${row.confirmation.reviewedBy.name}` : ''}</>
+                        )}
+                        {row.holiday?.name && <> · {row.holiday.name}</>}
+                        {row.leave && <> · {row.leave.paid ? 'Paid' : 'Unpaid'} {row.leave.dayType === 'half' ? 'Half-Day' : 'Full'} Leave</>}
+                      </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    {meta && <span className={`badge text-[11px] border ${meta.cls}`}>{meta.label}</span>}
-                    {noConfirmation && <span className="badge text-[11px] border bg-slate-50 text-slate-600 border-slate-200">Not Confirmed</span>}
+                    <span className={`badge text-[11px] border ${meta.cls}`}>{meta.label}</span>
+                    {row.attendance?.source === 'manual' && (
+                      <span className="badge text-[10px] border bg-white text-slate-500 border-slate-200">manual override</span>
+                    )}
+                    {leaveDriven && (
+                      <span className="badge text-[10px] border bg-white text-slate-500 border-slate-200">leave-driven</span>
+                    )}
                   </div>
                 </div>
-                {isPending && (
+                {/* Actions row -- always available (except on read-only
+                    holiday / weekly-off cards).  Revoke is only shown
+                    when there's actually an attendance record to remove. */}
+                {!isReadOnly && (
                   <div className="px-5 py-3 flex flex-wrap gap-2 border-t border-slate-100 dark:border-slate-700">
-                    <button className="btn-primary !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'approve_present')}>Approve Present</button>
-                    <button className="btn-secondary !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_absent')}>Mark Absent</button>
-                    <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_half_paid')}>Half Day · Paid</button>
-                    <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_half_unpaid')}>Half Day · Unpaid</button>
-                    <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_paid_leave')}>Leave · Paid</button>
-                    <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_unpaid_leave')}>Leave · Unpaid</button>
+                    {ATT_ACTIONS.filter((a) => a.action !== 'revoke' || row.attendance).map((a) => (
+                      <button
+                        key={a.action}
+                        className={`!py-1 !text-xs ${TONE_CLASS[a.tone] || 'btn-ghost'}`}
+                        disabled={isBusy || (a.action === 'revoke' && leaveDriven)}
+                        title={a.action === 'revoke' && leaveDriven ? 'Cannot revoke a leave-driven record. Cancel the leave instead.' : ''}
+                        onClick={() => actRow(row, a.action)}
+                      >
+                        {a.label}
+                      </button>
+                    ))}
                   </div>
                 )}
               </div>
