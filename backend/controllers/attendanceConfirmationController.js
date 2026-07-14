@@ -69,6 +69,9 @@ const ACTION_TO_STATUS = {
   mark_half_unpaid:  'half_unpaid',
   mark_paid_leave:   'full_paid',
   mark_unpaid_leave: 'full_unpaid',
+  // Phase 68 -- the redesigned dropdown exposes Weekly Off as a
+  // selectable status; maps 1:1 onto the existing Attendance enum.
+  mark_weekly_off:   'weekly_off',
 };
 
 const ACTION_TO_CONFIRMATION_STATUS = {
@@ -78,6 +81,7 @@ const ACTION_TO_CONFIRMATION_STATUS = {
   mark_half_unpaid:  'marked_half_unpaid',
   mark_paid_leave:   'marked_paid_leave',
   mark_unpaid_leave: 'marked_unpaid_leave',
+  mark_weekly_off:   'marked_weekly_off',
 };
 
 /* ------------------------------------------------------------------ */
@@ -409,6 +413,7 @@ const REVIEW_ACTIONS = new Set([
   'approve_present', 'mark_absent',
   'mark_half_paid', 'mark_half_unpaid',
   'mark_paid_leave', 'mark_unpaid_leave',
+  'mark_weekly_off',
   'revoke',
 ]);
 

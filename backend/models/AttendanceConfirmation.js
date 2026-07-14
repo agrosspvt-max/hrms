@@ -40,6 +40,9 @@ const attendanceConfirmationSchema = new mongoose.Schema(
         'marked_absent',
         'marked_half_paid', 'marked_half_unpaid',
         'marked_paid_leave', 'marked_unpaid_leave',
+        // Phase 68 -- HR can now also mark an employee's day as
+        // Weekly Off from the redesigned Attendance Review dropdown.
+        'marked_weekly_off',
       ],
       default: 'pending',
       index: true,

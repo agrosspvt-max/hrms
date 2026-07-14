@@ -1930,19 +1930,21 @@ function HodReviewDetails({ sub }) {
  * Submission detection.
  * ===================================================================== */
 
-// Concrete status labels + colours the card badge uses.  Keys match
-// what the enriched /queue endpoint returns as `effectiveStatus`.
+// Concrete status labels + colour-coded dots the badge / dropdown use.
+// Keys match what the enriched /queue endpoint returns as `effectiveStatus`.
+// `dot` renders as a small circle before the label so the badge and
+// dropdown share the same visual grammar.
 const ATT_STATUS_META = {
-  present:        { label: 'Present',          cls: 'bg-green-50 text-green-700 border-green-200' },
-  absent:         { label: 'Absent',           cls: 'bg-red-50   text-red-700   border-red-200' },
-  half_paid:      { label: 'Half Day · Paid',  cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-  half_unpaid:    { label: 'Half Day · Unpaid',cls: 'bg-amber-50 text-amber-700 border-amber-200' },
-  full_paid:      { label: 'Paid Leave',       cls: 'bg-blue-50  text-blue-700  border-blue-200' },
-  full_unpaid:    { label: 'Unpaid Leave',     cls: 'bg-blue-50  text-blue-700  border-blue-200' },
-  weekly_off:     { label: 'Weekly Off',       cls: 'bg-slate-50 text-slate-600 border-slate-200' },
-  holiday:        { label: 'Holiday',          cls: 'bg-indigo-50 text-indigo-700 border-indigo-200' },
-  awaiting:       { label: 'Awaiting Review',  cls: 'bg-amber-50 text-amber-800 border-amber-300' },
-  not_confirmed:  { label: 'Not Confirmed',    cls: 'bg-slate-50 text-slate-600 border-slate-200' },
+  present:        { label: 'Present',           dot: 'bg-green-500',   cls: 'bg-green-50 text-green-700 border-green-200' },
+  absent:         { label: 'Absent',            dot: 'bg-red-500',     cls: 'bg-red-50   text-red-700   border-red-200' },
+  half_paid:      { label: 'Half Day - Paid',   dot: 'bg-orange-500',  cls: 'bg-orange-50 text-orange-700 border-orange-200' },
+  half_unpaid:    { label: 'Half Day - Unpaid', dot: 'bg-orange-400',  cls: 'bg-orange-50 text-orange-700 border-orange-200' },
+  full_paid:      { label: 'Leave - Paid',      dot: 'bg-blue-500',    cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+  full_unpaid:    { label: 'Leave - Unpaid',    dot: 'bg-blue-400',    cls: 'bg-blue-50  text-blue-700  border-blue-200' },
+  weekly_off:     { label: 'Weekly Off',        dot: 'bg-slate-700',   cls: 'bg-slate-100 text-slate-700 border-slate-300' },
+  holiday:        { label: 'Holiday',           dot: 'bg-white border border-slate-400', cls: 'bg-white text-slate-700 border-slate-300' },
+  awaiting:       { label: 'Awaiting Review',   dot: 'bg-amber-400',   cls: 'bg-amber-50 text-amber-800 border-amber-300' },
+  not_confirmed:  { label: 'Not Confirmed',     dot: 'bg-slate-300',   cls: 'bg-slate-50 text-slate-600 border-slate-200' },
 };
 
 // Filter dropdown options, in the order the spec calls for.
@@ -1952,27 +1954,151 @@ const ATT_FILTER_OPTIONS = [
   { value: 'reviewed',       label: 'Reviewed' },
   { value: 'present',        label: 'Present' },
   { value: 'absent',         label: 'Absent' },
-  { value: 'half_paid',      label: 'Half Day Paid' },
-  { value: 'half_unpaid',    label: 'Half Day Unpaid' },
-  { value: 'full_paid',      label: 'Paid Leave' },
-  { value: 'full_unpaid',    label: 'Unpaid Leave' },
+  { value: 'half_paid',      label: 'Half Day - Paid' },
+  { value: 'half_unpaid',    label: 'Half Day - Unpaid' },
+  { value: 'full_paid',      label: 'Leave - Paid' },
+  { value: 'full_unpaid',    label: 'Leave - Unpaid' },
   { value: 'holiday',        label: 'Holiday' },
   { value: 'weekly_off',     label: 'Weekly Off' },
   { value: 'not_confirmed',  label: 'Not Confirmed' },
 ];
 
-// Bulk-action list surfaced in the toolbar + card action buttons.
-// Values are the exact `action` strings the /act endpoint accepts.
-const ATT_ACTIONS = [
-  { action: 'approve_present',   label: 'Mark Present',       tone: 'primary' },
-  { action: 'mark_absent',       label: 'Mark Absent',        tone: 'secondary' },
-  { action: 'mark_half_paid',    label: 'Half Day · Paid',    tone: 'ghost' },
-  { action: 'mark_half_unpaid',  label: 'Half Day · Unpaid',  tone: 'ghost' },
-  { action: 'mark_paid_leave',   label: 'Leave · Paid',       tone: 'ghost' },
-  { action: 'mark_unpaid_leave', label: 'Leave · Unpaid',     tone: 'ghost' },
-  { action: 'revoke',            label: 'Revoke Attendance',  tone: 'danger' },
+// Writable Attendance Status dropdown options.  Each `value` is the
+// exact `action` string the /act + /bulk-act endpoints accept, so the
+// row dropdown, the Manual Override modal, and the bulk toolbar all
+// speak the same vocabulary and reuse the same reviewer endpoint.
+// Holiday is omitted from the writable dropdown -- Holidays are
+// managed centrally via the Holidays admin (creating a Holiday flips
+// every employee's day automatically through the existing priority
+// chain).
+const STATUS_DROPDOWN_OPTIONS = [
+  { value: 'approve_present',   label: 'Present',           statusKey: 'present' },
+  { value: 'mark_absent',       label: 'Absent',            statusKey: 'absent' },
+  { value: 'mark_half_paid',    label: 'Half Day - Paid',   statusKey: 'half_paid' },
+  { value: 'mark_half_unpaid',  label: 'Half Day - Unpaid', statusKey: 'half_unpaid' },
+  { value: 'mark_paid_leave',   label: 'Leave - Paid',      statusKey: 'full_paid' },
+  { value: 'mark_unpaid_leave', label: 'Leave - Unpaid',    statusKey: 'full_unpaid' },
+  { value: 'mark_weekly_off',   label: 'Weekly Off',        statusKey: 'weekly_off' },
 ];
-const TONE_CLASS = { primary: 'btn-primary', secondary: 'btn-secondary', ghost: 'btn-ghost', danger: 'btn-ghost text-red-600' };
+// Map effectiveStatus back to the action value that produces it, so
+// a row's current dropdown selection can reflect the current state.
+const EFFECTIVE_TO_ACTION = STATUS_DROPDOWN_OPTIONS.reduce((m, o) => {
+  m[o.statusKey] = o.value;
+  return m;
+}, {});
+
+/**
+ * Shared Attendance Status dropdown.  Used by:
+ *   - Awaiting-Review rows (inline, defaulting to "Awaiting Review")
+ *   - Manual Override modal
+ *   - Bulk toolbar
+ * Renders a colour dot beside the currently selected label so the
+ * dropdown visually reflects the selection.
+ */
+function AttendanceStatusSelect({
+  value, onChange, disabled, placeholderLabel, placeholderStatusKey,
+  includePlaceholder = true, className = '',
+}) {
+  const currentMeta = value
+    ? ATT_STATUS_META[STATUS_DROPDOWN_OPTIONS.find((o) => o.value === value)?.statusKey]
+    : (placeholderStatusKey ? ATT_STATUS_META[placeholderStatusKey] : null);
+  return (
+    <div className={`flex items-center gap-2 ${className}`}>
+      {currentMeta && (
+        <span className={`inline-block w-2.5 h-2.5 rounded-full ${currentMeta.dot}`} aria-hidden />
+      )}
+      <select
+        className="input !py-1 !text-sm min-w-[190px]"
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+      >
+        {includePlaceholder && (
+          <option value="" disabled>
+            {placeholderLabel || 'Select status…'}
+          </option>
+        )}
+        {STATUS_DROPDOWN_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>{o.label}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/**
+ * Manual Override modal -- only entry point for editing an already-
+ * reviewed row.  Reuses the AttendanceStatusSelect component and
+ * always requires a reason so the audit log captures HR's rationale.
+ * Save routes through POST /attendance-confirmation/act, which
+ * UPDATES the existing Attendance record via findOneAndUpdate (never
+ * creates a duplicate).
+ */
+function ManualOverrideModal({ row, date, onClose, onSaved }) {
+  const toast = useToast();
+  const currentActionValue = row.effectiveStatus ? EFFECTIVE_TO_ACTION[row.effectiveStatus] || '' : '';
+  const [action, setAction] = useState(currentActionValue);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const currentMeta = ATT_STATUS_META[row.effectiveStatus] || ATT_STATUS_META.not_confirmed;
+  const save = async () => {
+    if (!action) { toast.error('Pick a new attendance status.'); return; }
+    const r = reason.trim();
+    if (!r) { toast.error('Reason is required for a manual override.'); return; }
+    setBusy(true);
+    try {
+      await api.post('/attendance-confirmation/act', {
+        employeeId: row.employee._id, date, action, remarks: r,
+      });
+      toast.success('Attendance updated');
+      onSaved?.();
+    } catch (err) { toast.error(errMsg(err)); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-40 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white dark:bg-slate-900 rounded-lg shadow-lg w-full max-w-md p-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Manual Override</h2>
+          <button className="btn-ghost" onClick={onClose}>Close</button>
+        </div>
+        <div className="text-xs text-slate-500">
+          {row.employee.name} · {row.employee.employeeId} · {fmtDate(date)}
+        </div>
+        <div>
+          <label className="label">Current Status</label>
+          <span className={`badge text-[11px] border inline-flex items-center gap-1.5 ${currentMeta.cls}`}>
+            <span className={`inline-block w-2 h-2 rounded-full ${currentMeta.dot}`} aria-hidden />
+            {currentMeta.label}
+          </span>
+        </div>
+        <div>
+          <label className="label">Attendance Status</label>
+          <AttendanceStatusSelect
+            value={action}
+            onChange={setAction}
+            placeholderLabel="Select a new status"
+            includePlaceholder={!action}
+          />
+        </div>
+        <div>
+          <label className="label">Reason <span className="text-red-500">*</span></label>
+          <textarea
+            className="input"
+            rows={3}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="Why is this override needed? (audited)"
+          />
+        </div>
+        <div className="flex justify-end gap-2">
+          <button className="btn-secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn-primary" onClick={save} disabled={busy}>Save</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function AttendanceReviewsSection() {
   const today = new Date().toISOString().slice(0, 10);
@@ -1984,8 +2110,11 @@ function AttendanceReviewsSection() {
   const [loading, setLoading] = useState(true);
   // Selection: Set of employee IDs, mirrors the Submission Review pattern.
   const [selected, setSelected] = useState(() => new Set());
+  const [bulkAction, setBulkAction] = useState('');
   const [busyBulk, setBusyBulk] = useState(false);
   const [busyRow, setBusyRow] = useState('');
+  // Manual Override modal target row (null = closed).
+  const [overrideRow, setOverrideRow] = useState(null);
   const toast = useToast();
 
   const load = async () => {
@@ -2090,12 +2219,13 @@ function AttendanceReviewsSection() {
     finally { setBusyRow(''); }
   };
 
-  const bulkAct = async (action) => {
-    if (selected.size === 0) return;
+  const applyBulk = async () => {
+    if (selected.size === 0) { toast.error('No employees selected.'); return; }
+    if (!bulkAction) { toast.error('Pick an attendance status to apply.'); return; }
     setBusyBulk(true);
     try {
       const { data } = await api.post('/attendance-confirmation/bulk-act', {
-        employeeIds: [...selected], date, action,
+        employeeIds: [...selected], date, action: bulkAction,
       });
       if (data.failedCount > 0) {
         toast.error(`${data.succeededCount}/${data.requested} succeeded, ${data.failedCount} failed`);
@@ -2103,6 +2233,7 @@ function AttendanceReviewsSection() {
         toast.success(`${data.succeededCount} row(s) updated`);
       }
       clearSelection();
+      setBulkAction('');
       await load();
     } catch (err) { toast.error(errMsg(err)); }
     finally { setBusyBulk(false); }
@@ -2160,7 +2291,9 @@ function AttendanceReviewsSection() {
         </div>
       </div>
 
-      {/* Select-all + bulk action toolbar -- mirrors Submission Review. */}
+      {/* Select-all + single-dropdown bulk toolbar.  Reuses Submission
+          Review's selection UI pattern but collapses the seven per-row
+          action buttons into ONE Attendance Status dropdown + Apply. */}
       {!loading && filteredRows.length > 0 && (
         <div className="flex items-center justify-between gap-2 flex-wrap text-xs text-slate-600">
           <label className="flex items-center gap-2 select-none cursor-pointer">
@@ -2172,16 +2305,20 @@ function AttendanceReviewsSection() {
           {selected.size > 0 && (
             <div className="flex items-center gap-2 flex-wrap">
               <button className="btn-secondary !py-1 !text-xs" onClick={clearSelection} disabled={busyBulk}>Clear</button>
-              {ATT_ACTIONS.map((a) => (
-                <button
-                  key={a.action}
-                  className={`!py-1 !text-xs ${TONE_CLASS[a.tone] || 'btn-ghost'}`}
-                  disabled={busyBulk}
-                  onClick={() => bulkAct(a.action)}
-                >
-                  {a.label} ({selected.size})
-                </button>
-              ))}
+              <AttendanceStatusSelect
+                value={bulkAction}
+                onChange={setBulkAction}
+                disabled={busyBulk}
+                placeholderLabel="Bulk Attendance Status"
+                includePlaceholder={!bulkAction}
+              />
+              <button
+                className="btn-primary !py-1 !text-xs"
+                disabled={busyBulk || !bulkAction}
+                onClick={applyBulk}
+              >
+                Apply to {selected.size}
+              </button>
             </div>
           )}
         </div>
@@ -2200,11 +2337,15 @@ function AttendanceReviewsSection() {
             const meta   = ATT_STATUS_META[row.effectiveStatus] || ATT_STATUS_META.not_confirmed;
             const isSelected = selected.has(rowKey);
             const isBusy = busyRow === rowKey;
-            const isAwaiting = row.resolvedState === 'awaiting';
-            const isReadOnly = row.resolvedState === 'holiday' || row.resolvedState === 'weekly_off';
-            const leaveDriven = row.attendance?.source === 'leave';
+            // Inline dropdown appears ONLY for rows that need HR's
+            // first-touch decision: Awaiting Review + Not Confirmed.
+            // Every other resolved state (reviewed, leave, holiday,
+            // weekly_off) shows a colour-coded badge + Manual Override
+            // button per spec State 2.
+            const showInlineDropdown =
+              row.resolvedState === 'awaiting' || row.resolvedState === 'not_confirmed';
             return (
-              <div key={rowKey} className={`card overflow-hidden ${isAwaiting ? 'ring-1 ring-amber-200' : ''}`}>
+              <div key={rowKey} className={`card overflow-hidden ${showInlineDropdown ? 'ring-1 ring-amber-200' : ''}`}>
                 <div className="px-5 py-3 flex items-center justify-between gap-3 flex-wrap bg-slate-50 dark:bg-slate-800/40">
                   <div className="flex items-start gap-3 min-w-0">
                     <input
@@ -2229,38 +2370,54 @@ function AttendanceReviewsSection() {
                       </div>
                     </div>
                   </div>
+                  {/* Right-hand column: EXACTLY ONE control per row so
+                      the reviewer sees a single canonical state at a
+                      time.  Awaiting/Not-Confirmed -> inline dropdown.
+                      Everything else -> colour-coded status badge +
+                      one "Manual Override" button. */}
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className={`badge text-[11px] border ${meta.cls}`}>{meta.label}</span>
-                    {row.attendance?.source === 'manual' && (
-                      <span className="badge text-[10px] border bg-white text-slate-500 border-slate-200">manual override</span>
-                    )}
-                    {leaveDriven && (
-                      <span className="badge text-[10px] border bg-white text-slate-500 border-slate-200">leave-driven</span>
+                    {showInlineDropdown ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] uppercase tracking-wide text-slate-500">Attendance Status</span>
+                        <AttendanceStatusSelect
+                          value=""
+                          onChange={(v) => actRow(row, v)}
+                          disabled={isBusy}
+                          placeholderStatusKey={row.effectiveStatus}
+                          placeholderLabel={meta.label}
+                          includePlaceholder
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <span className={`badge text-[11px] border inline-flex items-center gap-1.5 ${meta.cls}`}>
+                          <span className={`inline-block w-2 h-2 rounded-full ${meta.dot}`} aria-hidden />
+                          {meta.label}
+                        </span>
+                        <button
+                          className="btn-secondary !py-1 !text-xs"
+                          disabled={isBusy}
+                          onClick={() => setOverrideRow(row)}
+                        >
+                          Manual Override
+                        </button>
+                      </>
                     )}
                   </div>
                 </div>
-                {/* Actions row -- always available (except on read-only
-                    holiday / weekly-off cards).  Revoke is only shown
-                    when there's actually an attendance record to remove. */}
-                {!isReadOnly && (
-                  <div className="px-5 py-3 flex flex-wrap gap-2 border-t border-slate-100 dark:border-slate-700">
-                    {ATT_ACTIONS.filter((a) => a.action !== 'revoke' || row.attendance).map((a) => (
-                      <button
-                        key={a.action}
-                        className={`!py-1 !text-xs ${TONE_CLASS[a.tone] || 'btn-ghost'}`}
-                        disabled={isBusy || (a.action === 'revoke' && leaveDriven)}
-                        title={a.action === 'revoke' && leaveDriven ? 'Cannot revoke a leave-driven record. Cancel the leave instead.' : ''}
-                        onClick={() => actRow(row, a.action)}
-                      >
-                        {a.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             );
           })}
         </div>
+      )}
+
+      {overrideRow && (
+        <ManualOverrideModal
+          row={overrideRow}
+          date={date}
+          onClose={() => setOverrideRow(null)}
+          onSaved={() => { setOverrideRow(null); load(); }}
+        />
       )}
     </div>
   );
