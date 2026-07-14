@@ -197,6 +197,13 @@ const start = async () => {
     const { start: startCompliance } = require('./services/dailyComplianceScheduler');
     startCompliance();
   } catch (e) { console.error('[compliance-scheduler] boot error:', e.message); }
+  // One-time normalisation: every existing employee not on
+  // auto_attendance is set to attendance_review.  Idempotent + async
+  // so a re-run performs zero writes and boot is never blocked.
+  try {
+    const { start: startAttModeMigration } = require('./services/attendanceModeMigration');
+    startAttModeMigration();
+  } catch (e) { console.error('[attendance-mode-migration] boot error:', e.message); }
   // Phase 65.1 -- archive any pre-rollout missed_submission /
   // absent_submission Penalty rows + hide the notifications they
   // produced.  Idempotent + async; boot is never blocked.
