@@ -42,9 +42,11 @@ const notify         = require('../services/notifyEvents');
 // Phase 60 -- HOD visibility gate for the Employee Private Remark.
 const { scrubPrivateRemark } = require('../utils/privateRemark');
 // Phase 65.2 -- Submission Review honours the SAME rollout cutoff used
-// by the Missed Submission compliance engine.  Any day before the
-// cutoff is ignored entirely (no Expected / Submitted / Not Submitted
-// counters, no cards, no missing days).  Single source of truth --
+// by the Missed Submission compliance engine.  The cutoff ONLY
+// suppresses historical "Not Submitted" detection; historical
+// submitted records are still fully visible in the review + reporting
+// flow because Submitted takes priority in the evaluation order
+// (see _evaluateNotSubmittedForDay below).  Single source of truth --
 // never introduce a second date here.
 const { isBeforeRollout } = require('../config/complianceRollout');
 

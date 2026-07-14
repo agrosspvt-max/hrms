@@ -32,6 +32,20 @@ import { subscribe } from '../../realtime';
  */
 export default function SubmissionReviews() {
   const today = new Date().toISOString().slice(0, 10);
+  // Phase 66 -- Review Type mode.  The page now hosts two independent
+  // workflows (Submission Review + Attendance Review); the segmented
+  // switch below flips between them and each view renders its own
+  // filter row + dataset.  Persisted in localStorage so reopening the
+  // page returns to the last-used tab.
+  const [reviewType, setReviewType] = useState(() => {
+    try {
+      const saved = localStorage.getItem('submissionReviews.reviewType');
+      return saved === 'attendance' ? 'attendance' : 'submission';
+    } catch { return 'submission'; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('submissionReviews.reviewType', reviewType); } catch (_) { /* localStorage unavailable */ }
+  }, [reviewType]);
   // Phase 49 -- Review Period mode.  'single' keeps the original UX
   // (one <input type=date>); 'range' shows From + To pickers and
   // fetches every card whose submission-date falls inside [from, to].
@@ -67,6 +81,9 @@ export default function SubmissionReviews() {
   const toast = useToast();
 
   const load = async () => {
+    // Phase 66 -- Attendance-only view has its own data source; skip
+    // the submission fetch entirely when the user is on that tab.
+    if (reviewType !== 'submission') return;
     setLoading(true);
     // Phase 49 -- pick the right query params based on mode.  Range
     // sends from/to; single keeps sending `date`.  Backend accepts
@@ -101,13 +118,15 @@ export default function SubmissionReviews() {
       toast.error(errMsg(err));
     } finally { setLoading(false); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [mode, date, fromDate, toDate, status]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [reviewType, mode, date, fromDate, toDate, status]);
   // Phase 47 -- new submission lands -> review queue refreshes live.
-  useEffect(
-    () => subscribe('submission:submitted', load),
+  // Phase 66 -- only listen while the submission tab is active so the
+  // attendance-only view isn't force-refetching submission data.
+  useEffect(() => {
+    if (reviewType !== 'submission') return undefined;
+    return subscribe('submission:submitted', load);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [mode, date, fromDate, toDate, status],
-  );
+  }, [reviewType, mode, date, fromDate, toDate, status]);
 
   // Phase 23.5: derive a card's HOD bucket from its submissions.  A
   // card may hold multiple submissions on the same day -- the rule is:
@@ -165,16 +184,48 @@ export default function SubmissionReviews() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Submission Reviews</h1>
           <p className="text-sm text-slate-500">
-            One card per employee per day. Daily reflection + innovation are reviewed once,
-            even when the employee filed multiple reports.
+            {reviewType === 'submission'
+              ? 'One card per employee per day. Daily reflection + innovation are reviewed once, even when the employee filed multiple reports.'
+              : 'Approve or override attendance for employees on Attendance Review mode.'}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="badge bg-amber-50 text-amber-700">{pending} pending</span>
-          <span className="badge-green">{reviewed} reviewed</span>
+        {reviewType === 'submission' && (
+          <div className="flex items-center gap-2">
+            <span className="badge bg-amber-50 text-amber-700">{pending} pending</span>
+            <span className="badge-green">{reviewed} reviewed</span>
+          </div>
+        )}
+      </div>
+
+      {/* Phase 66 -- Review Type segmented switch.  Splits the page into
+          two independent workflows so Submission Review and Attendance
+          Review no longer share screen real estate.  Each mode renders
+          only its own filter row + dataset below. */}
+      <div className="card card-body flex flex-wrap items-center gap-3">
+        <label className="label m-0">Review Type</label>
+        <div className="inline-flex rounded-md border border-slate-200 dark:border-slate-700 overflow-hidden text-sm">
+          <button
+            type="button"
+            className={`px-4 py-1.5 transition-colors ${reviewType === 'submission'
+              ? 'bg-slate-800 text-white'
+              : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+            onClick={() => setReviewType('submission')}
+          >
+            Submission Review
+          </button>
+          <button
+            type="button"
+            className={`px-4 py-1.5 transition-colors border-l border-slate-200 dark:border-slate-700 ${reviewType === 'attendance'
+              ? 'bg-slate-800 text-white'
+              : 'bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'}`}
+            onClick={() => setReviewType('attendance')}
+          >
+            Attendance Review
+          </button>
         </div>
       </div>
 
+      {reviewType === 'submission' && (<>
       <div className="card card-body flex flex-wrap items-end gap-3">
         {/* Phase 49 -- Review Period mode toggle.  Single Date keeps
             the original single input; Date Range reveals From / To
@@ -384,18 +435,21 @@ export default function SubmissionReviews() {
         </div>
       )}
 
-      {/* Phase 29 -- Attendance Reviews section (mode 2 employees).
-          Renders below the Submission Reviews list and is always visible
-          to HR / Super Admin / HOD because the queue endpoint enforces
-          the scope server-side. */}
-      <AttendanceReviewsSection date={date} />
-
       {bulkOpen && (
         <BulkScoreModal
           cards={selectedCards}
           onClose={() => setBulkOpen(false)}
           onDone={() => { setBulkOpen(false); clearSelection(); load(); }}
         />
+      )}
+      </>)}
+
+      {/* Phase 29 + Phase 66 -- Attendance Reviews.  Now renders on its
+          own dedicated tab with its own Date / Status / Department /
+          Employee filters.  The queue endpoint is unchanged; filtering
+          happens client-side over the loaded rows. */}
+      {reviewType === 'attendance' && (
+        <AttendanceReviewsSection />
       )}
     </div>
   );
@@ -1864,7 +1918,16 @@ function HodReviewDetails({ sub }) {
  * action writes a manual Attendance record so the existing
  * deriveAttendance + salary pipelines pick up the resolution.
  * ===================================================================== */
-function AttendanceReviewsSection({ date }) {
+function AttendanceReviewsSection() {
+  // Phase 66 -- Attendance Review now has its own dedicated tab with
+  // its own filters (Date / Status / Department / Employee).  Data
+  // still comes from the SAME /attendance-confirmation/queue endpoint
+  // -- no backend change.  Non-date filters are applied client-side.
+  const today = new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState(today);
+  const [statusFilter, setStatusFilter] = useState('all'); // 'all' | 'awaiting' | 'reviewed'
+  const [deptFilter, setDeptFilter] = useState('');
+  const [empQuery, setEmpQuery] = useState('');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState('');
@@ -1898,11 +1961,36 @@ function AttendanceReviewsSection({ date }) {
     finally { setBusyId(''); }
   };
 
-  if (loading) return null; // silently hide while loading; the section is secondary
-  if (rows.length === 0) return null;
+  // Departments dropdown is built from the loaded rows so the filter
+  // list always reflects the actual scope the endpoint returned (HOD,
+  // HR full org, feature-permission scope, etc.).
+  const departments = useMemo(() => {
+    const s = new Set();
+    for (const r of rows) if (r.employee?.department) s.add(r.employee.department);
+    return [...s].sort();
+  }, [rows]);
 
-  const pending = rows.filter((r) => !r.confirmation || r.confirmation.status === 'pending').length;
-  const reviewed = rows.length - pending;
+  const filteredRows = useMemo(() => {
+    const q = empQuery.trim().toLowerCase();
+    return rows.filter((r) => {
+      // Status filter: awaiting = no confirmation yet OR confirmation.status === 'pending'.
+      if (statusFilter === 'awaiting') {
+        const s = r.confirmation?.status;
+        if (r.confirmation && s !== 'pending') return false;
+      } else if (statusFilter === 'reviewed') {
+        if (!r.confirmation || r.confirmation.status === 'pending') return false;
+      }
+      if (deptFilter && (r.employee?.department || '') !== deptFilter) return false;
+      if (q) {
+        const hay = `${r.employee?.name || ''} ${r.employee?.employeeId || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [rows, statusFilter, deptFilter, empQuery]);
+
+  const pending  = filteredRows.filter((r) => !r.confirmation || r.confirmation.status === 'pending').length;
+  const reviewed = filteredRows.length - pending;
 
   const STATUS_META = {
     pending:              { label: 'Awaiting Review', cls: 'bg-amber-50 text-amber-700 border-amber-200' },
@@ -1915,7 +2003,7 @@ function AttendanceReviewsSection({ date }) {
   };
 
   return (
-    <div className="space-y-3 pt-2">
+    <div className="space-y-4">
       <div className="flex items-end justify-between flex-wrap gap-2">
         <div>
           <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Attendance Reviews</h2>
@@ -1926,43 +2014,87 @@ function AttendanceReviewsSection({ date }) {
           <span className="badge-green">{reviewed} resolved</span>
         </div>
       </div>
-      <div className="space-y-2">
-        {rows.map((row) => {
-          const meta = row.confirmation ? STATUS_META[row.confirmation.status] : null;
-          const noConfirmation = !row.confirmation;
-          const isPending = row.confirmation?.status === 'pending';
-          return (
-            <div key={String(row.employee._id)} className={`card overflow-hidden ${isPending ? 'ring-1 ring-amber-200' : ''}`}>
-              <div className="px-5 py-3 flex items-center justify-between gap-3 flex-wrap bg-slate-50 dark:bg-slate-800/40">
-                <div className="min-w-0">
-                  <div className="font-semibold text-slate-800 dark:text-slate-100">
-                    {row.employee.name} <span className="text-slate-400 font-normal">({row.employee.employeeId})</span>
-                  </div>
-                  <div className="text-[12px] text-slate-500">
-                    {row.employee.department || '—'}
-                    {row.confirmation?.confirmedAt && <> · Confirmed {new Date(row.confirmation.confirmedAt).toLocaleString()}</>}
-                    {row.confirmation?.reviewedAt && <> · Reviewed {new Date(row.confirmation.reviewedAt).toLocaleString()} {row.confirmation.reviewedBy ? `by ${row.confirmation.reviewedBy.name}` : ''}</>}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  {meta && <span className={`badge text-[11px] border ${meta.cls}`}>{meta.label}</span>}
-                  {noConfirmation && <span className="badge text-[11px] border bg-slate-50 text-slate-600 border-slate-200">Not Confirmed</span>}
-                </div>
-              </div>
-              {isPending && (
-                <div className="px-5 py-3 flex flex-wrap gap-2 border-t border-slate-100 dark:border-slate-700">
-                  <button className="btn-primary !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'approve_present')}>Approve Present</button>
-                  <button className="btn-secondary !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_absent')}>Mark Absent</button>
-                  <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_half_paid')}>Half Day · Paid</button>
-                  <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_half_unpaid')}>Half Day · Unpaid</button>
-                  <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_paid_leave')}>Leave · Paid</button>
-                  <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_unpaid_leave')}>Leave · Unpaid</button>
-                </div>
-              )}
-            </div>
-          );
-        })}
+
+      {/* Phase 66 -- Attendance-only filter row.  Kept fully separate
+          from the Submission Review filter card above so the two
+          workflows never share state. */}
+      <div className="card card-body flex flex-wrap items-end gap-3">
+        <div>
+          <label className="label">Date</label>
+          <input className="input max-w-[170px]" type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+        </div>
+        <div>
+          <label className="label">Status</label>
+          <select className="input max-w-[180px]" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <option value="all">All</option>
+            <option value="awaiting">Awaiting Review</option>
+            <option value="reviewed">Reviewed</option>
+          </select>
+        </div>
+        <div>
+          <label className="label">Department</label>
+          <select className="input max-w-[220px]" value={deptFilter} onChange={(e) => setDeptFilter(e.target.value)}>
+            <option value="">All</option>
+            {departments.map((d) => <option key={d} value={d}>{d}</option>)}
+          </select>
+        </div>
+        <div className="flex-1 min-w-[180px]">
+          <label className="label">Employee</label>
+          <input
+            className="input"
+            type="search"
+            placeholder="Search by name or employee ID"
+            value={empQuery}
+            onChange={(e) => setEmpQuery(e.target.value)}
+          />
+        </div>
       </div>
+
+      {loading ? <Loader /> : filteredRows.length === 0 ? (
+        <EmptyState title={
+          rows.length === 0
+            ? 'No employees on Attendance Review mode for this day'
+            : 'No attendance rows match the current filters'
+        } />
+      ) : (
+        <div className="space-y-2">
+          {filteredRows.map((row) => {
+            const meta = row.confirmation ? STATUS_META[row.confirmation.status] : null;
+            const noConfirmation = !row.confirmation;
+            const isPending = row.confirmation?.status === 'pending';
+            return (
+              <div key={String(row.employee._id)} className={`card overflow-hidden ${isPending ? 'ring-1 ring-amber-200' : ''}`}>
+                <div className="px-5 py-3 flex items-center justify-between gap-3 flex-wrap bg-slate-50 dark:bg-slate-800/40">
+                  <div className="min-w-0">
+                    <div className="font-semibold text-slate-800 dark:text-slate-100">
+                      {row.employee.name} <span className="text-slate-400 font-normal">({row.employee.employeeId})</span>
+                    </div>
+                    <div className="text-[12px] text-slate-500">
+                      {row.employee.department || '—'}
+                      {row.confirmation?.confirmedAt && <> · Confirmed {new Date(row.confirmation.confirmedAt).toLocaleString()}</>}
+                      {row.confirmation?.reviewedAt && <> · Reviewed {new Date(row.confirmation.reviewedAt).toLocaleString()} {row.confirmation.reviewedBy ? `by ${row.confirmation.reviewedBy.name}` : ''}</>}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {meta && <span className={`badge text-[11px] border ${meta.cls}`}>{meta.label}</span>}
+                    {noConfirmation && <span className="badge text-[11px] border bg-slate-50 text-slate-600 border-slate-200">Not Confirmed</span>}
+                  </div>
+                </div>
+                {isPending && (
+                  <div className="px-5 py-3 flex flex-wrap gap-2 border-t border-slate-100 dark:border-slate-700">
+                    <button className="btn-primary !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'approve_present')}>Approve Present</button>
+                    <button className="btn-secondary !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_absent')}>Mark Absent</button>
+                    <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_half_paid')}>Half Day · Paid</button>
+                    <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_half_unpaid')}>Half Day · Unpaid</button>
+                    <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_paid_leave')}>Leave · Paid</button>
+                    <button className="btn-ghost !py-1 !text-xs" disabled={busyId === String(row.confirmation._id)} onClick={() => act(row, 'mark_unpaid_leave')}>Leave · Unpaid</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
