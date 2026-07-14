@@ -137,6 +137,26 @@ const salarySlipSchema = new mongoose.Schema(
     retractedAt:  { type: Date },
     retractedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     retractionReason: { type: String, default: '' },
+
+    /* Phase 65 -- Publish workflow (separate from `status` above so
+     * existing retract / paid semantics keep working unchanged).
+     *
+     *   draft      - generated but NOT visible to the employee.
+     *                Default for every newly generated slip.
+     *   published  - HR/SA reviewed + published; employee can now see
+     *                / download it.
+     *
+     * Every employee-facing salary read must filter to
+     * `publishStatus: 'published'`.  HR/SA reads see both.
+     */
+    publishStatus: {
+      type: String,
+      enum: ['draft', 'published'],
+      default: 'draft',
+      index: true,
+    },
+    publishedAt: { type: Date },
+    publishedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );

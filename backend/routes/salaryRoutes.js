@@ -20,5 +20,7 @@ router.post('/:id/retract', gate, c.retract);
 // Phase 34 — bulk retraction + bulk per-employee regeneration.
 router.post('/retract-bulk', gate, c.bulkRetract);
 router.post('/generate-bulk-selected', gate, c.bulkGenerateForEmployees);
+// Phase 65 -- Salary Slip Publish workflow.
+router.post('/publish', gate, c.publishSlips);
 
 module.exports = router;

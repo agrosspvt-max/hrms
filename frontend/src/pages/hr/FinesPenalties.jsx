@@ -51,6 +51,8 @@ const CATEGORY_GROUP = {
   marks_adjustment:      'Marks Adjustments',
   manual_completion:     'Completion Adjustments',
   completion_adjustment: 'Completion Adjustments',
+  // Phase 65 -- Financial Penalty.
+  financial_penalty:     'Financial Penalties',
 };
 const GROUP_BADGE = {
   'Manual Penalties':       'bg-red-50 text-red-700',
@@ -58,6 +60,8 @@ const GROUP_BADGE = {
   'Performance Lock':       'bg-red-50 text-red-700',
   'Completion Adjustments': 'bg-purple-50 text-purple-700',
   'Marks Adjustments':      'bg-purple-50 text-purple-700',
+  // Phase 65 -- Financial Penalty colour swatch.
+  'Financial Penalties':    'bg-emerald-50 text-emerald-700',
 };
 
 const STATUS_BADGE = {
@@ -196,7 +200,9 @@ export default function FinesPenalties() {
                       <td className="font-mono">
                         {(p.category === 'manual_completion' || p.category === 'completion_adjustment')
                           ? `${p.completionPercent}%`
-                          : (Number(p.penaltyMarks) || 0)}
+                          : (p.category === 'financial_penalty'
+                              ? `₹${Number(p.amount) || 0}`
+                              : (Number(p.penaltyMarks) || 0))}
                       </td>
                       <td><span className={`badge ${STATUS_BADGE[p.status] || 'bg-slate-100 text-slate-700'}`}>{p.status}</span></td>
                       <td className="max-w-md text-xs text-slate-600">
@@ -224,6 +230,38 @@ export default function FinesPenalties() {
                           )}
                           {['active', 'pending', 'scheduled'].includes(p.status) && (
                             <button className="btn-ghost text-red-600" onClick={() => doCancel(p._id)}>Cancel</button>
+                          )}
+                          {/* Phase 65 -- Financial Penalty HR actions.
+                              Waive / Resolve fire the SEPARATE
+                              endpoints so financialStatus is set
+                              correctly (Cancel above sets penalty
+                              status='cancelled' but does not touch
+                              financialStatus).  Deduct-through-salary
+                              happens via the Salary generation flow. */}
+                          {p.category === 'financial_penalty' && p.financialStatus === 'pending' && (
+                            <div className="flex flex-col gap-0.5 mt-1">
+                              <button
+                                className="btn-ghost text-emerald-700 !py-0.5 !px-2 !text-[11px]"
+                                onClick={async () => {
+                                  const reason = window.prompt('Waive reason (audited)') || '';
+                                  try { await api.post(`/penalties/${p._id}/waive`, { reason }); load(); }
+                                  catch (e) { toast.error(errMsg(e)); }
+                                }}
+                              >Waive</button>
+                              <button
+                                className="btn-ghost text-slate-700 !py-0.5 !px-2 !text-[11px]"
+                                onClick={async () => {
+                                  const reason = window.prompt('Resolve reason (audited)') || '';
+                                  try { await api.post(`/penalties/${p._id}/resolve-fin`, { reason }); load(); }
+                                  catch (e) { toast.error(errMsg(e)); }
+                                }}
+                              >Resolve</button>
+                            </div>
+                          )}
+                          {p.category === 'financial_penalty' && p.financialStatus === 'deducted' && (
+                            <span className="badge bg-blue-50 text-blue-700 text-[10px]" title={`Deducted in ${p.deductedInSalaryMonth || ''}`}>
+                              Deducted{p.deductedInSalaryMonth ? ` · ${p.deductedInSalaryMonth}` : ''}
+                            </span>
                           )}
                         </td>
                       )}
@@ -320,6 +358,8 @@ function ManualPenaltyModal({ onClose, onCreated }) {
     // Phase 64 Part 5 -- Completion Adjustment uses a past-only date
     // range instead of an auto-expiry duration.
     evaluationStart: '', evaluationEnd: '',
+    // Phase 65 -- Financial Penalty fields.
+    amount: '', dueDate: '',
   });
   useEffect(() => {
     api.get('/employees', { params: { activeOnly: 'true' } })
@@ -338,6 +378,11 @@ function ManualPenaltyModal({ onClose, onCreated }) {
         return;
       }
     }
+    // Phase 65 -- Financial Penalty validation.
+    if (form.type === 'financial' && (!form.amount || Number(form.amount) <= 0)) {
+      toast.error('Enter an amount greater than 0.');
+      return;
+    }
     try {
       await api.post('/penalties/manual', {
         employee: form.employee,
@@ -350,8 +395,15 @@ function ManualPenaltyModal({ onClose, onCreated }) {
         // Phase 64 Part 5 -- past-only evaluation range.
         evaluationStart: form.evaluationStart || undefined,
         evaluationEnd:   form.evaluationEnd   || undefined,
+        // Phase 65 -- Financial Penalty payload.
+        amount:  form.type === 'financial' ? Number(form.amount) || 0 : undefined,
+        dueDate: form.type === 'financial' && form.dueDate ? form.dueDate : undefined,
       });
-      toast.success(form.type === 'completion' ? 'Completion adjustment created' : 'Marks adjustment created');
+      toast.success(
+        form.type === 'financial'  ? 'Financial penalty created'
+      : form.type === 'completion' ? 'Completion adjustment created'
+      :                              'Marks adjustment created'
+      );
       onCreated();
     } catch (e) { toast.error(errMsg(e)); }
   };
@@ -375,6 +427,8 @@ function ManualPenaltyModal({ onClose, onCreated }) {
           <select className="input" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
             <option value="marks">Marks Adjustment</option>
             <option value="completion">Completion Score Adjustment</option>
+            {/* Phase 65 -- new Financial Penalty option. */}
+            <option value="financial">Financial Penalty (₹)</option>
           </select>
         </div>
         {form.type === 'marks' ? (
@@ -387,6 +441,22 @@ function ManualPenaltyModal({ onClose, onCreated }) {
               <label className="label">Grace Period (hours)</label>
               <input type="number" min="0" className="input" value={form.graceHours} onChange={(e) => setForm({ ...form, graceHours: e.target.value })} placeholder="0 = immediate" />
               <div className="text-[11px] text-slate-500 mt-1">Employee has this long to fix the issue.  Cancel before expiry to prevent.</div>
+            </div>
+          </div>
+        ) : form.type === 'financial' ? (
+          // Phase 65 -- Financial Penalty form.  Never affects marks
+          // or completion %.  Optional due date is informational; the
+          // penalty stays pending until HR resolves / waives it OR
+          // includes it in a salary slip.
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="label">Amount (₹) <span className="text-red-500">*</span></label>
+              <input type="number" min="1" step="1" className="input" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="e.g. 500" />
+            </div>
+            <div>
+              <label className="label">Due Date (optional)</label>
+              <input type="date" className="input" value={form.dueDate} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} />
+              <div className="text-[11px] text-slate-500 mt-1">Shown to the employee.  Does not auto-deduct — HR includes it in a salary slip during payroll.</div>
             </div>
           </div>
         ) : (

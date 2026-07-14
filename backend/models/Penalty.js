@@ -91,6 +91,9 @@ const penaltySchema = new mongoose.Schema(
         'performance_lock',    // Part 3: overdue pending task lock.
         'completion_adjustment', // Part 5: rename of manual_completion.
         'marks_adjustment',    // Part 4: HR-classified manual marks tweak.
+        // Phase 65 -- HR-created ₹ fine.  Never affects marks or
+        // completion %; may be optionally deducted from salary.
+        'financial_penalty',
       ],
       required: true,
       index: true,
@@ -237,6 +240,39 @@ const penaltySchema = new mongoose.Schema(
       pendingSince: { type: Date, default: null },
       resolveBy:    { type: Date, default: null },
     },
+
+    /* -------- Phase 65 -- Financial Penalty -------- */
+    /**
+     * Amount in ₹.  Only meaningful when category === 'financial_penalty'.
+     * Never contributes to Final Marks; may be optionally deducted
+     * from a future salary slip (see salary integration).
+     */
+    amount:  { type: Number, default: 0, min: 0 },
+    /** Optional due date shown to the employee.  Informational; the
+     *  penalty stays 'active' until HR resolves / waives / deducts. */
+    dueDate: { type: Date,   default: null },
+    /** Financial-penalty lifecycle beyond the standard status field:
+     *   pending      -- created, HR hasn't acted (status='active').
+     *   deducted     -- HR included it in a salary slip (see below).
+     *   waived       -- HR explicitly wrote it off (no salary impact).
+     *   resolved     -- HR marked it resolved by other means.
+     *   paid         -- reserved for future direct-pay workflow.
+     * Stored as its own field so the standard Penalty `status` enum
+     * stays clean; a `deducted` financial penalty is Penalty.status
+     * === 'resolved' with financialStatus === 'deducted'.
+     */
+    financialStatus: {
+      type: String,
+      enum: ['pending', 'deducted', 'waived', 'resolved', 'paid', ''],
+      default: '',
+    },
+    /** Set when the penalty was included in a generated salary slip.
+     *  These fields make double-deduction impossible: the salary
+     *  generator filters on `financialStatus: 'pending'` only. */
+    deductedInSalaryMonth: { type: String, default: '' },      // 'YYYY-MM'
+    deductedBy:            { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    deductedAt:            { type: Date, default: null },
+    salarySlipId:          { type: mongoose.Schema.Types.ObjectId, ref: 'SalarySlip', default: null },
 
     /* -------- Phase 64 -- Completion Score Adjustment (Part 5) -------- */
     /**

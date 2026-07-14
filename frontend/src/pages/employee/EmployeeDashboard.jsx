@@ -141,11 +141,14 @@ function PenaltyWarnings({ penalties, onAcknowledged }) {
   // probable row keeps the existing acknowledge-to-dismiss behaviour.
   const activeLocks = (penalties.active || []).filter((p) => p.category === 'performance_lock' && p.status === 'active');
   const activeMissed = (penalties.active || []).filter((p) => p.category === 'missed_submission' || p.category === 'absent_submission');
+  // Phase 65 -- always-visible Financial Penalty cards (pending only).
+  const activeFinancial = (penalties.active || []).filter((p) =>
+    p.category === 'financial_penalty' && p.financialStatus === 'pending' && p.status === 'active');
   const unread = [
-    ...(penalties.active   || []).filter((p) => !p.acknowledgedAt && p.category !== 'performance_lock'),
+    ...(penalties.active   || []).filter((p) => !p.acknowledgedAt && p.category !== 'performance_lock' && p.category !== 'financial_penalty'),
     ...(penalties.probable || []).filter((p) => !p.acknowledgedAt),
   ];
-  if (unread.length === 0 && activeLocks.length === 0 && activeMissed.length === 0) return null;
+  if (unread.length === 0 && activeLocks.length === 0 && activeMissed.length === 0 && activeFinancial.length === 0) return null;
   const ack = async (id) => {
     try {
       await api.post(`/penalties/${id}/acknowledge`);
@@ -201,6 +204,21 @@ function PenaltyWarnings({ penalties, onAcknowledged }) {
           )}
           <div className="text-[11px] mt-2 opacity-80">
             Open Fines &amp; Penalties to request reopening.
+          </div>
+        </div>
+      ))}
+      {/* Phase 65 -- Financial Penalty cards.  Never affect marks;
+          shown alongside the other penalty warnings so the employee
+          sees the ₹ amount + reason + status at a glance. */}
+      {activeFinancial.map((p) => (
+        <div key={p._id} className="border rounded-lg p-3 bg-emerald-50 border-emerald-300 text-emerald-900">
+          <div className="text-[11px] uppercase tracking-wide font-semibold">Financial Penalty</div>
+          <div className="text-sm mt-0.5">
+            <b>₹{Number(p.amount) || 0}</b> — {p.employeeMessage || p.reason || 'A fine has been recorded on your account.'}
+          </div>
+          <div className="text-[11px] mt-1 opacity-80">
+            Status: {p.financialStatus || 'pending'}
+            {p.dueDate ? ` · Due by ${fmtDay(p.dueDate)}` : ''}
           </div>
         </div>
       ))}

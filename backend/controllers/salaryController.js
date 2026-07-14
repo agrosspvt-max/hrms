@@ -363,9 +363,9 @@ const generate = asyncHandler(async (req, res) => {
     },
   });
 
-  // Phase 45 -- meaningful event: notify the employee their slip is ready.
-  notify.notifySalarySlipGenerated({ employeeId, slip, generatedBy: req.user });
-
+  // Phase 65 -- notifications are deferred until HR publishes.  A slip
+  // starts life as `publishStatus: 'draft'`; the publish endpoint is
+  // where the employee is told.
   res.status(201).json(slip);
 });
 
@@ -388,10 +388,8 @@ const generateAll = asyncHandler(async (req, res) => {
     try {
       const { slip } = await computeSlip(emp._id, startDate, endDate, { generatedBy: req.user._id });
       slips.push(slip);
-      // Phase 45 -- one notification per generated slip.  Fire-and-forget;
-      // notifyEvents swallows its own errors so a notification failure
-      // never breaks the payroll batch.
-      notify.notifySalarySlipGenerated({ employeeId: emp._id, slip, generatedBy: req.user });
+      // Phase 65 -- notification is deferred to publish time; a
+      // generate-all now produces silent draft slips only.
     } catch (err) {
       console.error('[salary] failed for', emp.employeeId, err.message);
     }
@@ -421,9 +419,13 @@ const mySlips = asyncHandler(async (req, res) => {
   // employee.  HR / Super Admin retain access via /api/salary with
   // ?includeRetracted=true for audit; the employee's own list now
   // behaves exactly as if the slip was never generated.
+  //
+  // Phase 65 -- ONLY published slips are visible to the employee.
+  // Draft slips are invisible until HR publishes them.
   const items = await SalarySlip.find({
     employee: req.user._id,
     status: { $ne: 'retracted' },
+    publishStatus: 'published',
   }).sort({ month: -1 });
   res.json(items);
 });
@@ -473,6 +475,11 @@ const downloadPdf = asyncHandler(async (req, res) => {
   // employee side, including the PDF endpoint.  HR / Super Admin keep
   // PDF access for audit (e.g. proving what was retracted and when).
   if (slip.status === 'retracted' && !isAdmin) {
+    res.status(404); throw new Error('Slip not found');
+  }
+  // Phase 65 -- draft slips must be unreachable from the employee
+  // side too.  HR / Super Admin can still preview drafts.
+  if (slip.publishStatus === 'draft' && !isAdmin) {
     res.status(404); throw new Error('Slip not found');
   }
 
@@ -753,8 +760,8 @@ const bulkGenerateForEmployees = asyncHandler(async (req, res) => {
       const { slip } = await computeSlip(empId, startDate, endDate, { generatedBy: req.user._id });
       if (priorRetracted) regeneratedCount += 1;
       succeeded.push(slip);
-      // Phase 45 -- notify each employee whose slip was generated.
-      notify.notifySalarySlipGenerated({ employeeId: empId, slip, generatedBy: req.user });
+      // Phase 65 -- notification deferred to publish; slip starts
+      // as a silent draft.
     } catch (err) {
       failed.push({ employeeId: empId, error: err.message });
     }
@@ -774,7 +781,62 @@ const bulkGenerateForEmployees = asyncHandler(async (req, res) => {
   res.json({ count: succeeded.length, slips: succeeded, regeneratedCount, failed });
 });
 
+/**
+ * Phase 65 -- Publish Draft salary slips.
+ *
+ *   POST /api/salary/publish
+ *   Body: { slipIds: [ObjectId] }
+ *
+ * Flips every listed slip's publishStatus from 'draft' to 'published',
+ * stamps publishedBy + publishedAt, and audits the batch.  Already-
+ * published slips are skipped.  Retracted slips are skipped.
+ * Employees can only see + download slips that survive this flip.
+ */
+const publishSlips = asyncHandler(async (req, res) => {
+  if (!(req.user.role === 'hr' || req.user.role === 'super_admin')) {
+    res.status(403); throw new Error('HR / Super Admin only');
+  }
+  const ids = Array.isArray(req.body.slipIds) ? req.body.slipIds : [];
+  if (ids.length === 0) { res.status(400); throw new Error('slipIds required'); }
+  const slips = await SalarySlip.find({
+    _id: { $in: ids },
+    status: { $ne: 'retracted' },
+    publishStatus: 'draft',
+  });
+  const now = new Date();
+  const published = [];
+  for (const s of slips) {
+    s.publishStatus = 'published';
+    s.publishedAt   = now;
+    s.publishedBy   = req.user._id;
+    await s.save();
+    published.push(s);
+    // Fire the same salary-slip-generated notification pipeline so
+    // the employee's dashboard + notifications refresh.  This helper
+    // has always been the point where employees find out about a
+    // slip; before Phase 65 it was called at generate time.
+    try {
+      const notify = require('../services/notifyEvents');
+      notify.notifySalarySlipGenerated({ employeeId: s.employee, slip: s, generatedBy: req.user });
+    } catch (_) { /* silent */ }
+  }
+  logAudit(req, {
+    action: 'salary.publish',
+    targetType: 'SalarySlip',
+    targetId: published[0]?._id,
+    targetLabel: `${published.length} slip(s) published`,
+    meta: {
+      count: published.length,
+      slipIds: published.map((s) => String(s._id)),
+      periodKeys: [...new Set(published.map((s) => s.periodKey || s.month))],
+    },
+  });
+  res.json({ count: published.length, slips: published });
+});
+
 module.exports = {
   generate, generateAll, mySlips, listSlips, downloadPdf, updateSlip, exportCsv,
   retract, bulkRetract, bulkGenerateForEmployees,
+  // Phase 65 -- Salary Slip Publish workflow.
+  publishSlips,
 };

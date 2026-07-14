@@ -152,6 +152,8 @@ const createManual = asyncHandler(async (req, res) => {
     graceHours,
     // Phase 64 Part 5 -- completion adjustment date range (past-only).
     evaluationStart, evaluationEnd,
+    // Phase 65 -- Financial Penalty payload.
+    amount, dueDate,
     employeeMessage,
   } = req.body;
 
@@ -159,8 +161,8 @@ const createManual = asyncHandler(async (req, res) => {
   const target = await User.findById(employee).select('_id name').lean();
   if (!target) { res.status(404); throw new Error('Employee not found'); }
 
-  if (!['marks', 'completion'].includes(type)) {
-    res.status(400); throw new Error(`type must be 'marks' or 'completion'`);
+  if (!['marks', 'completion', 'financial'].includes(type)) {
+    res.status(400); throw new Error(`type must be 'marks', 'completion' or 'financial'`);
   }
 
   const now = new Date();
@@ -168,9 +170,14 @@ const createManual = asyncHandler(async (req, res) => {
   // `marks_adjustment` (Adjustments group in the F&P module).  The old
   // `manual_marks` category is kept in the enum for legacy rows.
   // Phase 64 Part 5 -- completion is now `completion_adjustment`.
+  // Phase 65    -- new `financial_penalty` category (₹ fines).
+  const category =
+    type === 'marks'      ? 'marks_adjustment' :
+    type === 'completion' ? 'completion_adjustment' :
+                            'financial_penalty';
   const doc = {
     employee: target._id,
-    category: type === 'marks' ? 'marks_adjustment' : 'completion_adjustment',
+    category,
     source: 'manual',
     probable: false,
     penaltyMarks: type === 'marks' ? Math.max(0, Number(marks) || 0) : 0,
@@ -179,7 +186,9 @@ const createManual = asyncHandler(async (req, res) => {
     // a signed integer/decimal and skip the 0..100 clamp of the old
     // manual_completion path.
     completionPercent: type === 'completion' ? Number(completionPercent) || 0 : 0,
-    rule: type === 'marks' ? 'marks_adjustment_v1' : 'completion_adjustment_v1',
+    rule: type === 'marks' ? 'marks_adjustment_v1'
+        : type === 'completion' ? 'completion_adjustment_v1'
+        : 'financial_penalty_v1',
     reason: String(reason || '').trim(),
     employeeMessage: String(employeeMessage || '').trim(),
     createdBy: req.user._id,
@@ -187,6 +196,17 @@ const createManual = asyncHandler(async (req, res) => {
     targetDate: startOfDay(now),
     status: 'active',
   };
+
+  // Phase 65 -- Financial Penalty.  Amount is mandatory; due date is
+  // optional and informational.  Financial penalties never affect
+  // marks or completion %; salary integration is a SEPARATE step.
+  if (type === 'financial') {
+    const amt = Math.max(0, Number(amount) || 0);
+    if (amt <= 0) { res.status(400); throw new Error('amount must be > 0 for a Financial Penalty.'); }
+    doc.amount = amt;
+    doc.financialStatus = 'pending';
+    if (dueDate) doc.dueDate = startOfDay(new Date(dueDate));
+  }
 
   // Grace period only applies to marks_adjustment.  A pending grace
   // period parks the penalty as 'scheduled'; the state-transition
@@ -703,6 +723,184 @@ const restoreRange = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Phase 65 -- Financial Penalty operations.
+ *
+ * Financial penalties are HR-created ₹ fines.  They have their own
+ * lifecycle field (`financialStatus`) so the standard Penalty
+ * `status` enum stays clean.  This file exposes three HR actions
+ * (waive / resolve / mark-deducted) plus a listing endpoint used by
+ * the Salary generation flow to recommend inclusions.
+ *
+ *   POST /api/penalties/:id/waive      -- financialStatus = 'waived',
+ *                                         Penalty.status = 'resolved'.
+ *   POST /api/penalties/:id/resolve-fin -- financialStatus = 'resolved',
+ *                                         Penalty.status = 'resolved'.
+ *   GET  /api/penalties/financial/pending?employee=&asOf=
+ *                                       -- rows still owed; used by
+ *                                          the Salary generation UI.
+ *   POST /api/penalties/financial/mark-deducted
+ *        Body: { penaltyIds: [], salarySlipId, salaryMonth }
+ *                                       -- HR confirms a slip
+ *                                          includes these penalties.
+ */
+const _isFinancial = (p) => p && p.category === 'financial_penalty';
+
+const waiveFinancial = asyncHandler(async (req, res) => {
+  if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only'); }
+  const p = await Penalty.findById(req.params.id);
+  if (!p)                 { res.status(404); throw new Error('Penalty not found'); }
+  if (!_isFinancial(p))   { res.status(400); throw new Error('Not a Financial Penalty.'); }
+  if (p.financialStatus === 'deducted') {
+    res.status(400); throw new Error('Already deducted -- cannot waive.');
+  }
+  p.financialStatus = 'waived';
+  p.status = 'resolved';
+  p.resolvedAt = new Date();
+  p.resolvedBy = req.user._id;
+  p.restorationReason = String(req.body.reason || '').trim();
+  await p.save();
+  logAudit(req, {
+    action: 'financial_penalty.waive',
+    targetType: 'Penalty',
+    targetId: p._id,
+    targetLabel: `₹${p.amount || 0}`,
+    meta: { amount: p.amount, reason: p.restorationReason },
+  });
+  try {
+    notify.notifyPenalty({
+      employeeId: p.employee,
+      penalty: { ...p.toObject(), employeeMessage: `Financial penalty waived: ${p.restorationReason || p.reason || ''}`.trim() },
+      mode: 'probable',
+    });
+  } catch (_) { /* silent */ }
+  try { rt.publish(p.employee, 'penalty:changed', { penaltyId: p._id, financialStatus: 'waived' }); } catch (_) {}
+  _publishToHR('penalty:changed', { event: 'financial_waived', penaltyId: p._id });
+  res.json(p);
+});
+
+const resolveFinancial = asyncHandler(async (req, res) => {
+  if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only'); }
+  const p = await Penalty.findById(req.params.id);
+  if (!p)                 { res.status(404); throw new Error('Penalty not found'); }
+  if (!_isFinancial(p))   { res.status(400); throw new Error('Not a Financial Penalty.'); }
+  if (p.financialStatus === 'deducted') {
+    res.status(400); throw new Error('Already deducted -- resolve/waive not applicable.');
+  }
+  p.financialStatus = 'resolved';
+  p.status = 'resolved';
+  p.resolvedAt = new Date();
+  p.resolvedBy = req.user._id;
+  p.restorationReason = String(req.body.reason || '').trim();
+  await p.save();
+  logAudit(req, {
+    action: 'financial_penalty.resolve',
+    targetType: 'Penalty',
+    targetId: p._id,
+    targetLabel: `₹${p.amount || 0}`,
+    meta: { amount: p.amount, reason: p.restorationReason },
+  });
+  try {
+    notify.notifyPenalty({
+      employeeId: p.employee,
+      penalty: { ...p.toObject(), employeeMessage: `Financial penalty resolved: ${p.restorationReason || p.reason || ''}`.trim() },
+      mode: 'probable',
+    });
+  } catch (_) { /* silent */ }
+  try { rt.publish(p.employee, 'penalty:changed', { penaltyId: p._id, financialStatus: 'resolved' }); } catch (_) {}
+  _publishToHR('penalty:changed', { event: 'financial_resolved', penaltyId: p._id });
+  res.json(p);
+});
+
+/**
+ * GET /api/penalties/financial/pending?employee=&asOf=YYYY-MM-DD
+ *
+ * Returns every financial_penalty that is still owed:
+ *   - financialStatus === 'pending'
+ *   - status === 'active' (i.e. not already resolved / waived)
+ *   - effectiveDate <= asOf  (defaults to today)
+ *
+ * Used by the Salary generation flow to recommend which fines the
+ * HR user should include in the current month's slips.
+ */
+const listPendingFinancial = asyncHandler(async (req, res) => {
+  const asOf = req.query.asOf ? startOfDay(new Date(req.query.asOf)) : new Date();
+  const where = {
+    category: 'financial_penalty',
+    financialStatus: 'pending',
+    status: 'active',
+    effectiveDate: { $lte: asOf },
+  };
+  if (req.query.employee) where.employee = req.query.employee;
+  else if (!_isAdmin(req.user) && !_isHOD(req.user)) where.employee = req.user._id;
+  const rows = await Penalty.find(where)
+    .populate('employee', 'name employeeId department')
+    .sort({ effectiveDate: 1 })
+    .lean();
+  res.json(rows);
+});
+
+/**
+ * POST /api/penalties/financial/mark-deducted
+ * Body: { penaltyIds: [], salarySlipId, salaryMonth }
+ *
+ * HR calls this after including one or more financial penalties in a
+ * slip.  We atomically flip financialStatus to 'deducted' and stamp
+ * the deduction metadata so the penalty can NEVER be deducted twice
+ * (the pending-listing query filters on financialStatus:'pending').
+ */
+const markFinancialDeducted = asyncHandler(async (req, res) => {
+  if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only'); }
+  const ids = Array.isArray(req.body.penaltyIds) ? req.body.penaltyIds : [];
+  if (ids.length === 0) { res.status(400); throw new Error('penaltyIds required'); }
+  const salarySlipId = req.body.salarySlipId || null;
+  const salaryMonth  = String(req.body.salaryMonth || '').trim();
+  if (!salarySlipId || !salaryMonth) {
+    res.status(400); throw new Error('salarySlipId and salaryMonth (YYYY-MM) are required.');
+  }
+  const now = new Date();
+  const result = await Penalty.updateMany(
+    {
+      _id: { $in: ids },
+      category: 'financial_penalty',
+      financialStatus: 'pending',
+      status: 'active',
+    },
+    {
+      $set: {
+        financialStatus: 'deducted',
+        deductedInSalaryMonth: salaryMonth,
+        deductedBy: req.user._id,
+        deductedAt: now,
+        salarySlipId,
+        status: 'resolved',
+        resolvedAt: now,
+      },
+    },
+  );
+  logAudit(req, {
+    action: 'financial_penalty.deducted',
+    targetType: 'SalarySlip',
+    targetId: salarySlipId,
+    targetLabel: `${result.modifiedCount || 0} penalty(ies) · ${salaryMonth}`,
+    meta: { penaltyIds: ids, salarySlipId, salaryMonth, modified: result.modifiedCount },
+  });
+  // Notify each impacted employee.
+  try {
+    const rows = await Penalty.find({ _id: { $in: ids } }).select('employee amount').lean();
+    for (const r of rows) {
+      notify.notifyPenalty({
+        employeeId: r.employee,
+        penalty: { ...r, employeeMessage: `Financial penalty of ₹${r.amount || 0} deducted from your ${salaryMonth} salary.` },
+        mode: 'active',
+      });
+      try { rt.publish(r.employee, 'penalty:changed', { penaltyId: r._id, financialStatus: 'deducted' }); } catch (_) {}
+    }
+    _publishToHR('penalty:changed', { event: 'financial_deducted', slipId: salarySlipId });
+  } catch (_) { /* silent */ }
+  res.json({ modified: result.modifiedCount || 0 });
+});
+
+/**
  * GET /api/penalties/analytics/summary
  * Aggregations for Performance Analytics.
  */
@@ -718,6 +916,7 @@ const analyticsSummary = asyncHandler(async (req, res) => {
   let totalPenaltyMarks = 0;
   let totalCount = 0;
   // Phase 64.1 Item 9 -- KPI aggregates for the Performance dashboard.
+  // Phase 65 adds financial-penalty aggregates alongside them.
   const kpi = {
     totalMarksLost: 0,
     employeesCurrentlyLocked: 0,
@@ -726,7 +925,15 @@ const analyticsSummary = asyncHandler(async (req, res) => {
     completionAdjustmentsApplied: 0,
     manualMarksAdjustments: 0,
     averageMarksLostPerEmployee: 0,
+    // Phase 65 -- financial-penalty aggregates.
+    financialPending:  0,   // ₹ still owed
+    financialDeducted: 0,   // ₹ deducted through salary
+    financialWaived:   0,   // ₹ waived by HR
+    financialThisMonth: 0,  // # of rows created this month
+    employeesWithPendingFinancial: 0,
   };
+  const _fpEmpsPending = new Set();
+  const _thisMonthKey = new Date().toISOString().slice(0, 7); // YYYY-MM
   const lockedEmps = new Set();
   for (const p of rows) {
     if (p.status !== 'active' && p.status !== 'resolved' && p.status !== 'expired') continue;
@@ -749,7 +956,19 @@ const analyticsSummary = asyncHandler(async (req, res) => {
     if (p.category === 'performance_lock' && p.status === 'active') kpi.overduePendingTasks += 1;
     if (p.category === 'completion_adjustment' || p.category === 'manual_completion') kpi.completionAdjustmentsApplied += 1;
     if (p.category === 'marks_adjustment' || p.category === 'manual_marks') kpi.manualMarksAdjustments += 1;
+    // Phase 65 -- financial-penalty rollups.
+    if (p.category === 'financial_penalty') {
+      const amt = Number(p.amount) || 0;
+      if (p.financialStatus === 'pending')  { kpi.financialPending  += amt; _fpEmpsPending.add(ek); }
+      if (p.financialStatus === 'deducted')   kpi.financialDeducted += amt;
+      if (p.financialStatus === 'waived')     kpi.financialWaived   += amt;
+      const created = p.createdAt || p.effectiveDate;
+      if (created && new Date(created).toISOString().slice(0, 7) === _thisMonthKey) {
+        kpi.financialThisMonth += 1;
+      }
+    }
   }
+  kpi.employeesWithPendingFinancial = _fpEmpsPending.size;
   kpi.employeesCurrentlyLocked = lockedEmps.size;
   const empCount = Object.keys(byEmp).length;
   kpi.averageMarksLostPerEmployee = empCount > 0
@@ -777,4 +996,9 @@ module.exports = {
   overridePendingDeadline,
   // Phase 64.4 Gap 3 -- bulk restore across a date range.
   restoreRange,
+  // Phase 65 -- Financial Penalty lifecycle operations.
+  waiveFinancial,
+  resolveFinancial,
+  listPendingFinancial,
+  markFinancialDeducted,
 };

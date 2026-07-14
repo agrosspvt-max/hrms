@@ -37,4 +37,10 @@ router.patch('/pending-task/deadline', c.overridePendingDeadline);
 // Phase 64.4 Gap 3 -- Bulk Performance Restore across a date range.
 router.post('/restore-range', c.restoreRange);
 
+// Phase 65 -- Financial Penalty operations.
+router.get('/financial/pending',        c.listPendingFinancial);
+router.post('/financial/mark-deducted', c.markFinancialDeducted);
+router.post('/:id/waive',               c.waiveFinancial);
+router.post('/:id/resolve-fin',         c.resolveFinancial);
+
 module.exports = router;

@@ -152,6 +152,27 @@ export default function HRSalary() {
     } catch (err) { toast.error(errMsg(err)); }
   };
 
+  // Phase 65 -- Publish selected draft salary slips.  Employees only
+  // see published slips; drafts stay hidden until this fires.
+  const bulkPublish = async () => {
+    if (selected.size === 0) return;
+    const draftIds = slips
+      .filter((s) => selected.has(s._id) && s.publishStatus !== 'published')
+      .map((s) => s._id);
+    if (draftIds.length === 0) {
+      toast.error('Selected slip(s) are already published.');
+      return;
+    }
+    const ok = window.confirm(`Publish ${draftIds.length} salary slip(s)?  Employees will be able to see and download them immediately.`);
+    if (!ok) return;
+    try {
+      const { data } = await api.post('/salary/publish', { slipIds: draftIds });
+      toast.success(`Published ${data.count} slip(s)`);
+      clearSelection();
+      load();
+    } catch (err) { toast.error(errMsg(err)); }
+  };
+
   const bulkGenerate = async () => {
     if (selected.size === 0) return;
     // Selected rows carry the employee id; the period mirrors the
@@ -244,6 +265,8 @@ export default function HRSalary() {
             <button className="btn-secondary !py-1 !text-xs" onClick={clearSelection}>Clear</button>
             <a className="btn-secondary !py-1 !text-xs" href={bulkExportHref() || '#'} onClick={(e) => { if (!bulkExportHref()) e.preventDefault(); }}>Export Selected</a>
             <button className="btn-primary !py-1 !text-xs" onClick={bulkGenerate}>Generate Selected</button>
+            {/* Phase 65 -- Publish selected draft slips to employees. */}
+            <button className="btn-primary !py-1 !text-xs" onClick={bulkPublish} title="Only draft slips are affected; already-published slips are skipped">Publish Selected</button>
             <button className="btn-secondary !py-1 !text-xs text-red-600" onClick={bulkRetract}>Retract Selected</button>
           </div>
         </div>
@@ -499,6 +522,17 @@ function StatusBadge({ slip }) {
   }
   if (status === 'paid') {
     return <span className="badge bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-500/20 dark:text-blue-300">Paid</span>;
+  }
+  // Phase 65 -- surface the publish workflow state alongside the
+  // existing generated/retracted/paid indicator.  Draft = only HR
+  // can see it; Published = employees can see + download.
+  if (slip?.publishStatus === 'draft') {
+    return <span className="badge bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-500/20 dark:text-amber-300" title="Draft — not yet visible to the employee">Draft</span>;
+  }
+  if (slip?.publishStatus === 'published') {
+    const when = slip.publishedAt ? new Date(slip.publishedAt).toLocaleString() : '';
+    const who  = slip.publishedBy?.name || '';
+    return <span className="badge bg-green-50 text-green-700 border border-green-200 dark:bg-green-500/20 dark:text-green-300" title={`Published${who ? ' by ' + who : ''}${when ? ' on ' + when : ''}`}>Published</span>;
   }
   return <span className="badge bg-green-50 text-green-700 border border-green-200 dark:bg-green-500/20 dark:text-green-300">Generated</span>;
 }
