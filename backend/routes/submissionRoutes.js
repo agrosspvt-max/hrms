@@ -26,7 +26,7 @@ router.post('/backlog/complete', c.completeBacklogTask);
 // HR review panel
 router.get('/reviews', reviewGate, c.listForReview);
 router.post('/:id/review', reviewGate, c.reviewSubmission);
-// Bulk discipline + innovation marks (HR / SA only).  Always declared
+// Bulk innovation marks (HR / SA only).  Always declared
 // BEFORE any param-suffixed POST so '/review/bulk' is matched verbatim.
 router.post('/review/bulk', reviewGate, c.bulkReview);
 

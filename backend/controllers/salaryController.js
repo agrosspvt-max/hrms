@@ -64,8 +64,8 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
     const { attachFinalMarks } = require('../services/penaltyMath');
     await attachFinalMarks(submissions);
   } catch (e) { console.error('[salary] attachFinalMarks:', e.message); }
-  // Phase 6: work scoring sums from submissions; day-level discipline
-  // + innovation come from DailyReview, ONCE per (employee, date).
+  // Phase 6: work scoring sums from submissions; day-level innovation
+  // (idea) marks come from DailyReview, ONCE per (employee, date).
   let earned = submissions.reduce((s, x) => s
     + ((typeof x.finalMarks === 'number') ? x.finalMarks : (Number(x.earnedPoints) || 0)), 0);
   let total  = submissions.reduce((s, x) => s + (Number(x.totalPoints)  || 0), 0);
@@ -74,10 +74,10 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
     employee: employee._id,
     date: { $gte: from, $lt: to },
     reviewStatus: 'reviewed',
-  }).select('disciplineMarks maxDisciplineMarks ideaMarks maxIdeaMarks').lean();
+  }).select('ideaMarks maxIdeaMarks').lean();
   for (const r of dailyReviews) {
-    earned += (Number(r.disciplineMarks)    || 0) + (Number(r.ideaMarks)    || 0);
-    total  += (Number(r.maxDisciplineMarks) || 0) + (Number(r.maxIdeaMarks) || 0);
+    earned += (Number(r.ideaMarks)    || 0);
+    total  += (Number(r.maxIdeaMarks) || 0);
   }
   const completionPercentage = total > 0 ? (earned / total) * 100 : 0;
 

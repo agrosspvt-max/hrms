@@ -481,7 +481,7 @@ const submitOne = asyncHandler(async (req, res) => {
        Reads the employee-entered values, validates required fields,
        resolves all `auto` formulas server-side, and persists the full
        responses array.  Scoring follows the existing pattern: workEarned
-       starts at 0 (HR awards discipline + idea marks during review).
+       starts at 0 (HR awards innovation marks during review).
        The `yesterdayPending` field is system-generated -- always
        preserved from what the daily engine seeded, never overwritten by
        the client. */
@@ -633,7 +633,7 @@ const submitOne = asyncHandler(async (req, res) => {
        the next employee can pick it from the catalog dropdown.
 
        Extra tasks live in their own array so predefined-task
-       analytics, scoring, and discipline flows are untouched. */
+       analytics, scoring, and innovation flows are untouched. */
     const _slug = (s) => String(s || '').toLowerCase()
       .replace(/[^a-z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '')
@@ -872,7 +872,7 @@ const submitOne = asyncHandler(async (req, res) => {
       sub.markModified('farmerRecords');
     }
 
-    total = 0; // custom templates earn marks via HR review (discipline + idea)
+    total = 0; // custom templates earn marks via HR review (innovation only)
     earned = 0;
   } else {
     const updateMap = new Map(tasks.map((t) => [String(t.taskId), t]));
@@ -980,7 +980,7 @@ const submitOne = asyncHandler(async (req, res) => {
   }
 
   // Snapshot the pure work scoring (immutable). Final earned/total may
-  // grow when HR adds discipline + innovation marks during review.
+  // grow when HR adds innovation marks during review.
   sub.workEarnedPoints = earned;
   sub.workTotalPoints = total;
   sub.earnedPoints = earned;
@@ -1281,13 +1281,12 @@ const listForReview = asyncHandler(async (req, res) => {
 
 /**
  * POST /api/submissions/:id/review
- * Body: { disciplineMarks, maxDisciplineMarks?, disciplineNote?,
- *         ideaMarks,       maxIdeaMarks?,       ideaFeedback? }
+ * Body: { ideaMarks, maxIdeaMarks?, ideaFeedback? }
  *
- * Stores HR's discipline + innovation marks and recomputes the final
+ * Stores HR's innovation (idea) marks and recomputes the final
  * earned/total/percentage as:
- *   earned = workEarned + disciplineMarks + ideaMarks
- *   total  = workTotal  + maxDisciplineMarks + maxIdeaMarks
+ *   earned = workEarned + ideaMarks
+ *   total  = workTotal  + maxIdeaMarks
  *
  * Re-running the endpoint for the same submission updates the review
  * in-place (HR can correct mistakes).
@@ -1312,14 +1311,11 @@ const reviewSubmission = asyncHandler(async (req, res) => {
     }
   }
 
-  // Phase 6: discipline + innovation marks live on DailyReview only.
-  // Any body fields named disciplineMarks / ideaMarks / disciplineNote
-  // / ideaFeedback are ignored here; HR sets them via POST
-  // /api/daily-review/finalize.  Per-sub review only handles work
-  // scoring (excel per-field, task per-row, sheet per-cell).
-  sub.disciplineMarks = 0;
-  sub.maxDisciplineMarks = 0;
-  sub.disciplineNote = '';
+  // Phase 6: innovation (idea) marks live on DailyReview only.
+  // Any body fields named ideaMarks / ideaFeedback are ignored here;
+  // HR sets them via POST /api/daily-review/finalize.  Per-sub review
+  // only handles work scoring (excel per-field, task per-row, sheet
+  // per-cell).
   sub.ideaMarks = 0;
   sub.maxIdeaMarks = 0;
   sub.ideaFeedback = '';
@@ -1403,7 +1399,7 @@ const reviewSubmission = asyncHandler(async (req, res) => {
   sub.reviewStatus = 'reviewed';
   sub.currentReviewStage = 'finalized';
 
-  // Phase 6: cached scores are WORK-ONLY now.  Discipline + idea live
+  // Phase 6: cached scores are WORK-ONLY now.  Innovation (idea) lives
   // on DailyReview; analytics + salary + dashboards join that
   // collection to surface the true day-level total.
   sub.earnedPoints = Number(sub.workEarnedPoints) || 0;
@@ -1501,7 +1497,7 @@ const listForHodReview = asyncHandler(async (req, res) => {
  * RECOMMENDATION only - they prefill HR's screen and do NOT commit final
  * earned/total (HR remains the final authority).
  *
- * Body: { remarks?, recommend?, disciplineMarks?, ideaMarks?,
+ * Body: { remarks?, recommend?, ideaMarks?,
  *         excelResponses?: [{fieldName, marksAwarded}],
  *         scores?: [{key, marksAwarded, remark}] }
  */
@@ -1550,7 +1546,7 @@ const hodReviewSubmission = asyncHandler(async (req, res) => {
         }
       });
     }
-    // NOTE: discipline & innovation marks are HR/Super-Admin ONLY and are
+    // NOTE: innovation marks are HR/Super-Admin ONLY and are
     // deliberately NOT accepted from a HOD here, even with canMarks.  A HOD
     // may only score task completion / report values.
   }
@@ -1585,17 +1581,15 @@ const hodReviewSubmission = asyncHandler(async (req, res) => {
 /**
  * POST /api/submissions/review/bulk     (HR / Super Admin)
  *
- * Apply discipline + innovation marks to many already-submitted
- * submissions in one call.  Only those two mark fields are touched --
- * task / excel / sheet / per-row marks are NEVER modified.  Each
- * submission still goes through the same role guard the single-row
- * reviewSubmission uses (HR can't review HR / SA, can't review own).
+ * Apply innovation (idea) marks to many already-submitted submissions
+ * in one call.  Only the idea mark fields are touched -- task / excel
+ * / sheet / per-row marks are NEVER modified.  Each submission still
+ * goes through the same role guard the single-row reviewSubmission
+ * uses (HR can't review HR / SA, can't review own).
  *
  * Body: {
  *   ids: [String],
- *   disciplineMarks?, maxDisciplineMarks?,
- *   ideaMarks?, maxIdeaMarks?,
- *   disciplineNote?, ideaFeedback?
+ *   ideaMarks?, maxIdeaMarks?, ideaFeedback?
  * }
  *
  * Returns: { requested, succeeded: [{ id, name }], failed: [{ id, reason }] }
@@ -1607,16 +1601,13 @@ const bulkReview = asyncHandler(async (req, res) => {
     throw new Error('No submissions selected');
   }
   // Inputs are optional; if omitted, the existing value on the doc is kept.
-  const d  = req.body.disciplineMarks;
-  const md = req.body.maxDisciplineMarks;
   const i  = req.body.ideaMarks;
   const mi = req.body.maxIdeaMarks;
-  const dNote = req.body.disciplineNote;
-  const iFb   = req.body.ideaFeedback;
+  const iFb = req.body.ideaFeedback;
 
-  if ([d, md, i, mi].every((x) => x === undefined || x === null || x === '')) {
+  if ([i, mi].every((x) => x === undefined || x === null || x === '')) {
     res.status(400);
-    throw new Error('Provide at least one of discipline / innovation marks.');
+    throw new Error('Provide at least one of the innovation mark fields.');
   }
 
   const succeeded = [];
@@ -1633,22 +1624,17 @@ const bulkReview = asyncHandler(async (req, res) => {
         if (owner?.role === 'hr' || owner?.role === 'super_admin') { failed.push({ id, reason: 'HR / SA submissions require Super Admin' }); continue; }
       }
 
-      // Apply (only fields provided are updated; max-* set when paired).
-      const maxD = md !== undefined && md !== '' ? Math.max(0, Number(md)) : sub.maxDisciplineMarks;
+      // Apply (only fields provided are updated).
       const maxI = mi !== undefined && mi !== '' ? Math.max(0, Number(mi)) : sub.maxIdeaMarks;
-      const dM   = d !== undefined && d !== ''   ? Math.max(0, Math.min(Number(d) || 0, maxD)) : sub.disciplineMarks;
       const iM   = i !== undefined && i !== ''   ? Math.max(0, Math.min(Number(i) || 0, maxI)) : sub.ideaMarks;
 
-      sub.maxDisciplineMarks = maxD;
-      sub.disciplineMarks    = dM;
-      if (dNote !== undefined) sub.disciplineNote = String(dNote);
       sub.maxIdeaMarks = maxI;
       sub.ideaMarks    = iM;
       if (iFb !== undefined) sub.ideaFeedback = String(iFb);
 
       // Recompute final scores from the cached work points.
-      sub.earnedPoints = (Number(sub.workEarnedPoints) || 0) + Number(dM) + Number(iM);
-      sub.totalPoints  = (Number(sub.workTotalPoints)  || 0) + Number(maxD) + Number(maxI);
+      sub.earnedPoints = (Number(sub.workEarnedPoints) || 0) + Number(iM);
+      sub.totalPoints  = (Number(sub.workTotalPoints)  || 0) + Number(maxI);
       sub.completionPercentage = sub.totalPoints > 0 ? (sub.earnedPoints / sub.totalPoints) * 100 : 0;
 
       sub.reviewedBy = req.user._id;
@@ -1662,7 +1648,7 @@ const bulkReview = asyncHandler(async (req, res) => {
         stage: 'finalized',
         action: 'bulk_review',
         marks: sub.earnedPoints,
-        remarks: dNote || '',
+        remarks: iFb || '',
         timestamp: new Date(),
       });
       await sub.save();
@@ -1673,8 +1659,8 @@ const bulkReview = asyncHandler(async (req, res) => {
         action: 'submission.review.bulk',
         targetType: 'Submission',
         targetId: sub._id,
-        targetLabel: `bulk discipline=${dM}/${maxD} idea=${iM}/${maxI}`,
-        meta: { disciplineMarks: dM, maxDisciplineMarks: maxD, ideaMarks: iM, maxIdeaMarks: maxI },
+        targetLabel: `bulk idea=${iM}/${maxI}`,
+        meta: { ideaMarks: iM, maxIdeaMarks: maxI },
       });
 
       const e = await User.findById(sub.employee).select('name');

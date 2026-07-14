@@ -285,7 +285,7 @@ const employeeSummary = asyncHandler(async (req, res) => {
     submitted: true,
     ...liveSubmissionFilter({}),
   });
-  // Work-only sum from submissions; daily discipline + idea come from
+  // Work-only sum from submissions; daily idea marks come from
   // DailyReview (Phase 6: single source of truth for day-level marks).
   let earned = subs.reduce((s, x) => s + (Number(x.earnedPoints) || 0), 0);
   let total  = subs.reduce((s, x) => s + (Number(x.totalPoints)  || 0), 0);
@@ -294,10 +294,10 @@ const employeeSummary = asyncHandler(async (req, res) => {
     employee: req.user._id,
     date: { $gte: last30From, $lte: today },
     reviewStatus: 'reviewed',
-  }).select('disciplineMarks maxDisciplineMarks ideaMarks maxIdeaMarks').lean();
+  }).select('ideaMarks maxIdeaMarks').lean();
   for (const r of dailyReviews) {
-    earned += (Number(r.disciplineMarks) || 0) + (Number(r.ideaMarks)    || 0);
-    total  += (Number(r.maxDisciplineMarks) || 0) + (Number(r.maxIdeaMarks) || 0);
+    earned += (Number(r.ideaMarks)    || 0);
+    total  += (Number(r.maxIdeaMarks) || 0);
   }
   const backlog = await getBacklog(req.user._id);
   const pendingLeaves = await Leave.countDocuments({ employee: req.user._id, status: 'pending' });

@@ -571,9 +571,9 @@ const generate = asyncHandler(async (req, res) => {
    * EMPLOYEE PERFORMANCE
    *
    * Built from work-only earnedPoints / totalPoints (Phase 6).  Daily
-   * discipline + idea aren't folded in here because the dynamic page
-   * focuses on the template's own data; the existing Completion
-   * Review page already does the cross-template view.
+   * idea marks aren't folded in here because the dynamic page focuses
+   * on the template's own data; the existing Completion Review page
+   * already does the cross-template view.
    * ================================================================= */
   const perEmpPerf = new Map();
   for (const s of subs) {

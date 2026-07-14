@@ -14,7 +14,7 @@ import { errMsg } from '../../utils/helpers';
  * Department-scoped review queue.  What a HOD can do is gated by the
  * permissions HR granted (canReview / canRemark / canMarks / canRecommend).
  * Marks entered are RECOMMENDATIONS that prefill HR's screen - HR remains
- * the final authority.  A HOD can NEVER touch discipline / innovation
+ * the final authority.  A HOD can NEVER touch innovation
  * marks; those are HR-only.
  *
  * Review drafts are held in the parent keyed by submission id, so collapsing
@@ -190,7 +190,7 @@ function Detail({ s, draft, setDraft, onSaved }) {
             .filter((r) => r.markEligible)
             .map((r) => ({ fieldName: r.fieldName, marksAwarded: Number(draft.fieldMarks[r.fieldName]) || 0 }));
         }
-        // NOTE: no discipline / innovation marks - HR-only.
+        // NOTE: no innovation marks - HR-only.
       }
       await api.post(`/submissions/${s._id}/hod-review`, payload);
       toast.success('Review submitted to HR');
@@ -275,7 +275,7 @@ function Detail({ s, draft, setDraft, onSaved }) {
         <>
           <TaskStatusTable tasks={s.tasks} deps={deps} rowFilter={rowFilter} setRowFilter={setRowFilter} />
           <div className="text-[11px] text-slate-500">
-            Discipline &amp; innovation marks are decided by HR and are not shown here.
+            Innovation marks are decided by HR and are not shown here.
           </div>
         </>
       )}

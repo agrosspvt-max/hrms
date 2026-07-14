@@ -13,7 +13,7 @@ router.post('/reflection', c.saveReflection);
 router.get('/grouped',  c.listGrouped);
 router.get('/day',      c.getDay);
 router.post('/finalize', c.finalizeDay);
-// Phase 23.6 -- bulk finalise the same discipline + innovation scores
+// Phase 23.6 -- bulk finalise the same innovation scores
 // against a list of (employee, date) pairs in one round-trip.
 router.post('/bulk-finalize', c.bulkFinalize);
 // Per-task status edit during review (Phase 10).

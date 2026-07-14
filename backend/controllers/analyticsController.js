@@ -407,7 +407,7 @@ const pendency = asyncHandler(async (req, res) => {
  *
  * Performance based on reviewer-awarded marks.  Each submission's
  * finalized earned/total points already aggregate work marks (task /
- * excel / sheet / cell scoring) + discipline + innovation from the HR/HOD
+ * excel / sheet / cell scoring) + innovation from the HR/HOD
  * review, so this reuses them directly - no new scoring math, and the
  * pendency engine above is untouched.
  * ==================================================================== */
@@ -472,7 +472,7 @@ const completion = asyncHandler(async (req, res) => {
     await attachFinalMarks(subs);
   } catch (e) { console.error('[analytics] attachFinalMarks:', e.message); }
 
-  // Phase 6: discipline + innovation marks live exclusively on
+  // Phase 6: innovation (idea) marks live exclusively on
   // DailyReview.  Pull every (employee, date) in scope so we can fold
   // them into the per-employee + per-day completion totals below.
   // Only reviewed days count toward the marks; pending ones contribute
@@ -482,23 +482,23 @@ const completion = asyncHandler(async (req, res) => {
     employee: { $in: empIds },
     date: { $gte: from, $lt: to },
     reviewStatus: 'reviewed',
-  }).select('employee date disciplineMarks maxDisciplineMarks ideaMarks maxIdeaMarks').lean();
+  }).select('employee date ideaMarks maxIdeaMarks').lean();
   // Indexed by "empId|YMD" for O(1) lookup as we walk submissions.
   const drByKey = new Map();
   for (const r of dailyReviews) {
     drByKey.set(`${String(r.employee)}|${formatYMD(r.date)}`, r);
   }
-  // Each (employee, date) bucket contributes its disc/idea ONCE,
+  // Each (employee, date) bucket contributes its idea marks ONCE,
   // regardless of how many submissions exist for that day.  Track
   // which buckets we've already counted as we walk submissions.
   const countedDR = new Set();
 
-  const perEmp = new Map(); // empId -> { earned, total, subs, pctList, onTime, late, reviewed, disc, discMax }
+  const perEmp = new Map(); // empId -> { earned, total, subs, pctList, onTime, late, reviewed }
   const perDay = new Map();
   const perFreq = { daily: { e: 0, t: 0 }, weekly: { e: 0, t: 0 }, monthly: { e: 0, t: 0 }, 'one-time': { e: 0, t: 0 } };
   const dist = { '0-20': 0, '21-40': 0, '41-60': 0, '61-80': 0, '81-100': 0 };
   const reviewerAgg = new Map(); // reviewerId -> { e, t, count }
-  let totalEarned = 0, totalTotal = 0, reviewedCount = 0, onTimeTotal = 0, lateTotal = 0, discSum = 0, discMaxSum = 0;
+  let totalEarned = 0, totalTotal = 0, reviewedCount = 0, onTimeTotal = 0, lateTotal = 0;
 
   const dayMs = 86400000;
   for (const s of subs) {
@@ -512,7 +512,7 @@ const completion = asyncHandler(async (req, res) => {
     const pctOne = t > 0 ? (e / t) * 100 : 0;
 
     const k = String(s.employee);
-    if (!perEmp.has(k)) perEmp.set(k, { earned: 0, total: 0, subs: 0, pctList: [], onTime: 0, late: 0, reviewed: 0, disc: 0, discMax: 0 });
+    if (!perEmp.has(k)) perEmp.set(k, { earned: 0, total: 0, subs: 0, pctList: [], onTime: 0, late: 0, reviewed: 0 });
     const pe = perEmp.get(k);
     pe.earned += e; pe.total += t; pe.subs += 1; pe.pctList.push(pctOne);
 
@@ -525,24 +525,18 @@ const completion = asyncHandler(async (req, res) => {
       }
     }
 
-    // Fold DailyReview disc + idea into the per-employee totals
-    // exactly once per (employee, date) bucket -- the first time we
-    // see a submission for that day in the walk.  Avoids double-
-    // counting when an employee has N submissions on the same day.
+    // Fold DailyReview idea marks into the per-employee totals exactly
+    // once per (employee, date) bucket -- the first time we see a
+    // submission for that day in the walk.  Avoids double-counting
+    // when an employee has N submissions on the same day.
     const drKey = `${k}|${formatYMD(s.date)}`;
     const dr = drByKey.get(drKey);
     if (dr && !countedDR.has(drKey)) {
       countedDR.add(drKey);
-      const drDisc    = Number(dr.disciplineMarks)    || 0;
-      const drMaxDisc = Number(dr.maxDisciplineMarks) || 0;
-      const drIdea    = Number(dr.ideaMarks)          || 0;
-      const drMaxIdea = Number(dr.maxIdeaMarks)       || 0;
-      const dayBonus  = drDisc + drIdea;
-      const dayBonusMax = drMaxDisc + drMaxIdea;
-      pe.earned += dayBonus;        pe.total += dayBonusMax;
-      totalEarned += dayBonus;      totalTotal += dayBonusMax;
-      pe.disc += drDisc;            pe.discMax += drMaxDisc;
-      discSum += drDisc;            discMaxSum += drMaxDisc;
+      const drIdea    = Number(dr.ideaMarks)    || 0;
+      const drMaxIdea = Number(dr.maxIdeaMarks) || 0;
+      pe.earned += drIdea;     pe.total += drMaxIdea;
+      totalEarned += drIdea;   totalTotal += drMaxIdea;
     }
 
     // On-time = submitted on/before the assigned day (not a late backlog clear).
@@ -570,8 +564,8 @@ const completion = asyncHandler(async (req, res) => {
     const dk = formatYMD(r.date);
     if (!perDay.has(dk)) perDay.set(dk, { e: 0, t: 0 });
     const pd = perDay.get(dk);
-    pd.e += (Number(r.disciplineMarks) || 0) + (Number(r.ideaMarks) || 0);
-    pd.t += (Number(r.maxDisciplineMarks) || 0) + (Number(r.maxIdeaMarks) || 0);
+    pd.e += (Number(r.ideaMarks) || 0);
+    pd.t += (Number(r.maxIdeaMarks) || 0);
   }
 
   const round1 = (n) => Math.round(n * 10) / 10;
@@ -598,7 +592,6 @@ const completion = asyncHandler(async (req, res) => {
     employeeRows.push({
       employeeId: emp.employeeId, name: emp.name, department: dn, designation: dg,
       score, submissions: v.subs, consistency, onTimeRate,
-      disciplinePct: v.discMax > 0 ? round1((v.disc / v.discMax) * 100) : 0,
     });
   }
   employeeRows.sort((a, b) => b.score - a.score);
@@ -714,7 +707,6 @@ const completion = asyncHandler(async (req, res) => {
       mostCollaborativeEmployee: mostCollaborative ? { name: mostCollaborative.name, interactions: mostCollaborative.interactions } : null,
       onTimeSubmissionRate: (onTimeTotal + lateTotal) > 0 ? round1((onTimeTotal / (onTimeTotal + lateTotal)) * 100) : 0,
       avgReviewMarks: reviewedCount > 0 ? round1(totalEarned / Math.max(1, reviewedCount)) : 0,
-      avgDisciplineScore: discMaxSum > 0 ? round1((discSum / discMaxSum) * 100) : 0,
       reviewApprovalRate: subs.length > 0 ? round1((reviewedCount / subs.length) * 100) : 0,
     },
     charts: {

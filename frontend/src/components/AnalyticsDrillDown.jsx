@@ -63,7 +63,7 @@ export const METRIC_INFO = {
   // ---- Completion mode ----
   avgCompletionScore: {
     title: 'Average Completion Score',
-    meaning: 'Reviewer-awarded marks normalised against total available marks — earned ÷ total across task, excel, spreadsheet, cell scoring plus discipline and innovation.',
+    meaning: 'Reviewer-awarded marks normalised against total available marks — earned ÷ total across task, excel, spreadsheet, cell scoring plus innovation.',
     why: 'The headline measure of completion quality, not just whether work was submitted.',
     high: 'High (≥80%) reflects strong, well-reviewed output.',
     normal: 'Normal is roughly 60–80%.',
@@ -104,7 +104,7 @@ export const METRIC_INFO = {
   onTimeSubmissionRate: {
     title: 'On-time Submission Rate',
     meaning: 'The share of submissions made on or before their assigned day (not cleared late from pendency).',
-    why: 'Timeliness is a core discipline metric.',
+    why: 'Timeliness is a core reliability metric.',
     high: 'High (≥90%) reflects strong punctuality.',
     normal: 'Normal is roughly 75–90%.',
     low: 'Low indicates chronic lateness or overload.',
@@ -114,14 +114,6 @@ export const METRIC_INFO = {
     meaning: 'The average finalized marks awarded per reviewed submission.',
     why: 'A quick gauge of typical reviewed output value.',
     high: '—', normal: '—', low: '—',
-  },
-  avgDisciplineScore: {
-    title: 'Average Discipline Score',
-    meaning: 'Discipline marks awarded by reviewers, normalised against the max discipline marks.',
-    why: 'Captures punctuality, neatness and process adherence as scored by reviewers.',
-    high: 'High reflects strong professional discipline.',
-    normal: 'Mid-range is typical.',
-    low: 'Low suggests discipline coaching is needed.',
   },
   reviewApprovalRate: {
     title: 'Review Approval Rate',

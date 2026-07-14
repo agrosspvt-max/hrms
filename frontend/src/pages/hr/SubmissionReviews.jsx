@@ -16,7 +16,7 @@ import { subscribe } from '../../realtime';
  *     records list with dealer details).
  *   - Daily Reflection panel shows what the employee wrote ONCE for
  *     the whole day (selfRating + selfNote + idea).
- *   - Daily Review panel (footer of each card) collects Discipline
+ *   - Daily Review panel (footer of each card) collects Innovation
  *     + Innovation marks ONCE per (employee, date).
  *     Finalising the day:
  *       - writes the marks to DailyReview
@@ -59,7 +59,7 @@ export default function SubmissionReviews() {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [openId, setOpenId] = useState(null);
-  // Phase 23.6 -- multi-select for bulk Discipline + Innovation scoring.
+  // Phase 23.6 -- multi-select for bulk Innovation scoring.
   // selected is a Set of (employeeId|date) keys taken from the filtered
   // card list.  bulkOpen toggles the bulk-action panel.
   const [selected, setSelected] = useState(() => new Set());
@@ -165,7 +165,7 @@ export default function SubmissionReviews() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Submission Reviews</h1>
           <p className="text-sm text-slate-500">
-            One card per employee per day. Daily reflection + discipline + innovation are reviewed once,
+            One card per employee per day. Daily reflection + innovation are reviewed once,
             even when the employee filed multiple reports.
           </p>
         </div>
@@ -757,7 +757,6 @@ function EmployeeDayCard({ card, open, onToggle, onReload, selected = false, onS
             ))}
           </div>
 
-          {/* Daily Discipline + Innovation entry */}
           <DailyReviewPanel
             employeeId={employee._id}
             date={date}
@@ -1102,7 +1101,7 @@ function ProductFarmerPanel({ sub }) {
  *
  * Renders the employee-added ad-hoc tasks in a dedicated section so
  * they're never confused with the template's predefined customFields.
- * Read-only: extras don't feed discipline / innovation and don't
+ * Read-only: extras don't feed innovation and don't
  * modify the original template.  The template's extraTaskCatalog is
  * updated separately by the submit endpoint.
  */
@@ -1643,7 +1642,7 @@ function DependencyTransferCard({ dep }) {
 }
 
 /* ===================================================================== */
-/* Phase 23.6 — Bulk Discipline + Innovation entry                        */
+/* Phase 23.6 — Bulk Innovation entry                                     */
 /*                                                                       */
 /* Modal launched from the toolbar above the card list.  Calls           */
 /* POST /api/daily-review/bulk-finalize ONCE with every (employee, date) */
@@ -1652,11 +1651,8 @@ function DependencyTransferCard({ dep }) {
 /* the same as a single finalise (just N times in a row).                */
 /* ===================================================================== */
 function BulkScoreModal({ cards, onClose, onDone }) {
-  const [d, setD]     = useState('');
-  const [maxD, setMaxD] = useState('3');
   const [i, setI]     = useState('');
   const [maxI, setMaxI] = useState('2');
-  const [dn, setDn]   = useState('');
   const [iFb, setIFb] = useState('');
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -1670,11 +1666,8 @@ function BulkScoreModal({ cards, onClose, onDone }) {
           employeeId: String(c.employee._id),
           date: new Date(c.date).toISOString().slice(0, 10),
         })),
-        disciplineMarks: Number(d) || 0,
-        maxDisciplineMarks: Number(maxD) || 3,
         ideaMarks: Number(i) || 0,
         maxIdeaMarks: Number(maxI) || 2,
-        disciplineNote: dn,
         ideaFeedback: iFb,
       });
       const okCount = data.ok || 0;
@@ -1692,7 +1685,7 @@ function BulkScoreModal({ cards, onClose, onDone }) {
       <div className="bg-white dark:bg-slate-900 rounded-lg shadow-xl max-w-xl w-full m-4 p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
         <div>
           <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Bulk Assign Scores</h2>
-          <p className="text-sm text-slate-500">Applying the same Discipline + Innovation marks to <b>{cards.length}</b> selected day-card(s).</p>
+          <p className="text-sm text-slate-500">Applying the same Innovation marks to <b>{cards.length}</b> selected day-card(s).</p>
         </div>
         <div className="max-h-40 overflow-y-auto rounded border border-slate-200 dark:border-slate-700 text-[12px]">
           {cards.map((c, idx) => (
@@ -1704,15 +1697,7 @@ function BulkScoreModal({ cards, onClose, onDone }) {
             </div>
           ))}
         </div>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <div>
-            <label className="label">Discipline</label>
-            <div className="flex items-center gap-2">
-              <input className="input" type="number" min="0" value={d} onChange={(e) => setD(e.target.value)} />
-              <span className="text-slate-400">/</span>
-              <input className="input max-w-[70px]" type="number" min="0" value={maxD} onChange={(e) => setMaxD(e.target.value)} />
-            </div>
-          </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
           <div>
             <label className="label">Innovation</label>
             <div className="flex items-center gap-2">
@@ -1721,11 +1706,7 @@ function BulkScoreModal({ cards, onClose, onDone }) {
               <input className="input max-w-[70px]" type="number" min="0" value={maxI} onChange={(e) => setMaxI(e.target.value)} />
             </div>
           </div>
-          <div className="md:col-span-2">
-            <label className="label">Discipline Note (optional)</label>
-            <input className="input" value={dn} onChange={(e) => setDn(e.target.value)} />
-          </div>
-          <div className="md:col-span-4">
+          <div>
             <label className="label">Idea Feedback (optional)</label>
             <textarea className="input" rows={2} value={iFb} onChange={(e) => setIFb(e.target.value)} />
           </div>
@@ -1742,15 +1723,12 @@ function BulkScoreModal({ cards, onClose, onDone }) {
 }
 
 /* ===================================================================== */
-/* Daily Discipline + Innovation entry                                    */
+/* Daily Innovation entry                                                 */
 /* ===================================================================== */
 function DailyReviewPanel({ employeeId, date, review, onSaved }) {
   const reviewed = review && review.reviewStatus === 'reviewed';
-  const [d, setD]     = useState(String(review?.disciplineMarks ?? ''));
-  const [maxD, setMaxD] = useState(String(review?.maxDisciplineMarks ?? '3'));
   const [i, setI]     = useState(String(review?.ideaMarks ?? ''));
   const [maxI, setMaxI] = useState(String(review?.maxIdeaMarks ?? '2'));
-  const [dn, setDn]   = useState(review?.disciplineNote || '');
   const [iFb, setIFb] = useState(review?.ideaFeedback || '');
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -1761,11 +1739,8 @@ function DailyReviewPanel({ employeeId, date, review, onSaved }) {
       await api.post('/daily-review/finalize', {
         employeeId,
         date,
-        disciplineMarks: Number(d) || 0,
-        maxDisciplineMarks: Number(maxD) || 3,
         ideaMarks: Number(i) || 0,
         maxIdeaMarks: Number(maxI) || 2,
-        disciplineNote: dn,
         ideaFeedback: iFb,
       });
       toast.success(reviewed ? 'Daily review updated' : 'Daily review finalised');
@@ -1774,34 +1749,17 @@ function DailyReviewPanel({ employeeId, date, review, onSaved }) {
     finally { setBusy(false); }
   };
 
-    /* Phase 22 (Issue: dark-mode visibility): the brand palette is a
-       custom Tailwind colour defined in tailwind.config.js, so the
-       index.css dark safety net (which targets Tailwind's stock
-       palettes) doesn't catch `bg-brand-50` / `border-brand-200` /
-       `text-brand-700` / `text-brand-800`.  In dark mode those classes
-       rendered as a bright off-white panel with dark indigo text --
-       barely legible.  Added explicit dark: variants below so the
-       panel reads as a quiet brand-tinted surface against the dark
-       review card, matching the rest of the page. */
   return (
     <div className="rounded-lg bg-brand-50 border border-brand-200 p-3 space-y-3 dark:bg-brand-500/15 dark:border-brand-500/30">
       <div className="flex items-center justify-between">
-        <div className="text-xs font-semibold text-brand-800 uppercase tracking-wide dark:text-brand-300">Daily Discipline &amp; Innovation</div>
+        <div className="text-xs font-semibold text-brand-800 uppercase tracking-wide dark:text-brand-300">Daily Innovation</div>
         {reviewed && (
           <div className="text-[11px] text-brand-700 dark:text-brand-300">
             Reviewed by {review.reviewedBy?.name || '—'} on {review.reviewedAt ? new Date(review.reviewedAt).toLocaleString() : ''}
           </div>
         )}
       </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-        <div>
-          <label className="label">Discipline</label>
-          <div className="flex items-center gap-2">
-            <input className="input" type="number" min="0" value={d}    onChange={(e) => setD(e.target.value)} />
-            <span className="text-slate-400">/</span>
-            <input className="input max-w-[70px]" type="number" min="0" value={maxD} onChange={(e) => setMaxD(e.target.value)} />
-          </div>
-        </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
         <div>
           <label className="label">Innovation</label>
           <div className="flex items-center gap-2">
@@ -1810,11 +1768,7 @@ function DailyReviewPanel({ employeeId, date, review, onSaved }) {
             <input className="input max-w-[70px]" type="number" min="0" value={maxI} onChange={(e) => setMaxI(e.target.value)} />
           </div>
         </div>
-        <div className="md:col-span-2">
-          <label className="label">Discipline Note</label>
-          <input className="input" value={dn} onChange={(e) => setDn(e.target.value)} />
-        </div>
-        <div className="md:col-span-4">
+        <div>
           <label className="label">Idea Feedback</label>
           <textarea className="input" rows={2} value={iFb} onChange={(e) => setIFb(e.target.value)} />
         </div>

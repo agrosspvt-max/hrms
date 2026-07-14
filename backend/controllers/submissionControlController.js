@@ -220,12 +220,12 @@ const get = asyncHandler(async (req, res) => {
  *   productSales    [...rows...] (replaces array)
  *   farmerRecords   [...rows...] (replaces array)
  *   tasks           [{taskId, status, pendingReason}] (patches in place)
- *   disciplineNote, ideaFeedback, selfNote, idea
+ *   ideaFeedback, selfNote, idea
  *   note            (free-text edit reason; captured on the audit row)
  */
 const ALLOWED_EDIT_KEYS = new Set([
   'customResponses', 'productSales', 'farmerRecords', 'tasks',
-  'disciplineNote', 'ideaFeedback', 'selfNote', 'idea',
+  'ideaFeedback', 'selfNote', 'idea',
 ]);
 
 const update = asyncHandler(async (req, res) => {
@@ -503,7 +503,7 @@ const exportFiltered = asyncHandler(async (req, res) => {
  * without HR re-reviewing manually.  Excludes deleted + test rows.
  */
 const rebuildScores = asyncHandler(async (_req, res) => {
-  // Phase 6: cached scores are WORK-ONLY now.  Discipline + idea live
+  // Phase 6: cached scores are WORK-ONLY now.  Idea (innovation) marks live
   // on DailyReview; the per-employee day total is reconstructed by
   // analytics / salary / dashboards via a join to that collection.
   const cursor = Submission.find({ deleted: { $ne: true } }).cursor();
@@ -521,7 +521,7 @@ const rebuildScores = asyncHandler(async (_req, res) => {
     }
   }
   logAudit(_req, { action: 'submission-control.rebuild-scores', meta: { touched } });
-  res.json({ ok: true, touched, message: `Recomputed cached work-only scores on ${touched} submission(s). Day-level discipline + innovation totals live on DailyReview.` });
+  res.json({ ok: true, touched, message: `Recomputed cached work-only scores on ${touched} submission(s). Day-level innovation totals live on DailyReview.` });
 });
 
 /**

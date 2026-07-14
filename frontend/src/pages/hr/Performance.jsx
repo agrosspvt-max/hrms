@@ -575,7 +575,6 @@ function CompletionMode({ data, onDrill }) {
         <ClickableCard onClick={() => onDrill('mostCollaborativeEmployee')}><StatCard label="Most Collaborative" value={c.mostCollaborativeEmployee?.name || '—'} accent="blue" sub={c.mostCollaborativeEmployee ? `${c.mostCollaborativeEmployee.interactions} interactions` : ''} /></ClickableCard>
         <ClickableCard onClick={() => onDrill('onTimeSubmissionRate')}><StatCard label="On-time Rate" value={`${c.onTimeSubmissionRate}%`} accent={scoreAccent(c.onTimeSubmissionRate)} /></ClickableCard>
         <ClickableCard onClick={() => onDrill('avgReviewMarks')}><StatCard label="Avg Review Marks" value={c.avgReviewMarks} accent="brand" /></ClickableCard>
-        <ClickableCard onClick={() => onDrill('avgDisciplineScore')}><StatCard label="Avg Discipline" value={`${c.avgDisciplineScore}%`} accent={scoreAccent(c.avgDisciplineScore)} /></ClickableCard>
         <ClickableCard onClick={() => onDrill('reviewApprovalRate')}><StatCard label="Review Approval Rate" value={`${c.reviewApprovalRate}%`} accent="amber" /></ClickableCard>
       </div>
 

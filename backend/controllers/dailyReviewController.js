@@ -16,11 +16,11 @@
  *           Body: { date, selfRating, selfNote, idea }
  *
  *   - POST /api/daily-review/finalize
- *           HR / SA / HOD writes discipline + idea + notes for a day
+ *           HR / SA / HOD writes idea + notes for a day
  *           and flips every same-day submission to reviewStatus=reviewed.
- *           Body: { employeeId, date, disciplineMarks, ideaMarks,
- *                   maxDisciplineMarks?, maxIdeaMarks?,
- *                   disciplineNote?, ideaFeedback? }
+ *           Body: { employeeId, date, ideaMarks,
+ *                   maxIdeaMarks?,
+ *                   ideaFeedback? }
  */
 
 const asyncHandler   = require('express-async-handler');
@@ -740,7 +740,7 @@ const saveReflection = asyncHandler(async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* HR finalises a day's discipline + idea                              */
+/* HR finalises a day's idea                              */
 /* ------------------------------------------------------------------ */
 const finalizeDay = asyncHandler(async (req, res) => {
   const role = req.user.role;
@@ -780,12 +780,9 @@ const finalizeDay = asyncHandler(async (req, res) => {
   }
 
   // Clamp the awarded marks to the configured maxima.
-  const maxDisc = Number(req.body.maxDisciplineMarks ?? 3);
   const maxIdea = Number(req.body.maxIdeaMarks ?? 2);
-  const disc    = Math.max(0, Math.min(Number(req.body.disciplineMarks) || 0, maxDisc));
-  const idea    = Math.max(0, Math.min(Number(req.body.ideaMarks)       || 0, maxIdea));
-  const discNote     = String(req.body.disciplineNote || '').trim();
-  const ideaFeedback = String(req.body.ideaFeedback   || '').trim();
+  const idea    = Math.max(0, Math.min(Number(req.body.ideaMarks) || 0, maxIdea));
+  const ideaFeedback = String(req.body.ideaFeedback || '').trim();
 
   // Primary submission = first chronological (already sorted).
   const primary = subs[0];
@@ -800,7 +797,7 @@ const finalizeDay = asyncHandler(async (req, res) => {
   const isPureHOD = isHOD && role !== 'hr' && role !== 'super_admin';
 
   // Persist the DailyReview doc.  This is the SINGLE SOURCE OF TRUTH
-  // for the day's discipline + innovation marks.  Per-submission rows
+  // for the day.s innovation marks.  Per-submission rows
   // are NEVER touched -- they carry only their own work scoring.
   // Analytics, salary, employee history all read DailyReview directly
   // for the day-level marks (see analyticsController.completion,
@@ -812,8 +809,7 @@ const finalizeDay = asyncHandler(async (req, res) => {
     { employee: employee._id, date: day },
     {
       $set: {
-        disciplineMarks: disc, maxDisciplineMarks: maxDisc, disciplineNote: discNote,
-        ideaMarks: idea,       maxIdeaMarks: maxIdea,       ideaFeedback: ideaFeedback,
+        ideaMarks: idea, maxIdeaMarks: maxIdea, ideaFeedback: ideaFeedback,
         reviewedBy: req.user._id, reviewedAt: new Date(),
         reviewStatus: isPureHOD ? 'pending' : 'reviewed',
         // Kept for the rare audit-trail use case; not used by any
@@ -841,7 +837,7 @@ const finalizeDay = asyncHandler(async (req, res) => {
         reviewedAt: new Date(),
         recommend:  'approve',
         marksGiven: true,
-        remarks:    discNote || s.hodReview?.remarks || '',
+        remarks:    ideaFeedback || s.hodReview?.remarks || '',
       };
       s.currentReviewStage = 'hod_reviewed';
       // Do NOT touch reviewStatus / reviewedBy / reviewedAt / earned -
@@ -853,8 +849,8 @@ const finalizeDay = asyncHandler(async (req, res) => {
         role,
         stage: 'hod_reviewed',
         action: 'daily_hod_review',
-        marks: disc + idea,
-        remarks: discNote || '',
+        marks: idea,
+        remarks: ideaFeedback || '',
         timestamp: new Date(),
       });
       await s.save();
@@ -880,8 +876,8 @@ const finalizeDay = asyncHandler(async (req, res) => {
       stage: 'finalized',
       action: 'daily_finalize',
       // Marks audit field captures the DAY-LEVEL total, not per-sub.
-      marks: disc + idea,
-      remarks: discNote || '',
+      marks: idea,
+      remarks: ideaFeedback || '',
       timestamp: new Date(),
     });
     await s.save();
@@ -905,7 +901,7 @@ const finalizeDay = asyncHandler(async (req, res) => {
     targetType: 'DailyReview',
     targetId: review._id,
     targetLabel: `${employee._id} · ${day.toISOString().slice(0, 10)}`,
-    meta: { disciplineMarks: disc, ideaMarks: idea, submissionCount: subs.length, primarySubmissionId: primary._id },
+    meta: { ideaMarks: idea, submissionCount: subs.length, primarySubmissionId: primary._id },
   });
 
   res.json({ ok: true, review, submissionCount: subs.length, primarySubmissionId: primary._id });
@@ -927,7 +923,7 @@ const finalizeDay = asyncHandler(async (req, res) => {
 /*   - HR-defined rows use their template `points`; employee-added     */
 /*     rows use `awardedMarks`.                                        */
 /*                                                                     */
-/* Discipline + idea live exclusively on DailyReview, so this endpoint */
+/* Idea (innovation) marks live exclusively on DailyReview, so this endpoint */
 /* never touches them.                                                 */
 /* ------------------------------------------------------------------ */
 const ALLOWED_TASK_STATUSES = ['done', 'ongoing', 'pending', 'work_not_available', 'pending_submit'];
@@ -1010,7 +1006,7 @@ const editTaskStatus = asyncHandler(async (req, res) => {
   }
   sub.workEarnedPoints = earned;
   sub.workTotalPoints  = total;
-  // Cached earned/total are WORK-ONLY (Phase 6 -- discipline + idea
+  // Cached earned/total are WORK-ONLY (Phase 6 -- idea
   // live on DailyReview).  Daily totals fold in at analytics time.
   sub.earnedPoints = earned;
   sub.totalPoints  = total;
@@ -1146,9 +1142,9 @@ const editTaskMarks = asyncHandler(async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
-/* Phase 23.6 — Bulk discipline + innovation scoring                   */
+/* Phase 23.6 — Bulk innovation scoring                   */
 /*                                                                     */
-/* Lets HR / SA / HOD apply the SAME discipline + idea marks to a set  */
+/* Lets HR / SA / HOD apply the SAME idea marks to a set  */
 /* of (employee, date) pairs in one round-trip.  Internally just loops */
 /* the per-day finalise pipeline -- nothing about the business rules,  */
 /* role gates, audit logging, scoring formula or notification flow     */
@@ -1158,9 +1154,8 @@ const editTaskMarks = asyncHandler(async (req, res) => {
 /* Body shape:                                                         */
 /*   {                                                                 */
 /*     items: [{ employeeId, date }, ...],                              */
-/*     disciplineMarks, maxDisciplineMarks?,                            */
 /*     ideaMarks,       maxIdeaMarks?,                                  */
-/*     disciplineNote?, ideaFeedback?,                                  */
+/*     ideaFeedback?,                                  */
 /*   }                                                                  */
 /* ------------------------------------------------------------------ */
 const bulkFinalize = asyncHandler(async (req, res) => {
@@ -1179,12 +1174,9 @@ const bulkFinalize = asyncHandler(async (req, res) => {
   // recommend; HR / SA finalise.
   const isPureHOD = isHOD && role !== 'hr' && role !== 'super_admin';
 
-  const maxDisc = Number(req.body.maxDisciplineMarks ?? 3);
   const maxIdea = Number(req.body.maxIdeaMarks ?? 2);
-  const disc    = Math.max(0, Math.min(Number(req.body.disciplineMarks) || 0, maxDisc));
-  const idea    = Math.max(0, Math.min(Number(req.body.ideaMarks)       || 0, maxIdea));
-  const discNote     = String(req.body.disciplineNote || '').trim();
-  const ideaFeedback = String(req.body.ideaFeedback   || '').trim();
+  const idea    = Math.max(0, Math.min(Number(req.body.ideaMarks) || 0, maxIdea));
+  const ideaFeedback = String(req.body.ideaFeedback || '').trim();
 
   const out = { ok: 0, failed: [], reviews: [] };
 
@@ -1233,8 +1225,7 @@ const bulkFinalize = asyncHandler(async (req, res) => {
         { employee: employee._id, date: day },
         {
           $set: {
-            disciplineMarks: disc, maxDisciplineMarks: maxDisc, disciplineNote: discNote,
-            ideaMarks: idea,       maxIdeaMarks: maxIdea,       ideaFeedback,
+            ideaMarks: idea, maxIdeaMarks: maxIdea, ideaFeedback,
             reviewedBy: req.user._id, reviewedAt: new Date(),
             // Phase 26 — HOD bulk recommendation stays 'pending' on the
             // DailyReview so analytics + dashboards continue treating the
@@ -1257,14 +1248,14 @@ const bulkFinalize = asyncHandler(async (req, res) => {
             reviewedAt: new Date(),
             recommend:  'approve',
             marksGiven: true,
-            remarks:    discNote || s.hodReview?.remarks || '',
+            remarks:    ideaFeedback || s.hodReview?.remarks || '',
           };
           s.currentReviewStage = 'hod_reviewed';
           s.reviewHistory = s.reviewHistory || [];
           s.reviewHistory.push({
             reviewedBy: req.user._id, reviewerName: req.user.name, role,
             stage: 'hod_reviewed', action: 'daily_hod_review_bulk',
-            marks: disc + idea, remarks: discNote || '',
+            marks: idea, remarks: ideaFeedback || '',
             timestamp: new Date(),
           });
           await s.save();
@@ -1281,7 +1272,7 @@ const bulkFinalize = asyncHandler(async (req, res) => {
         s.reviewHistory.push({
           reviewedBy: req.user._id, reviewerName: req.user.name, role,
           stage: 'finalized', action: 'daily_finalize_bulk',
-          marks: disc + idea, remarks: discNote || '',
+          marks: idea, remarks: ideaFeedback || '',
           timestamp: new Date(),
         });
         await s.save();
@@ -1301,7 +1292,7 @@ const bulkFinalize = asyncHandler(async (req, res) => {
         targetType: 'DailyReview',
         targetId: review._id,
         targetLabel: `${employee._id} · ${day.toISOString().slice(0, 10)}`,
-        meta: { disciplineMarks: disc, ideaMarks: idea, submissionCount: subs.length, bulk: true },
+        meta: { ideaMarks: idea, submissionCount: subs.length, bulk: true },
       });
       out.ok += 1;
       out.reviews.push({ employeeId: String(employee._id), date: day, reviewId: review._id });

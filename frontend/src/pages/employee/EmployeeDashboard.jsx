@@ -2981,9 +2981,8 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
 
 /**
  * Post-submission summary shown on the employee dashboard.  Reveals the
- * HR review (discipline + innovation marks + feedback) once it has been
- * completed; otherwise shows the work-only score with a "Pending Review"
- * badge.
+ * HR review (innovation marks + feedback) once it has been completed;
+ * otherwise shows the work-only score with a "Pending Review" badge.
  */
 function SubmittedSummary({ sub }) {
   const reviewed = sub.reviewStatus === 'reviewed';
@@ -3003,20 +3002,12 @@ function SubmittedSummary({ sub }) {
           : <span className="badge-amber">Awaiting HR review</span>}
       </div>
 
-      {reviewed && (sub.disciplineNote || sub.ideaFeedback) && (
-        <div className="grid sm:grid-cols-2 gap-3">
-          {sub.disciplineNote && (
-            <div className="bg-slate-50 rounded-lg p-3">
-              <div className="text-[11px] uppercase text-slate-500">HR Note</div>
-              <div className="text-sm text-slate-700 mt-1 italic">"{sub.disciplineNote}"</div>
-            </div>
-          )}
-          {sub.ideaFeedback && (
-            <div className="bg-blue-50 rounded-lg p-3">
-              <div className="text-[11px] uppercase text-blue-700">Feedback on your idea</div>
-              <div className="text-sm text-slate-700 mt-1 italic">"{sub.ideaFeedback}"</div>
-            </div>
-          )}
+      {reviewed && sub.ideaFeedback && (
+        <div className="grid sm:grid-cols-1 gap-3">
+          <div className="bg-blue-50 rounded-lg p-3">
+            <div className="text-[11px] uppercase text-blue-700">Feedback on your idea</div>
+            <div className="text-sm text-slate-700 mt-1 italic">"{sub.ideaFeedback}"</div>
+          </div>
         </div>
       )}
 

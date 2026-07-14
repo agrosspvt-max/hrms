@@ -291,7 +291,7 @@ const submissionSchema = new mongoose.Schema(
 
        Predefined tasks (customResponses) and extra tasks live in
        distinct arrays so the HR review UI, template analytics, and
-       existing scoring / discipline / innovation flows never confuse
+       existing scoring / innovation flows never confuse
        one for the other. */
     extraTasks: {
       type: [new mongoose.Schema(
@@ -457,8 +457,8 @@ const submissionSchema = new mongoose.Schema(
 
     // Immutable snapshot of pure work scoring at submit time.
     // earnedPoints / totalPoints get re-derived as
-    //   workEarnedPoints + disciplineMarks + ideaMarks
-    //   workTotalPoints + maxDisciplineMarks + maxIdeaMarks
+    //   workEarnedPoints + ideaMarks
+    //   workTotalPoints + maxIdeaMarks
     // after HR review, so we can always recompute.
     workEarnedPoints: { type: Number, default: 0 },
     workTotalPoints: { type: Number, default: 0 },
@@ -521,10 +521,6 @@ const submissionSchema = new mongoose.Schema(
       default: 'pending',
       index: true,
     },
-    disciplineMarks: { type: Number, default: 0, min: 0 },
-    maxDisciplineMarks: { type: Number, default: 3, min: 0 },
-    disciplineNote: { type: String, default: '' },
-
     ideaMarks: { type: Number, default: 0, min: 0 },
     maxIdeaMarks: { type: Number, default: 2, min: 0 },
     ideaFeedback: { type: String, default: '' },

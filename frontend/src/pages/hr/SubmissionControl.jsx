@@ -585,7 +585,6 @@ function EditSubmissionModal({ row, onClose, onSaved }) {
         customResponses: JSON.stringify(r.data.customResponses || [], null, 2),
         productSales:    JSON.stringify(r.data.productSales    || [], null, 2),
         farmerRecords:   JSON.stringify(r.data.farmerRecords   || [], null, 2),
-        disciplineNote:  r.data.disciplineNote || '',
         ideaFeedback:    r.data.ideaFeedback || '',
       });
     }).catch((e) => toast.error(errMsg(e)));
@@ -599,7 +598,6 @@ function EditSubmissionModal({ row, onClose, onSaved }) {
       if (draft.customResponses !== undefined) payload.customResponses = tryParse(draft.customResponses);
       if (draft.productSales    !== undefined) payload.productSales    = tryParse(draft.productSales);
       if (draft.farmerRecords   !== undefined) payload.farmerRecords   = tryParse(draft.farmerRecords);
-      if (draft.disciplineNote  !== undefined) payload.disciplineNote  = draft.disciplineNote;
       if (draft.ideaFeedback    !== undefined) payload.ideaFeedback    = draft.ideaFeedback;
       await api.put(`/submission-control/${row._id}`, payload);
       toast.success('Saved'); onSaved();
@@ -633,15 +631,9 @@ function EditSubmissionModal({ row, onClose, onSaved }) {
             <label className="label">Farmer Records (JSON)</label>
             <textarea className="input font-mono text-xs" rows={6} value={draft.farmerRecords} onChange={(e) => setDraft({ ...draft, farmerRecords: e.target.value })} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="label">Discipline Note</label>
-              <input className="input" value={draft.disciplineNote || ''} onChange={(e) => setDraft({ ...draft, disciplineNote: e.target.value })} />
-            </div>
-            <div>
-              <label className="label">Idea Feedback</label>
-              <input className="input" value={draft.ideaFeedback || ''} onChange={(e) => setDraft({ ...draft, ideaFeedback: e.target.value })} />
-            </div>
+          <div>
+            <label className="label">Idea Feedback</label>
+            <input className="input" value={draft.ideaFeedback || ''} onChange={(e) => setDraft({ ...draft, ideaFeedback: e.target.value })} />
           </div>
           <div>
             <label className="label">Edit Note (audited)</label>
