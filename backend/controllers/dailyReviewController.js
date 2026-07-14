@@ -41,6 +41,12 @@ const { logAudit }   = require('../utils/audit');
 const notify         = require('../services/notifyEvents');
 // Phase 60 -- HOD visibility gate for the Employee Private Remark.
 const { scrubPrivateRemark } = require('../utils/privateRemark');
+// Phase 65.2 -- Submission Review honours the SAME rollout cutoff used
+// by the Missed Submission compliance engine.  Any day before the
+// cutoff is ignored entirely (no Expected / Submitted / Not Submitted
+// counters, no cards, no missing days).  Single source of truth --
+// never introduce a second date here.
+const { isBeforeRollout } = require('../config/complianceRollout');
 
 /**
  * Phase 23.3 — Attach dependent-task hand-offs to each submission so the
@@ -121,6 +127,36 @@ const _resolveDay = (raw) => startOfDay(raw ? new Date(raw) : new Date());
  */
 const _evaluateNotSubmittedForDay = (ctx) => {
   const { day, employee: e, holiday, submitted, confirmed, leave, assignments, attendance } = ctx;
+
+  const submittedToday = e.attendanceMode === 'attendance_review'
+    ? !!confirmed
+    : !!submitted;
+
+  // Phase 65.2 -- Effective From cutoff.  Per spec the evaluation order
+  // is:
+  //   1. Submission exists                    -> Submitted
+  //   2. Else day < Effective From            -> Ignore  (return here)
+  //   3. Else Attendance says Present         -> Not Submitted
+  //   4. Else if Leave                        -> On Leave
+  //   5. Else                                 -> Ignore
+  //
+  // "Ignore" means the day contributes NOTHING to Expected Submission /
+  // Submitted / Not Submitted / On Leave / cards / statistics.  The
+  // callers already short-circuit when hasAssignments/onLeave/eligible
+  // are all false, so returning a fully-zeroed result naturally skips
+  // the day everywhere without touching either call site.
+  if (!submittedToday && isBeforeRollout(day)) {
+    return {
+      eligible: false,
+      onLeave: false,
+      hasAssignments: false,
+      submitted: false,
+      scheduledToday: [],
+      attendanceLabel: '',
+      ignoredPreRollout: true,
+    };
+  }
+
   const isWeeklyOff = (e.weeklyOff || [0]).includes(day.getUTCDay());
   const nonWorking  = isWeeklyOff || !!holiday;
 
@@ -141,10 +177,6 @@ const _evaluateNotSubmittedForDay = (ctx) => {
   const hasAssignments = e.attendanceMode === 'attendance_review'
     ? true
     : scheduledToday.length > 0;
-
-  const submittedToday = e.attendanceMode === 'attendance_review'
-    ? !!confirmed
-    : !!submitted;
 
   const onLeave = !!leave;
   const eligible = !onLeave && !submittedToday && hasAssignments;
