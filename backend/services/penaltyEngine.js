@@ -248,6 +248,12 @@ const sweepProbableAbsentSubmission = async ({ employeeId, day }) => {
  */
 const enforceAbsentSubmission = async ({ employeeId, previousDay }) => {
   const target = startOfDay(previousDay);
+  // Phase 65.1 rollout gate -- Missed Submission compliance only
+  // applies to days on or after the effective-from date.  Historical
+  // days are treated as legacy: no penalty, no notification, no
+  // reopen path.  Single guard for the whole engine.
+  const { isBeforeRollout } = require('../config/complianceRollout');
+  if (isBeforeRollout(target)) return [];
   const present = await _isPresentAttendance(employeeId, target);
   if (!present) return [];
 

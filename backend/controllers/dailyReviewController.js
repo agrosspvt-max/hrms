@@ -504,12 +504,17 @@ const listGrouped = asyncHandler(async (req, res) => {
         const empIds = [...new Set(cards.map((c) => String(c.employee._id)))];
         const allDates = [...new Set(cards.flatMap((c) => (c.missingDates || []).map((d) => new Date(d).getTime())))]
           .map((t) => new Date(t));
+        // Phase 65.1 rollout gate -- legacy pre-cutoff rows are
+        // filtered out so the Send Back button is never shown for
+        // historical missed days.
+        const { MISSED_SUBMISSION_EFFECTIVE_FROM } = require('../config/complianceRollout');
         const pens = await Penalty.find({
           employee: { $in: empIds },
           category: { $in: ['missed_submission', 'absent_submission'] },
-          targetDate: { $in: allDates },
+          targetDate: { $in: allDates, $gte: MISSED_SUBMISSION_EFFECTIVE_FROM },
           source: 'automatic',
           probable: false,
+          archivedPreRollout: { $ne: true },
         }).select('employee targetDate reopenRequest').lean();
         const _key = (empId, d) => `${String(empId)}|${new Date(d).toISOString().slice(0, 10)}`;
         const byKey = new Map(pens.map((p) => [_key(p.employee, p.targetDate), p]));
@@ -645,12 +650,15 @@ const listGrouped = asyncHandler(async (req, res) => {
       const empIds = [...new Set(notSubmittedCards.map((c) => String(c.employee._id)))];
       const days = [...new Set(notSubmittedCards.map((c) => new Date(c.date).getTime()))]
         .map((t) => new Date(t));
+      // Phase 65.1 rollout gate.
+      const { MISSED_SUBMISSION_EFFECTIVE_FROM } = require('../config/complianceRollout');
       const pens = await Penalty.find({
         employee: { $in: empIds },
         category: { $in: ['missed_submission', 'absent_submission'] },
-        targetDate: { $in: days },
+        targetDate: { $in: days, $gte: MISSED_SUBMISSION_EFFECTIVE_FROM },
         source: 'automatic',
         probable: false,
+        archivedPreRollout: { $ne: true },
       }).select('employee targetDate reopenRequest').lean();
       const _key = (empId, d) => `${String(empId)}|${new Date(d).toISOString().slice(0, 10)}`;
       const byKey = new Map(pens.map((p) => [_key(p.employee, p.targetDate), p]));

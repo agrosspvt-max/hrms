@@ -102,6 +102,16 @@ const penaltySchema = new mongoose.Schema(
     /** Automatic engines flip this so the UI can group cleanly. */
     source: { type: String, enum: ['automatic', 'manual'], default: 'automatic', index: true },
 
+    /**
+     * Phase 65.1 rollout gate -- when true this row was created by the
+     * old compliance implementation BEFORE the "Missed Submission
+     * Effective From" date and must not appear in any user-facing
+     * surface (dashboard, notifications, F&P, submission review).
+     * Historical audit rows are untouched.  Set once by the boot
+     * archiver in services/legacyMissedSubmissionArchive.
+     */
+    archivedPreRollout: { type: Boolean, default: false, index: true },
+
     /** Warning-only?  When true this record shows under
      *  "Probable Penalties" and does NOT deduct Final Marks. */
     probable: { type: Boolean, default: false, index: true },

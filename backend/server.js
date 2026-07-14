@@ -197,6 +197,13 @@ const start = async () => {
     const { start: startCompliance } = require('./services/dailyComplianceScheduler');
     startCompliance();
   } catch (e) { console.error('[compliance-scheduler] boot error:', e.message); }
+  // Phase 65.1 -- archive any pre-rollout missed_submission /
+  // absent_submission Penalty rows + hide the notifications they
+  // produced.  Idempotent + async; boot is never blocked.
+  try {
+    const { start: startArchive } = require('./services/legacyMissedSubmissionArchive');
+    startArchive();
+  } catch (e) { console.error('[legacy-compliance-archive] boot error:', e.message); }
   app.listen(PORT, () => console.log(`[server] HRMS API running on :${PORT}`));
 };
 

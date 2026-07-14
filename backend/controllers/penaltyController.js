@@ -37,6 +37,11 @@ const notify = require('../services/notifyEvents');
 // UI never shows a stale bucket.
 const { _sweepStateTransitions } = require('../services/penaltyMath');
 const rt = require('../services/realtime');
+// Phase 65.1 -- Missed Submission rollout cutoff.  Every user-facing
+// read of the Penalty collection applies this filter so legacy
+// pre-rollout compliance rows disappear from dashboards / F&P /
+// notifications without deleting the records themselves.
+const { excludeLegacyClause } = require('../config/complianceRollout');
 
 const _isAdmin = (u) => u?.role === 'hr' || u?.role === 'super_admin';
 const _isHOD   = (u) => u?.role === 'hod' || u?.isHOD === true;
@@ -103,7 +108,7 @@ const _dateWindow = (req) => {
 const dashboard = asyncHandler(async (req, res) => {
   const scope = await _scopeToUser(req);
   const window = _dateWindow(req);
-  const where = { ...scope };
+  const where = { ...scope, ...excludeLegacyClause() };
   if (window) where.targetDate = window;
   const rows = await Penalty.find(where)
     .populate('employee', 'name employeeId role department')
@@ -125,7 +130,10 @@ const dashboard = asyncHandler(async (req, res) => {
  * GET /api/penalties/mine  -- employee shortcut.
  */
 const mine = asyncHandler(async (req, res) => {
-  const rows = await Penalty.find({ employee: req.user._id })
+  const rows = await Penalty.find({
+    employee: req.user._id,
+    ...excludeLegacyClause(),
+  })
     .sort({ effectiveDate: -1, createdAt: -1 })
     .lean();
   // Verification-audit fix -- same sweep as /dashboard so a
@@ -907,7 +915,7 @@ const markFinancialDeducted = asyncHandler(async (req, res) => {
 const analyticsSummary = asyncHandler(async (req, res) => {
   const scope = await _scopeToUser(req);
   const window = _dateWindow(req);
-  const where = { ...scope, probable: false };
+  const where = { ...scope, probable: false, ...excludeLegacyClause() };
   if (window) where.targetDate = window;
   const rows = await Penalty.find(where).populate('employee', 'name employeeId department').lean();
 
