@@ -406,8 +406,14 @@ export default function Performance() {
       </div>
 
       {loading || !data ? <Loader /> : (
+        // Phase 71 -- key={mode} forces a fresh mount/unmount of the
+        // active tab component on every mode switch so no internal
+        // React state (drill-down modals, sub-tabs, selection sets,
+        // etc.) can leak between Pendency / Completion / Calling /
+        // Daily Self Review.
         mode === 'selfReview' ? (
           <SelfReviewMode
+            key="selfReview"
             filters={{
               from: range === 'custom' ? from : '',
               to:   range === 'custom' ? to   : '',
@@ -423,9 +429,10 @@ export default function Performance() {
             canExport={user?.role === 'hr' || user?.role === 'super_admin' || !!user?.isHOD}
           />
         )
-        : mode === 'pendency' ? <PendencyMode data={data} onDrill={openDrill} />
-        : mode === 'completion' ? <CompletionMode data={data} onDrill={openDrill} />
+        : mode === 'pendency' ? <PendencyMode key="pendency" data={data} onDrill={openDrill} />
+        : mode === 'completion' ? <CompletionMode key="completion" data={data} onDrill={openDrill} penaltyKpi={penaltyKpi} />
         : <CallingMode
+            key="calling"
             data={data}
             // Phase 25 -- open drill-down for any KPI / leaderboard card.
             // Leaderboards pass an `extra` payload (leaderboardId + metric
@@ -576,7 +583,12 @@ function PendencyMode({ data, onDrill }) {
 }
 
 /* ------------------------------ COMPLETION ------------------------------ */
-function CompletionMode({ data, onDrill }) {
+// Phase 71 -- `penaltyKpi` is React state living inside Performance;
+// because CompletionMode is a module-scope function it can't reach
+// that state via closure.  It has to arrive as an explicit prop --
+// otherwise the Penalty KPI strip crashes the whole tab with a
+// ReferenceError and the page renders blank.
+function CompletionMode({ data, onDrill, penaltyKpi }) {
   const c = data.cards; const ch = data.charts;
   return (
     <>
