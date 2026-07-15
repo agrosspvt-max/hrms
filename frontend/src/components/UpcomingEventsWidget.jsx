@@ -27,7 +27,8 @@ export default function UpcomingEventsWidget({ limit = 6, days = 30 }) {
   const [today, setToday] = useState([]);
 
   useEffect(() => {
-    api.post('/events/process-due').catch(() => {});
+    // Phase 73 -- /events/process-due removed; the widget just reads
+    // the shared resolver endpoints below.
     api.get('/events/upcoming', { params: { days } }).then((r) => setEvents(r.data || [])).catch(() => setEvents([]));
     api.get('/events/birthdays/today').then((r) => setToday(r.data || [])).catch(() => setToday([]));
   }, [days]);

@@ -14,9 +14,10 @@ router.get('/birthdays/today', c.birthdaysToday);
 router.get('/analytics', gate, c.analytics);
 router.get('/:id', c.get);
 
-// Idempotent notification firing — dashboards call this on load so birthday
-// + event reminders are delivered without a separate cron service.
-router.post('/process-due', c.processDue);
+// Phase 45 disabled birthday / event reminder notifications; Phase 73
+// removed the dead processDue scaffold and its /events/process-due
+// route.  Notifications are intentionally OFF for this module -- the
+// resolver has no notify side-effects.
 
 // HR / Super Admin manage events.
 router.post('/', gate, c.create);

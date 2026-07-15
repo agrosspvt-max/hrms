@@ -51,6 +51,12 @@ export default function EventsCalendar() {
   const load = async () => {
     setLoading(true);
     try {
+      // Phase 73 -- /events is now the SHARED occurrence resolver:
+      // it already returns Holiday-collection entries + Event
+      // occurrences + auto-birthdays.  The separate /holidays fetch
+      // is only kept so raw Holiday CRUD (edit / delete via the
+      // legacy Holidays page) has a source of truth; the calendar
+      // itself no longer needs to merge it — the resolver did.
       const [evs, hs, emp, deps, designs, an] = await Promise.all([
         api.get('/events', { params: { from: ymd(monthStart), to: ymd(new Date(monthEnd - 86400000)) } }).then((r) => r.data),
         api.get('/holidays').then((r) => r.data).catch(() => []),
@@ -65,10 +71,12 @@ export default function EventsCalendar() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [cursor]);
 
-  // Fire any pending birthday / event notifications on each visit.
-  useEffect(() => { api.post('/events/process-due').catch(() => {}); }, []);
+  // Phase 73 -- /events/process-due was a no-op notification path; the
+  // route has been removed.  Nothing else to do on mount.
 
-  // Combine events + holidays into a single day-keyed map for the grid.
+  // Combine occurrences into a single day-keyed map for the grid.
+  // `items` already contains Holiday-collection rows (type='holiday')
+  // via the shared resolver, so no second merge is needed.
   const byDay = useMemo(() => {
     const m = new Map();
     const stamp = (date, item) => {
@@ -81,12 +89,8 @@ export default function EventsCalendar() {
       const end = ev.occEnd ? new Date(ev.occEnd) : start;
       for (let d = start; d <= end; d = new Date(d.getTime() + 86400000)) stamp(d, ev);
     });
-    holidays.forEach((h) => {
-      const d = new Date(h.date);
-      if (d >= monthStart && d < monthEnd) stamp(d, { _id: `holiday:${h._id}`, type: 'holiday', title: h.name, description: h.description || '', occStart: d, occEnd: d, isHoliday: true });
-    });
     return m;
-  }, [items, holidays, monthStart, monthEnd]);
+  }, [items]);
 
   // Calendar grid cells (always show 6 rows × 7 cols).
   const days = useMemo(() => {
@@ -174,7 +178,7 @@ export default function EventsCalendar() {
           <StatCard label="Company Events" value={analytics.totals.companyEvents} accent="blue" />
           <StatCard label="Custom Events" value={analytics.totals.custom} accent="brand" />
           <StatCard label="Birthdays on File" value={analytics.totals.birthdays} accent="red" />
-          <StatCard label="Upcoming (90d)" value={analytics.upcoming.events + analytics.upcoming.holidays + analytics.upcoming.birthdays} accent="brand" sub={`${analytics.upcoming.birthdays} birthdays · ${analytics.upcoming.holidays} holidays`} />
+          <StatCard label="Upcoming (90d)" value={analytics.upcoming.total} accent="brand" sub={`${analytics.upcoming.birthdays} birthdays · ${analytics.upcoming.holidays} holidays · ${analytics.upcoming.events} events`} />
         </div>
       )}
 

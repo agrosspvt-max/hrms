@@ -122,12 +122,15 @@ const computeSlip = async (employeeId, startDate, endDate, opts = {}) => {
   // failing for exactly the case the user reported.  We instead detect
   // weekly-off / holiday from the calendar independently, then check
   // for any signal that the employee actually worked that day.
-  const Holiday = require('../models/Holiday');
+  // Phase 73 -- unified holiday set (Holiday collection + Event.isHoliday).
+  const { holidayDaySet } = require('../services/eventOccurrences');
   const Attendance = require('../models/Attendance');
-  const holidayMap = new Map(
-    (await Holiday.find({ date: { $gte: from, $lt: to } }).select('date').lean())
-      .map((h) => [startOfDay(h.date).toISOString(), true]),
-  );
+  const _endInclusive = new Date(to.getTime() - 86400000); // convert exclusive $lt boundary
+  const _holidayIsoSet = await holidayDaySet(from, _endInclusive);
+  // Preserve the historical isoString-keyed lookup shape so downstream
+  // `holidayMap.has(iso)` calls still work without extra changes.
+  const holidayMap = new Map();
+  for (const key of _holidayIsoSet) holidayMap.set(new Date(`${key}T00:00:00.000Z`).toISOString(), true);
   const attRecords = await Attendance.find({
     employee: employee._id,
     date: { $gte: from, $lt: to },

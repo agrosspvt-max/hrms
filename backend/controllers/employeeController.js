@@ -326,6 +326,18 @@ const updateEmployee = asyncHandler(async (req, res) => {
     } catch (err) {
       console.warn('[BIRTHDAY-DELETE] notification cleanup failed:', err.message);
     }
+    // Phase 73 -- orphan cleanup.  If HR previously stored an explicit
+    // birthday Event for this user (via the "New Event" modal with
+    // type=Birthday), clearing the DoB should NOT leave that Event row
+    // hanging on the calendar.  Remove any stored birthday Event
+    // linked to this user so the calendar, upcoming widget and
+    // analytics stay in lock-step.
+    try {
+      const Event = require('../models/Event');
+      await Event.deleteMany({ type: 'birthday', linkedEmployee: target._id });
+    } catch (err) {
+      console.warn('[BIRTHDAY-DELETE] orphan Event cleanup failed:', err.message);
+    }
   }
 
   // Keep Department.hodEmployeeId in sync when HOD assignment changed.

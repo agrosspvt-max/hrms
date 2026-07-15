@@ -91,12 +91,16 @@ const countWorkingDays = (from, to, ctx = {}) => {
  * The returned ctx is safe to pass to any of the helpers above.
  */
 const loadWorkingDayContext = async ({ employee, from, to }) => {
-  const Holiday = require('../models/Holiday');
-  const Leave   = require('../models/Leave');
+  const Leave = require('../models/Leave');
+  // Phase 73 -- holidaySet is now the UNIFIED day-set (Holiday
+  // collection + Event.isHoliday=true) so working-day math treats
+  // both identically.  Sourced from the shared resolver so this file
+  // never queries Holiday / Event directly again.
+  const { holidayDaySet } = require('../services/eventOccurrences');
   const start = startOfDay(from);
   const end   = startOfDay(to);
-  const [holidays, leaves] = await Promise.all([
-    Holiday.find({ date: { $gte: start, $lte: end } }).select('date').lean(),
+  const [holidaySet, leaves] = await Promise.all([
+    holidayDaySet(start, end),
     Leave.find({
       employee: employee._id,
       status: 'approved',
@@ -104,7 +108,6 @@ const loadWorkingDayContext = async ({ employee, from, to }) => {
       toDate:   { $gte: start },
     }).select('fromDate toDate').lean(),
   ]);
-  const holidaySet = new Set(holidays.map((h) => _iso(h.date)));
   const leaveDaySet = new Set();
   for (const lv of leaves) {
     let t = startOfDay(lv.fromDate).getTime();

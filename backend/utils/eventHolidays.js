@@ -1,40 +1,42 @@
 /**
- * eventHolidays - thin bridge used by the daily engine so events flagged
- * `isHoliday=true` stop work generation alongside the existing Holiday
- * model.  Birthdays are guaranteed to NEVER set isHoliday at the
- * controller layer, so the rules in the spec are enforced end-to-end.
+ * eventHolidays -- backwards-compatible thin bridge.
+ *
+ * Phase 73: the original file duplicated Event expansion / yearly
+ * recurrence logic against `services/eventOccurrences.js`.  The
+ * duplication is removed; both exports now delegate to the shared
+ * resolver so there is exactly ONE place where "is this day a holiday
+ * because of an Event with isHoliday=true?" is decided.
+ *
+ * NOTE: the returned Map preserves the old string-ISO key format so
+ * existing callers (dailyEngine.generateDailyForEmployee +
+ * dailyEngine.deriveAttendance) work unchanged.
  */
-const Event = require('../models/Event');
-const { startOfDay, addDays, eachDay } = require('./dateHelpers');
-
-const sameDayInYear = (d, year) => new Date(Date.UTC(year, d.getUTCMonth(), d.getUTCDate()));
+const { holidayDaySet, isHolidayOn: _isHolidayOn, resolveOccurrences } = require('../services/eventOccurrences');
+const { startOfDay, addDays } = require('./dateHelpers');
 
 /**
- * Walk yearly-recurring + one-off events that have isHoliday=true and
- * return a Map<YMD, { name }> covering [from, to).
+ * Map<isoDate, { name }> of EVENT-driven holidays (Event.isHoliday=true)
+ * inside [from, to).  Historical signature: half-open [from, to).  We
+ * convert to the resolver's inclusive [from, to] internally and drop
+ * the upper boundary day to preserve the original semantics.
  */
 const getEventHolidayMap = async (from, to) => {
-  const evs = await Event.find({ isHoliday: true }).lean();
+  const fromIn = startOfDay(from);
+  const toEx   = startOfDay(to);           // caller's exclusive upper
+  // Resolver uses inclusive [from, to]; subtract one day to match the
+  // legacy half-open contract.
+  const toIn = addDays(toEx, -1);
   const map = new Map();
-  const stamp = (d, name) => map.set(d.toISOString(), { name });
-  for (const ev of evs) {
-    const start = startOfDay(ev.startDate);
-    const end = ev.endDate ? startOfDay(ev.endDate) : start;
-    const span = Math.max(0, Math.round((end - start) / 86400000));
-    const occurrences = [];
-    if (ev.repeatYearly) {
-      for (let y = from.getUTCFullYear() - 1; y <= to.getUTCFullYear() + 1; y += 1) {
-        const occStart = sameDayInYear(start, y);
-        const occEnd = addDays(occStart, span);
-        if (occEnd >= from && occStart < to) occurrences.push([occStart, occEnd]);
-      }
-    } else if (end >= from && start < to) {
-      occurrences.push([start, end]);
-    }
-    for (const [s, e] of occurrences) {
-      for (const day of eachDay(s, addDays(e, 1))) {
-        if (day >= from && day < to) stamp(day, ev.title);
-      }
+  if (toIn < fromIn) return map;
+  const occs = await resolveOccurrences({ from: fromIn, to: toIn });
+  for (const o of occs) {
+    // Only Event-sourced holidays here -- Holiday-collection rows are
+    // fetched separately by the legacy engine sites to keep the
+    // original two-step merge behaviour intact.
+    if (o.source !== 'event' || !o.isHoliday) continue;
+    for (let t = o.occStart.getTime(); t <= o.occEnd.getTime(); t += 86400000) {
+      const d = new Date(t);
+      if (d >= fromIn && d <= toIn) map.set(d.toISOString(), { name: o.title });
     }
   }
   return map;
@@ -42,10 +44,23 @@ const getEventHolidayMap = async (from, to) => {
 
 /** True (with name) if an event marks this single day as a holiday. */
 const isEventHolidayOn = async (day) => {
+  const hit = await _isHolidayOn(day);
+  // The unified helper returns holidays from EITHER source; the legacy
+  // consumer of this function only wanted Event-driven holidays (the
+  // Holiday collection is queried separately alongside).  Filter to
+  // Event source only to preserve exact behaviour.
+  if (!hit) return null;
   const d = startOfDay(day);
-  const map = await getEventHolidayMap(d, addDays(d, 1));
-  const hit = map.get(d.toISOString());
-  return hit ? hit.name : null;
+  const occs = await resolveOccurrences({ from: d, to: d });
+  const eventHit = occs.find((o) => o.isHoliday && o.source === 'event');
+  return eventHit ? eventHit.title : null;
 };
 
-module.exports = { getEventHolidayMap, isEventHolidayOn };
+/**
+ * Phase 73 addition: canonical day-set used by everything that needs
+ * "unified holiday" semantics (Holiday collection + Event.isHoliday).
+ * Callers should prefer this over the legacy pair above.
+ */
+const unifiedHolidayDaySet = holidayDaySet;
+
+module.exports = { getEventHolidayMap, isEventHolidayOn, unifiedHolidayDaySet };

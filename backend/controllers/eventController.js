@@ -1,77 +1,43 @@
+/**
+ * eventController.js
+ *
+ * Phase 73 -- every read endpoint here is now a thin adapter over
+ * `services/eventOccurrences.js`.  There is exactly ONE aggregation
+ * pipeline in the module; the endpoints below choose their date
+ * window and (for analytics) partition the result via the shared
+ * `bucketize()` helper.  Nothing here queries Event / Holiday /
+ * User directly for reads anymore.
+ *
+ * Notification firing was intentionally disabled in Phase 45 and
+ * the dead `processDue` / `fireOnce` scaffold has been removed here.
+ * If notifications are ever re-enabled they belong in their own
+ * dedicated module and should still consume the shared resolver.
+ */
 const asyncHandler = require('express-async-handler');
 const Event = require('../models/Event');
-const Holiday = require('../models/Holiday');
-const User = require('../models/User');
-const Notification = require('../models/Notification');
-const { startOfDay, addDays, parseDay, formatYMD } = require('../utils/dateHelpers');
-
-const COMPANY_NAME = () => process.env.COMPANY_NAME || 'Agromaxx Industry';
-
-/** Same MM-DD as the given date in a target year (UTC). */
-const sameDayInYear = (d, year) => new Date(Date.UTC(year, d.getUTCMonth(), d.getUTCDate()));
-
-/**
- * Expand a yearly recurring event to its in-range occurrences.  Returns
- * one occurrence per matching year in [from, to).  Non-recurring events
- * fall through unchanged.
- */
-const expandEvent = (ev, from, to) => {
-  const start = startOfDay(ev.startDate);
-  const end = ev.endDate ? startOfDay(ev.endDate) : start;
-  const span = Math.max(0, Math.round((end - start) / 86400000));
-  if (!ev.repeatYearly) {
-    if (end >= from && start < to) return [{ ...ev, occStart: start, occEnd: end }];
-    return [];
-  }
-  const out = [];
-  for (let y = from.getUTCFullYear() - 1; y <= to.getUTCFullYear() + 1; y += 1) {
-    const occStart = sameDayInYear(start, y);
-    const occEnd = addDays(occStart, span);
-    if (occEnd >= from && occStart < to) out.push({ ...ev, occStart, occEnd });
-  }
-  return out;
-};
-
-/**
- * Birthdays auto-derived from active employees' dateOfBirth.  Anyone can
- * see today's birthdays; the calendar also shows them for richer browsing.
- */
-const birthdaysForRange = async (from, to) => {
-  const employees = await User.find({ status: 'active', dateOfBirth: { $exists: true, $ne: null } })
-    .select('name employeeId dateOfBirth department designation').lean();
-  const out = [];
-  for (const u of employees) {
-    if (!u.dateOfBirth) continue;
-    const dob = new Date(u.dateOfBirth);
-    for (let y = from.getUTCFullYear() - 1; y <= to.getUTCFullYear() + 1; y += 1) {
-      const occ = sameDayInYear(dob, y);
-      if (occ >= from && occ < to) {
-        out.push({
-          _id: `birthday:${u._id}:${y}`,
-          type: 'birthday', title: `${u.name}'s Birthday`,
-          description: `${u.name} (${u.employeeId})`,
-          isHoliday: false, notify: true, audience: 'everyone',
-          repeatYearly: true,
-          occStart: occ, occEnd: occ,
-          linkedEmployee: u._id, linkedEmployeeName: u.name,
-        });
-      }
-    }
-  }
-  return out;
-};
+const User  = require('../models/User');
+const {
+  inclusiveRange,
+  resolveOccurrences,
+  bucketize,
+  classify,
+} = require('../services/eventOccurrences');
+const { startOfDay, addDays, parseDay } = require('../utils/dateHelpers');
 
 /* ============================== CRUD ============================== */
 
+/**
+ * GET /api/events?from=&to=
+ * Default window: today-30 .. today+89 (inclusive) so the calendar's
+ * "surrounding month" view still works.  Every occurrence -- Event
+ * rows, Holiday collection entries and auto-birthdays -- is returned
+ * from the same resolver so the calendar always matches analytics.
+ */
 const list = asyncHandler(async (req, res) => {
   const from = req.query.from ? parseDay(req.query.from) : addDays(startOfDay(new Date()), -30);
-  const to = req.query.to ? addDays(parseDay(req.query.to), 1) : addDays(startOfDay(new Date()), 90);
-  const stored = await Event.find({}).lean();
-  let occurrences = [];
-  for (const ev of stored) occurrences.push(...expandEvent(ev, from, to));
-  occurrences.push(...await birthdaysForRange(from, to));
-  occurrences.sort((a, b) => a.occStart - b.occStart);
-  res.json(occurrences.map((o) => ({ ...o, occStart: o.occStart, occEnd: o.occEnd })));
+  const to   = req.query.to   ? parseDay(req.query.to)   : addDays(startOfDay(new Date()),  89);
+  const occurrences = await resolveOccurrences({ from, to });
+  res.json(occurrences);
 });
 
 const get = asyncHandler(async (req, res) => {
@@ -128,125 +94,93 @@ const remove = asyncHandler(async (req, res) => {
 
 /* ========================= Reads / widgets ======================== */
 
+/**
+ * GET /api/events/upcoming?days=N
+ * Inclusive window: today .. today+(N-1).  Returns the same normalised
+ * occurrence shape as /events (calendar + widget consume identical data).
+ */
 const upcoming = asyncHandler(async (req, res) => {
-  const today = startOfDay(new Date());
-  const to = addDays(today, Number(req.query.days || 30));
-  const stored = await Event.find({}).lean();
-  const all = [];
-  for (const ev of stored) all.push(...expandEvent(ev, today, addDays(to, 1)));
-  all.push(...await birthdaysForRange(today, addDays(to, 1)));
-  // Include the existing Holiday model so the widget shows real holidays too.
-  const holidays = await Holiday.find({ date: { $gte: today, $lt: addDays(to, 1) } }).lean();
-  for (const h of holidays) {
-    all.push({ _id: `holiday:${h._id}`, type: 'holiday', title: h.name, description: h.description || '',
-      isHoliday: true, occStart: startOfDay(h.date), occEnd: startOfDay(h.date), repeatYearly: false });
-  }
-  all.sort((a, b) => a.occStart - b.occStart);
-  res.json(all);
+  const days = Math.max(1, Number(req.query.days || 30));
+  const { from, to } = inclusiveRange(startOfDay(new Date()), days);
+  const occurrences = await resolveOccurrences({ from, to });
+  res.json(occurrences);
 });
-
-const birthdaysToday = asyncHandler(async (_req, res) => {
-  const today = startOfDay(new Date());
-  const list = await birthdaysForRange(today, addDays(today, 1));
-  res.json(list);
-});
-
-/* ===================== Notifications + analytics ================== */
 
 /**
- * Idempotent on-demand pass: fire today's birthday + event notifications.
- * Safe to call from any dashboard load - duplicate notifications are
- * suppressed by checking for an existing same-day notification per
- * (recipient, type, eventKey).
+ * GET /api/events/birthdays/today
+ * Every occurrence today that classifies as a birthday.  This
+ * unifies auto-birthdays (User.dob) AND stored Event rows of
+ * type='birthday' (previous versions missed the latter).
  */
-const processDue = asyncHandler(async (req, res) => {
+const birthdaysToday = asyncHandler(async (_req, res) => {
   const today = startOfDay(new Date());
-  const tomorrow = addDays(today, 1);
-
-  // ---- Birthdays ----
-  const bdays = await birthdaysForRange(today, tomorrow);
-  for (const b of bdays) {
-    // To the birthday person.
-    await fireOnce(b.linkedEmployee, 'birthday_today', `birthday:${b.linkedEmployee}:${formatYMD(today)}:self`, {
-      title: `Happy Birthday from ${COMPANY_NAME()}`,
-      message: `Wishing you a fantastic year ahead!`,
-    });
-    // Team-wide (everyone except the birthday person).
-    const others = await User.find({ status: 'active', _id: { $ne: b.linkedEmployee } }).select('_id');
-    for (const u of others) {
-      await fireOnce(u._id, 'birthday_today', `birthday:${b.linkedEmployee}:${formatYMD(today)}:${u._id}`, {
-        title: 'Birthday today',
-        message: `Today is ${b.linkedEmployeeName}'s birthday — wish them well!`,
-      });
-    }
-  }
-
-  // ---- Stored events (notification offsets) ----
-  const events = await Event.find({ notify: true }).lean();
-  for (const ev of events) {
-    for (const offset of (ev.notifyOffsets || [0])) {
-      const target = addDays(today, offset); // notify N days BEFORE event day → look ahead
-      const occs = expandEvent(ev, target, addDays(target, 1));
-      if (occs.length === 0) continue;
-      const occ = occs[0];
-      const eventKey = `event:${ev._id}:${formatYMD(occ.occStart)}:${offset}`;
-      const title = offset === 0 ? `Today: ${ev.title}` : `Upcoming: ${ev.title}`;
-      const message = offset === 0
-        ? (ev.description || `${ev.title} is today.`)
-        : `${ev.title} starts in ${offset} day${offset === 1 ? '' : 's'}.`;
-      const audience = await resolveAudience(ev);
-      for (const uid of audience) {
-        const type = offset === 0 ? 'event_today' : 'event_reminder';
-        await fireOnce(uid, type, eventKey + `:${uid}`, { title, message });
-      }
-    }
-  }
-
-  res.json({ ok: true });
+  const occurrences = await resolveOccurrences({ from: today, to: today });
+  const bdays = occurrences.filter((o) => classify(o) === 'birthday');
+  res.json(bdays);
 });
 
-const resolveAudience = async (ev) => {
-  if (ev.audience === 'employees') return (ev.audienceEmployees || []).map(String);
-  let where = { status: 'active' };
-  if (ev.audience === 'department' && ev.audienceDepartment) where.department = ev.audienceDepartment;
-  if (ev.audience === 'designation' && ev.audienceDesignation) where.designation = ev.audienceDesignation;
-  const users = await User.find(where).select('_id').lean();
-  return users.map((u) => String(u._id));
-};
+/* ===================== Notifications ============================== */
+/*
+ * Phase 45 disabled birthday / event reminder notifications and
+ * Phase 73 removed the dead `processDue` / `fireOnce` scaffold that
+ * still walked the resolver for no side-effect.  Frontend callers
+ * that previously POSTed /events/process-due are updated to no
+ * longer do so; the route is removed in eventRoutes.js.
+ */
 
-// Phase 45 -- DISABLED.  Birthday / event reminders were reclassified
-// as reminder spam; the dedicated Upcoming Events widget on the
-// Employee Dashboard already surfaces them.  Keeping the function as a
-// no-op so callers (sweepDailyNotifications, birthday emitter) compile
-// without changes.
-// eslint-disable-next-line no-unused-vars
-const fireOnce = async (_recipient, _type, _eventKey, _payload) => {};
+/* ===================== Analytics ================================== */
 
+/**
+ * GET /api/events/analytics
+ *
+ * Overview cards for the Events & Holidays management page.  Uses the
+ * shared resolver + shared classifier so every "Upcoming (90d)" figure
+ * is computed as a strict partition of the same list the calendar and
+ * upcoming widget render.  No bucket ever overlaps another; the total
+ * is the simple sum.
+ */
 const analytics = asyncHandler(async (_req, res) => {
   const today = startOfDay(new Date());
-  const upcomingTo = addDays(today, 90);
-  const stored = await Event.find({}).lean();
-  const counts = { festival: 0, company_event: 0, custom: 0 };
-  const upcomingCounts = { events: 0, festivals: 0, holidays: 0, birthdays: 0 };
-  for (const ev of stored) {
-    if (counts[ev.type] !== undefined) counts[ev.type] += 1;
-    const occs = expandEvent(ev, today, upcomingTo);
-    if (occs.length) {
-      upcomingCounts.events += occs.length;
-      if (ev.type === 'festival') upcomingCounts.festivals += occs.length;
-    }
-  }
-  const totalHolidays = await Holiday.countDocuments({});
-  const upcomingHolidays = await Holiday.countDocuments({ date: { $gte: today, $lt: upcomingTo } });
-  const bdays = await birthdaysForRange(today, upcomingTo);
-  upcomingCounts.birthdays = bdays.length;
-  upcomingCounts.holidays = upcomingHolidays;
-  const totalBirthdays = await User.countDocuments({ status: 'active', dateOfBirth: { $exists: true, $ne: null } });
+  const { from, to } = inclusiveRange(today, 90);
+
+  // ---- Totals (all-time / on-file) ------------------------------
+  // Every-time counts read from the raw collections because "totals"
+  // is intentionally not date-bounded.  These stay in sync with the
+  // resolver because the resolver reads the same collections.
+  const [totalHolidays, evTypeCounts, totalBirthdays] = await Promise.all([
+    require('../models/Holiday').countDocuments({}),
+    Event.aggregate([{ $group: { _id: '$type', n: { $sum: 1 } } }]),
+    User.countDocuments({ status: 'active', dateOfBirth: { $exists: true, $ne: null } }),
+  ]);
+  const byType = { festival: 0, company_event: 0, custom: 0, birthday: 0 };
+  for (const row of evTypeCounts) if (byType[row._id] !== undefined) byType[row._id] = row.n;
+
+  // ---- Upcoming buckets via shared partitioning -------------------
+  const occurrences = await resolveOccurrences({ from, to });
+  const buckets = bucketize(occurrences);
 
   res.json({
-    totals: { holidays: totalHolidays, festivals: counts.festival, companyEvents: counts.company_event, custom: counts.custom, birthdays: totalBirthdays },
-    upcoming: upcomingCounts,
+    range: { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) },
+    totals: {
+      holidays: totalHolidays,
+      festivals: byType.festival,
+      companyEvents: byType.company_event,
+      custom: byType.custom,
+      // Birthdays "on file" = active users with a DOB PLUS any stored
+      // birthday events that don't map to a user's DOB (rare, but the
+      // classifier includes both so totals stay honest).
+      birthdays: totalBirthdays + byType.birthday,
+    },
+    upcoming: {
+      birthdays: buckets.birthdays,
+      holidays:  buckets.holidays,
+      events:    buckets.events,
+      total:     buckets.total,
+    },
   });
 });
 
-module.exports = { list, get, create, update, remove, upcoming, birthdaysToday, processDue, analytics };
+module.exports = {
+  list, get, create, update, remove,
+  upcoming, birthdaysToday, analytics,
+};

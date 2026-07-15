@@ -90,7 +90,9 @@ const applyAutoHalfDay = async (employee, day) => {
   if (isWeeklyOff(employee, day)) return;
 
   // Guard 2: any kind of holiday on this date.
-  const holidayToday = await Holiday.findOne({ date: day });
+  // Phase 73 -- unified check: Holiday collection OR Event.isHoliday=true.
+  const { isHolidayOn } = require('../services/eventOccurrences');
+  const holidayToday = await isHolidayOn(day);
   if (holidayToday) return;
 
   // Guard 3: an approved FULL-day leave already owns this day (derive
@@ -154,8 +156,9 @@ const getToday = asyncHandler(async (req, res) => {
   const employee = await User.findById(req.user._id);
   const today = startOfDay(new Date());
 
-  // Holiday + leave + weekly-off short-circuits
-  const holiday = await Holiday.findOne({ date: today });
+  // Holiday + leave + weekly-off short-circuits (Phase 73 unified).
+  const { isHolidayOn: _isHolidayOn2 } = require('../services/eventOccurrences');
+  const holiday = await _isHolidayOn2(today);
   const leaveToday = await Leave.findOne({
     employee: employee._id,
     status: 'approved',
@@ -348,8 +351,10 @@ const submitOne = asyncHandler(async (req, res) => {
   }
 
   // Block submission on a holiday (in case the row was created earlier
-  // and HR added a holiday after the fact).
-  const holidayToday = await Holiday.findOne({ date: today });
+  // and HR added a holiday after the fact).  Phase 73 -- unified check
+  // so an Event.isHoliday=true event also blocks submission.
+  const { isHolidayOn: _isHolidayOn3 } = require('../services/eventOccurrences');
+  const holidayToday = await _isHolidayOn3(today);
   if (holidayToday) {
     res.status(400);
     throw new Error(`Today is a holiday: ${holidayToday.name}. No submissions are required.`);

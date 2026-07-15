@@ -109,7 +109,9 @@ const todayMine = asyncHandler(async (req, res) => {
   if (_isWeeklyOff(employee, day)) {
     return res.json({ eligible: false, reason: 'weekly_off' });
   }
-  const holiday = await Holiday.findOne({ date: day }).lean();
+  // Phase 73 -- unified holiday check.
+  const { isHolidayOn: _isHolidayOn } = require('../services/eventOccurrences');
+  const holiday = await _isHolidayOn(day);
   if (holiday) return res.json({ eligible: false, reason: 'holiday' });
   if (await _approvedFullDayLeave(employee._id, day)) {
     return res.json({ eligible: false, reason: 'approved_leave' });
@@ -142,7 +144,9 @@ const confirm = asyncHandler(async (req, res) => {
   if (_isWeeklyOff(employee, day)) {
     res.status(400); throw new Error('Today is a weekly off — no confirmation needed.');
   }
-  if (await Holiday.findOne({ date: day })) {
+  // Phase 73 -- unified holiday check.
+  const { isHolidayOn: _isHolidayOn2 } = require('../services/eventOccurrences');
+  if (await _isHolidayOn2(day)) {
     res.status(400); throw new Error('Today is a holiday — no confirmation needed.');
   }
   if (await _approvedFullDayLeave(employee._id, day)) {
@@ -214,6 +218,10 @@ const queueForDay = asyncHandler(async (req, res) => {
   // queue can classify each employee-day without any per-row round
   // trips.  Priority: Holiday > Weekly Off > Approved Leave (paid or
   // unpaid) > Existing Attendance Record > Confirmation status.
+  // Phase 73 -- resolve holidays through the unified resolver so a
+  // day marked "isHoliday" via the Event collection also drives the
+  // queue's Holiday classification.
+  const { isHolidayOn: _isHolidayOn3 } = require('../services/eventOccurrences');
   const [confs, attendance, leaves, holiday] = await Promise.all([
     AttendanceConfirmation.find({ employee: { $in: empIds }, date: day })
       .populate('reviewedBy', 'name role').lean(),
@@ -225,7 +233,7 @@ const queueForDay = asyncHandler(async (req, res) => {
       fromDate: { $lte: day },
       toDate:   { $gte: day },
     }).lean(),
-    Holiday.findOne({ date: day }).lean(),
+    _isHolidayOn3(day),
   ]);
   const confByEmp = new Map(confs.map((c) => [String(c.employee), c]));
   const attByEmp  = new Map(attendance.map((a) => [String(a.employee), a]));

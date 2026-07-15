@@ -83,11 +83,9 @@ const apply = asyncHandler(async (req, res) => {
   // balance is never deducted for non-working days.  The employee's
   // weeklyOff config (default [0] = Sunday) is the source of truth.
   const requester = await User.findById(req.user._id).select('weeklyOff');
-  const holidays = await Holiday.find({
-    date: { $gte: from, $lte: to },
-  }).select('date').lean();
-  const { formatYMD } = require('../utils/dateHelpers');
-  const holidaySet = new Set(holidays.map((h) => formatYMD(h.date)));
+  // Phase 73 -- unified holiday set (Holiday collection + Event.isHoliday).
+  const { holidayDaySet } = require('../services/eventOccurrences');
+  const holidaySet = await holidayDaySet(from, to);
   const days = effectiveLeaveDays({
     from, to,
     weeklyOff: requester?.weeklyOff || [0],

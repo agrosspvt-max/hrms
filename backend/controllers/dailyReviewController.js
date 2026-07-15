@@ -431,10 +431,13 @@ const listGrouped = asyncHandler(async (req, res) => {
         toDate:   { $gte: dayStart },
       }).lean();
 
-      const holidaysRange = await Holiday.find({
-        date: { $gte: dayStart, $lte: dayEnd },
-      }).lean();
-      const holidayByDay = new Map(holidaysRange.map((h) => [_dayKeyStr(h.date), h]));
+      // Phase 73 -- unified holiday day set (Holiday collection +
+      // Event.isHoliday=true).  Every consumer of holidayByDay now
+      // reflects the same classification the calendar shows.
+      const { holidayDaySet: _holidayDaySet } = require('../services/eventOccurrences');
+      const _holidayIsoSet = await _holidayDaySet(dayStart, dayEnd);
+      const holidayByDay = new Map();
+      for (const iso of _holidayIsoSet) holidayByDay.set(iso, { name: '' });
 
       // Aggregate per employee across the range.
       const perEmp = new Map(); // empId -> { employee, missingDates:[], assignmentsUnion:Map(id -> a) }
@@ -622,7 +625,9 @@ const listGrouped = asyncHandler(async (req, res) => {
       date: day,
     }).lean();
     const attByEmp = new Map(attRecords.map((a) => [String(a.employee), a]));
-    const holiday = await Holiday.findOne({ date: day });
+    // Phase 73 -- unified holiday check for the single-date branch.
+    const { isHolidayOn: _isHolidayOn } = require('../services/eventOccurrences');
+    const holiday = await _isHolidayOn(day);
 
     const notSubmittedCards = [];
     const summary = { expectedToSubmit: 0, submitted: 0, notSubmitted: 0, onApprovedLeave: 0 };
