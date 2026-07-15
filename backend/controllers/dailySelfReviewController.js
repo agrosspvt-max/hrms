@@ -61,6 +61,9 @@ const _resolveScope = async (req) => {
   if (q.department && mongoose.Types.ObjectId.isValid(q.department)) {
     empWhere.department = q.department;
   }
+  if (q.designation && mongoose.Types.ObjectId.isValid(q.designation)) {
+    empWhere.designation = q.designation;
+  }
   if (q.employee && mongoose.Types.ObjectId.isValid(q.employee)) {
     empWhere._id = q.employee;
   }
@@ -378,25 +381,59 @@ const _libraryLookup = async (req, { field, requireNonEmpty }) => {
   const rows = await DailyReflection.find(match)
     .select(`employee date selfRating ${field}`)
     .sort({ date: -1 })
-    .limit(500)
+    .limit(1000)
     .lean();
   const keyword = String(q.keyword || '').trim().toLowerCase();
+
+  // Phase 70 -- attendance + submission status filters + click-through
+  // to the original submission.  Batched joins so a 1000-row library
+  // costs two queries, not N.
+  const [subs, attRows] = rows.length ? await Promise.all([
+    Submission.find({
+      employee: { $in: empIds },
+      date: { $gte: from, $lte: to },
+    }).select('_id employee date submitted reviewStatus').lean(),
+    Attendance.find({
+      employee: { $in: empIds },
+      date: { $gte: from, $lte: to },
+    }).select('employee date status').lean(),
+  ]) : [[], []];
+  const subKey = (e, d) => `${String(e)}|${_isoDay(d)}`;
+  const subMap = new Map();
+  for (const s of subs) {
+    const k = subKey(s.employee, s.date);
+    if (!subMap.has(k) || (!subMap.get(k).submitted && s.submitted)) subMap.set(k, s);
+  }
+  const attMap = new Map(attRows.map((a) => [subKey(a.employee, a.date), a.status]));
+
+  const attFilter = (q.attendance || '').trim();
+  const subFilter = (q.submissionStatus || '').trim();
+
   const out = rows
     .filter((r) => r[field] && String(r[field]).trim())
     .filter((r) => !keyword || String(r[field]).toLowerCase().includes(keyword))
     .map((r) => {
       const e = empMap.get(String(r.employee)) || {};
+      const k = subKey(r.employee, r.date);
+      const s = subMap.get(k);
+      const attStatus = attMap.get(k) || '';
+      const subStatus = s ? (s.submitted ? (s.reviewStatus || 'pending') : 'draft') : 'none';
       return {
         _id: r._id,
         date: r.date,
         selfRating: r.selfRating,
         [field]: r[field],
+        attendance: attStatus,
+        submissionId: s?._id || null,
+        submissionStatus: subStatus,
         employee: e ? {
           _id: e._id, name: e.name, employeeId: e.employeeId,
           department: e.department?.name || '',
         } : null,
       };
-    });
+    })
+    .filter((r) => !attFilter || r.attendance === attFilter)
+    .filter((r) => !subFilter || r.submissionStatus === subFilter);
   return out;
 };
 
@@ -486,4 +523,261 @@ const exportCsv = asyncHandler(async (req, res) => {
   res.send(lines.join('\n'));
 });
 
-module.exports = { overview, employeeDetail, ideasLibrary, notesLibrary, exportCsv };
+/* ------------------------------------------------------------------ */
+/* GET /api/self-review/breakdown                                       */
+/* ------------------------------------------------------------------ */
+/**
+ * Row-level drill-down for every clickable card / chart in the tab.
+ * Query:
+ *   metricId (required) -- see METRIC_INFO on the frontend
+ *   from / to / department / designation / employee -- same scope shape
+ *   Sub-filters (metric-specific):
+ *     rating   -- narrow to reflections with exact selfRating
+ *     day      -- narrow to one day (YYYY-MM-DD)
+ *     week     -- ISO week key (YYYY-Www)
+ *     month    -- YYYY-MM
+ *     weekday  -- 0..6 (Sun..Sat)
+ *     deptName -- narrow to one department name (works when the caller
+ *                 already scoped by department via the id, or wants to
+ *                 slice by department from a dept-chart click)
+ *
+ * Returns a homogeneous `rows` array plus `columns` metadata so a
+ * generic sortable / paginated / CSV-exportable table can render it
+ * on the client without a bespoke component per metric.
+ */
+const breakdown = asyncHandler(async (req, res) => {
+  let scope;
+  try { scope = await _resolveScope(req); }
+  catch (e) { res.status(e._http || 500); throw e; }
+  const { from, to, empIds, empMap } = scope;
+
+  const q = req.query || {};
+  const metricId = String(q.metricId || '');
+  const totalDays = Math.max(1, Math.floor((to - from) / 86400000) + 1);
+
+  // Base fetch, sub-filtered per metric.  Every metric ends up with a
+  // uniform row shape { date, employeeId, employeeName, department,
+  // rating, note, idea, submissionId, submissionStatus, attendance }.
+  const enrichRows = async (rows) => {
+    if (rows.length === 0) return [];
+    const empIdsUsed = [...new Set(rows.map((r) => String(r.employee)))];
+    const [subs, attRows] = await Promise.all([
+      Submission.find({
+        employee: { $in: empIdsUsed },
+        date: { $gte: from, $lte: to },
+      }).select('_id employee date submitted reviewStatus').lean(),
+      Attendance.find({
+        employee: { $in: empIdsUsed },
+        date: { $gte: from, $lte: to },
+      }).select('employee date status').lean(),
+    ]);
+    const subKey = (e, d) => `${String(e)}|${_isoDay(d)}`;
+    const subMap = new Map();
+    for (const s of subs) {
+      const k = subKey(s.employee, s.date);
+      if (!subMap.has(k) || (!subMap.get(k).submitted && s.submitted)) subMap.set(k, s);
+    }
+    const attMap = new Map(attRows.map((a) => [subKey(a.employee, a.date), a.status]));
+
+    return rows.map((r) => {
+      const e = empMap.get(String(r.employee)) || {};
+      const k = subKey(r.employee, r.date);
+      const s = subMap.get(k);
+      return {
+        _id: r._id,
+        date: r.date,
+        rating: r.selfRating,
+        note: r.selfNote || '',
+        idea: r.idea || '',
+        employeeId: e._id || null,
+        employeeName: e.name || '',
+        employeeCode: e.employeeId || '',
+        department: e.department?.name || '',
+        submissionId: s?._id || null,
+        submissionStatus: s ? (s.submitted ? (s.reviewStatus || 'pending') : 'draft') : 'none',
+        attendance: attMap.get(k) || '',
+      };
+    });
+  };
+
+  // Universal date bucket for day/week/month sub-filtering.
+  const dayFilter = q.day ? String(q.day) : '';
+  const weekFilter = q.week ? String(q.week) : '';
+  const monthFilter = q.month ? String(q.month) : '';
+  const weekdayFilter = q.weekday !== undefined && q.weekday !== '' ? Number(q.weekday) : null;
+  const ratingFilter = q.rating !== undefined && q.rating !== '' ? Number(q.rating) : null;
+  const deptNameFilter = q.deptName ? String(q.deptName) : '';
+  const filterCommon = (rows) => rows.filter((r) => {
+    if (dayFilter && _isoDay(r.date) !== dayFilter) return false;
+    if (weekFilter && _isoWeek(r.date) !== weekFilter) return false;
+    if (monthFilter && _isoMonth(r.date) !== monthFilter) return false;
+    if (weekdayFilter !== null && new Date(r.date).getUTCDay() !== weekdayFilter) return false;
+    if (ratingFilter !== null && Math.round(r.selfRating) !== ratingFilter) return false;
+    if (deptNameFilter) {
+      const e = empMap.get(String(r.employee));
+      if ((e?.department?.name || 'Unassigned') !== deptNameFilter) return false;
+    }
+    return true;
+  });
+
+  const cols = [
+    { key: 'date',             label: 'Date',       type: 'date' },
+    { key: 'employeeName',     label: 'Employee' },
+    { key: 'employeeCode',     label: 'Emp ID' },
+    { key: 'department',       label: 'Department' },
+    { key: 'rating',           label: 'Rating',     type: 'number' },
+    { key: 'attendance',       label: 'Attendance' },
+    { key: 'submissionStatus', label: 'Submission' },
+    { key: 'note',             label: 'Note' },
+    { key: 'idea',             label: 'Idea' },
+  ];
+
+  // ---- Metric-specific row sets ----
+  const reflectionRows = await _fetchReflections({ from, to, empIds });
+
+  // Employees list metrics -- render an employee-centric table instead
+  // of a per-reflection row list.
+  const employeeSummary = (rows) => {
+    const map = new Map();
+    for (const r of rows) {
+      const k = String(r.employee);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(r.selfRating);
+    }
+    return [...map.entries()].map(([k, arr]) => {
+      const e = empMap.get(k) || {};
+      const s = _stats(arr);
+      return {
+        employeeId: e._id || null,
+        employeeName: e.name || '',
+        employeeCode: e.employeeId || '',
+        department: e.department?.name || '',
+        count: s.count,
+        avg: s.avg, high: s.high, low: s.low, median: s.median,
+        consistency: Math.round((s.count / totalDays) * 100),
+      };
+    });
+  };
+  const employeeCols = [
+    { key: 'employeeName', label: 'Employee' },
+    { key: 'employeeCode', label: 'Emp ID' },
+    { key: 'department',   label: 'Department' },
+    { key: 'count',        label: 'Reflections',  type: 'number' },
+    { key: 'avg',          label: 'Avg Rating',   type: 'number' },
+    { key: 'high',         label: 'High',         type: 'number' },
+    { key: 'low',          label: 'Low',          type: 'number' },
+    { key: 'median',       label: 'Median',       type: 'number' },
+    { key: 'consistency',  label: 'Consistency %', type: 'number' },
+  ];
+
+  let rows;
+  let columns = cols;
+  let title = '';
+
+  const filtered = filterCommon(reflectionRows);
+
+  switch (metricId) {
+    case 'srAvgRating':
+    case 'srDaily':
+    case 'srWeekly':
+    case 'srMonthly':
+    case 'srHeatmap':
+    case 'srDistribution':
+    case 'srTrendCurrent':
+    case 'srTrendPrevious':
+    case 'srTrendDelta':
+      rows = await enrichRows(filtered);
+      title = 'Reflections in scope';
+      break;
+    case 'srHighestRating': {
+      // Every 10/10 (or the maximum found if none) reflection.
+      const max = Math.max(...reflectionRows.map((r) => r.selfRating), 0);
+      const target = ratingFilter !== null ? ratingFilter : max;
+      rows = await enrichRows(filterCommon(reflectionRows.filter((r) => Math.round(r.selfRating) === Math.round(target))));
+      title = `Reflections rated ${target}`;
+      columns = cols;
+      break;
+    }
+    case 'srLowestRating': {
+      const min = Math.min(...reflectionRows.map((r) => r.selfRating), 10);
+      const target = ratingFilter !== null ? ratingFilter : min;
+      rows = await enrichRows(filterCommon(reflectionRows.filter((r) => Math.round(r.selfRating) === Math.round(target))));
+      title = `Reflections rated ${target}`;
+      columns = cols;
+      break;
+    }
+    case 'srMedianRating': {
+      const sorted = [...reflectionRows].sort((a, b) => a.selfRating - b.selfRating);
+      const medianVal = sorted.length ? sorted[Math.floor(sorted.length / 2)].selfRating : 0;
+      const window = 0.5;
+      rows = await enrichRows(filtered.filter((r) => Math.abs(r.selfRating - medianVal) <= window));
+      title = `Reflections around median (${medianVal})`;
+      columns = cols;
+      break;
+    }
+    case 'srEmployeesSubmitted': {
+      rows = employeeSummary(reflectionRows);
+      columns = employeeCols;
+      title = 'Employees with at least one reflection';
+      break;
+    }
+    case 'srEmployeesMissing': {
+      const reflectedIds = new Set(reflectionRows.map((r) => String(r.employee)));
+      rows = [...empMap.values()]
+        .filter((e) => !reflectedIds.has(String(e._id)))
+        .map((e) => ({
+          employeeId: e._id, employeeName: e.name, employeeCode: e.employeeId,
+          department: e.department?.name || '',
+          count: 0, avg: 0, high: 0, low: 0, median: 0, consistency: 0,
+        }));
+      columns = employeeCols;
+      title = 'Employees missing reflections in this range';
+      break;
+    }
+    case 'srDeptCompare': {
+      // Department roll-up.
+      const byDept = new Map();
+      for (const r of reflectionRows) {
+        const e = empMap.get(String(r.employee));
+        const d = e?.department?.name || 'Unassigned';
+        if (!byDept.has(d)) byDept.set(d, { ratings: [], employees: new Set() });
+        byDept.get(d).ratings.push(r.selfRating);
+        byDept.get(d).employees.add(String(r.employee));
+      }
+      rows = [...byDept.entries()].map(([name, v]) => ({
+        department: name,
+        avg: Math.round((v.ratings.reduce((s, n) => s + n, 0) / v.ratings.length) * 100) / 100,
+        reflections: v.ratings.length,
+        employees: v.employees.size,
+      })).sort((a, b) => b.avg - a.avg);
+      columns = [
+        { key: 'department',  label: 'Department' },
+        { key: 'avg',         label: 'Avg Rating',   type: 'number' },
+        { key: 'reflections', label: 'Reflections',  type: 'number' },
+        { key: 'employees',   label: 'Employees',    type: 'number' },
+      ];
+      title = 'Department comparison';
+      break;
+    }
+    case 'srRanking': {
+      rows = employeeSummary(reflectionRows).filter((e) => e.count >= 3).sort((a, b) => b.avg - a.avg);
+      columns = employeeCols;
+      title = 'Employee ranking (3+ reflections)';
+      break;
+    }
+    default: {
+      rows = await enrichRows(filtered);
+      title = 'Reflections in scope';
+    }
+  }
+
+  res.json({
+    metricId, title,
+    range: { from: from.toISOString().slice(0, 10), to: to.toISOString().slice(0, 10) },
+    columns,
+    rows,
+    totalRows: rows.length,
+  });
+});
+
+module.exports = { overview, employeeDetail, ideasLibrary, notesLibrary, exportCsv, breakdown };

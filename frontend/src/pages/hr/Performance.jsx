@@ -412,12 +412,13 @@ export default function Performance() {
               from: range === 'custom' ? from : '',
               to:   range === 'custom' ? to   : '',
               range: range === 'custom' ? '' : range,
-              department: (mode === 'pendency' || mode === 'completion')
-                ? (scope === 'department' ? scopeValue : '')
-                : department,
-              employee: (mode === 'pendency' || mode === 'completion')
-                ? (scope === 'employee' ? scopeValue : '')
-                : employee,
+              // Reuse the shared Analytics Scope + Scope Value picker
+              // when the user is scoping by employee / department /
+              // designation.  Also honour the standalone department /
+              // designation / employee filters used by Calling mode.
+              department: (scope === 'department' && scopeValue) ? scopeValue : (department || ''),
+              designation: (scope === 'designation' && scopeValue) ? scopeValue : (designation || ''),
+              employee: (scope === 'employee' && scopeValue) ? scopeValue : (employee || ''),
             }}
             canExport={user?.role === 'hr' || user?.role === 'super_admin' || !!user?.isHOD}
           />

@@ -478,6 +478,103 @@ export const METRIC_INFO = {
     why: 'Shows whether the org runs on cadence or ad-hoc work.',
     high: '—', normal: '—', low: '—',
   },
+  // ---- Daily Self Review drill-downs (Phase 70) ----
+  srAvgRating: {
+    title: 'Average Self Rating',
+    meaning: 'Mean self rating across every reflection in scope.',
+    why: 'Headline self-assessment level; not a performance score, purely how the team rated themselves.',
+    high: '—', normal: '—', low: '—',
+  },
+  srHighestRating: {
+    title: 'Highest Self Rating',
+    meaning: 'Every reflection tied for the maximum self rating in the current scope.',
+    why: 'Surfaces who is rating themselves at the top of the scale, and on which days.',
+    high: '—', normal: '—', low: '—',
+  },
+  srLowestRating: {
+    title: 'Lowest Self Rating',
+    meaning: 'Every reflection tied for the minimum self rating in the current scope.',
+    why: 'Surfaces low-self-assessment days that may need a follow-up.',
+    high: '—', normal: '—', low: '—',
+  },
+  srMedianRating: {
+    title: 'Median Self Rating',
+    meaning: 'Reflections whose rating is at or near the middle of the sorted distribution.',
+    why: 'The "typical" self assessment day.',
+    high: '—', normal: '—', low: '—',
+  },
+  srEmployeesSubmitted: {
+    title: 'Employees Submitted',
+    meaning: 'Employees who filed at least one daily reflection in scope.',
+    why: 'Coverage of the self-review process.',
+    high: '—', normal: '—', low: '—',
+  },
+  srEmployeesMissing: {
+    title: 'Employees Missing Reflection',
+    meaning: 'Employees in scope who never filed a reflection in this period.',
+    why: 'Direct list to chase for compliance.',
+    high: '—', normal: '—', low: '—',
+  },
+  srDaily: {
+    title: 'Daily Average Rating',
+    meaning: 'Every reflection contributing to a specific day\'s average.',
+    why: 'See what drove the daily average up or down.',
+    high: '—', normal: '—', low: '—',
+  },
+  srWeekly: {
+    title: 'Weekly Average Rating',
+    meaning: 'Every reflection contributing to a specific ISO-week\'s average.',
+    why: 'See what drove the weekly average.',
+    high: '—', normal: '—', low: '—',
+  },
+  srMonthly: {
+    title: 'Monthly Average Rating',
+    meaning: 'Every reflection contributing to a specific month\'s average.',
+    why: 'See what drove the monthly average.',
+    high: '—', normal: '—', low: '—',
+  },
+  srDistribution: {
+    title: 'Rating Distribution',
+    meaning: 'Every reflection tied to the clicked rating bucket (0..10).',
+    why: 'See exactly who rated themselves at each point on the scale.',
+    high: '—', normal: '—', low: '—',
+  },
+  srDeptCompare: {
+    title: 'Department Comparison',
+    meaning: 'Per-department roll-up of average self rating, employees and reflections.',
+    why: 'Where self-assessment sits by team.',
+    high: '—', normal: '—', low: '—',
+  },
+  srHeatmap: {
+    title: 'Weekday Heatmap',
+    meaning: 'Every reflection filed on the clicked weekday.',
+    why: 'Spot day-of-week patterns (e.g. Monday dips).',
+    high: '—', normal: '—', low: '—',
+  },
+  srRanking: {
+    title: 'Employee Ranking',
+    meaning: 'Full ordered list of employees (3+ reflections) by average rating.',
+    why: 'Complete leaderboard beyond the top/bottom-10 tiles.',
+    high: '—', normal: '—', low: '—',
+  },
+  srTrendCurrent: {
+    title: 'Current Period Average',
+    meaning: 'Every reflection in the current period contributing to the headline average.',
+    why: 'Complete backing dataset behind the current-period tile.',
+    high: '—', normal: '—', low: '—',
+  },
+  srTrendPrevious: {
+    title: 'Previous Period Average',
+    meaning: 'Every reflection in the equal-length prior period.',
+    why: 'The comparison baseline for the trend.',
+    high: '—', normal: '—', low: '—',
+  },
+  srTrendDelta: {
+    title: 'Rating Delta',
+    meaning: 'Employees whose average moved most between the previous and current periods.',
+    why: 'Explains which employees drove the delta up or down.',
+    high: '—', normal: '—', low: '—',
+  },
 };
 
 /** Explanation panel shown at the top of every drill-down. */
