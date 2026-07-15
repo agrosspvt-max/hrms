@@ -58,13 +58,26 @@ const _resolveScope = async (req) => {
       err._http = 403; throw err;
     }
   }
-  if (q.department && mongoose.Types.ObjectId.isValid(q.department)) {
+  // Phase 72 -- Accept the canonical Analytics Scope + Scope Value
+  // pair the shared filter row uses (matches Pendency / Completion) as
+  // the authoritative source, and keep the direct department /
+  // designation / employee params as a compatibility shortcut so any
+  // existing caller (e.g. drill-downs building URLs manually) keeps
+  // working unchanged.
+  const scopeType  = String(q.scopeType || '').trim();
+  const scopeValue = q.scopeValue && mongoose.Types.ObjectId.isValid(q.scopeValue) ? q.scopeValue : '';
+  if (scopeType && scopeValue) {
+    if (scopeType === 'department')  empWhere.department  = scopeValue;
+    if (scopeType === 'designation') empWhere.designation = scopeValue;
+    if (scopeType === 'employee')    empWhere._id         = scopeValue;
+  }
+  if (!empWhere.department && q.department && mongoose.Types.ObjectId.isValid(q.department)) {
     empWhere.department = q.department;
   }
-  if (q.designation && mongoose.Types.ObjectId.isValid(q.designation)) {
+  if (!empWhere.designation && q.designation && mongoose.Types.ObjectId.isValid(q.designation)) {
     empWhere.designation = q.designation;
   }
-  if (q.employee && mongoose.Types.ObjectId.isValid(q.employee)) {
+  if (!empWhere._id && q.employee && mongoose.Types.ObjectId.isValid(q.employee)) {
     empWhere._id = q.employee;
   }
 

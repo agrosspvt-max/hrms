@@ -56,6 +56,14 @@ export default function SelfReviewMode({ filters, canExport }) {
     const p = {};
     if (filters.from && filters.to) { p.from = filters.from; p.to = filters.to; }
     else if (filters.range) p.range = filters.range;
+    // Phase 72 -- canonical scopeType + scopeValue pair (matches the
+    // Analytics Scope + Scope Value picker used by Pendency /
+    // Completion).  The legacy department / designation / employee
+    // fields are also sent for backward-compatibility with older
+    // consumers of the /self-review endpoints, but the backend
+    // resolves scopeType/scopeValue first.
+    if (filters.scopeType)   p.scopeType   = filters.scopeType;
+    if (filters.scopeValue)  p.scopeValue  = filters.scopeValue;
     if (filters.department)  p.department  = filters.department;
     if (filters.designation) p.designation = filters.designation;
     if (filters.employee)    p.employee    = filters.employee;

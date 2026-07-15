@@ -184,12 +184,12 @@ export default function Performance() {
   }, [mode, range, from, to, department, designation, employee, scope, scopeValue, templateType, recurrence, includeTest]);
 
   // Phase 57 -- populated-only scope options for the Pendency /
-  // Completion Analytics Scope dropdown.  Refetched on every time-period
-  // change so options mirror what's actually visible; if the currently
-  // selected scopeValue disappears from the new list we clear it so
-  // charts don't render empty.
+  // Completion / Daily Self Review Analytics Scope dropdown.  Refetched
+  // on every time-period change so options mirror what's actually
+  // visible; if the currently selected scopeValue disappears from the
+  // new list we clear it so charts don't render empty.
   useEffect(() => {
-    if (mode !== 'pendency' && mode !== 'completion') return;
+    if (mode !== 'pendency' && mode !== 'completion' && mode !== 'selfReview') return;
     const params = {};
     if (range === 'custom') { if (!from || !to) return; params.from = from; params.to = to; }
     else params.range = range;
@@ -288,10 +288,14 @@ export default function Performance() {
           <div><label className="label">From</label><input className="input max-w-[150px]" type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} /></div>
           <div><label className="label">To</label><input className="input max-w-[150px]" type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} /></div>
         </>)}
-        {/* Phase 57 -- Pendency + Completion use the new "Analytics
-            Scope + Scope Value" two-filter design.  Calling keeps its
-            own filter layout below. */}
-        {(mode === 'pendency' || mode === 'completion') && (
+        {/* Phase 57 -- Pendency + Completion use the "Analytics Scope
+            + Scope Value" two-filter design.  Calling keeps its own
+            filter layout below.
+            Phase 72 -- Daily Self Review adopts the exact same picker
+            (minus the Template kind -- reflections are per-day, not
+            per-template) so the filtering UX is identical across every
+            Performance tab and no second filter system exists. */}
+        {(mode === 'pendency' || mode === 'completion' || mode === 'selfReview') && (
           <>
             <div className="min-w-[170px]">
               <label className="label">Analytics Scope</label>
@@ -304,7 +308,7 @@ export default function Performance() {
                 <option value="employee">Employee</option>
                 <option value="department">Department</option>
                 <option value="designation">Designation</option>
-                <option value="template">Template</option>
+                {mode !== 'selfReview' && <option value="template">Template</option>}
               </select>
             </div>
             {/* Scope Value dropdown — hidden for Global, dynamic for the
@@ -414,17 +418,20 @@ export default function Performance() {
         mode === 'selfReview' ? (
           <SelfReviewMode
             key="selfReview"
+            // Phase 72 -- match Pendency / Completion exactly: the
+            // Analytics Scope + Scope Value picker is the sole source
+            // of the department / designation / employee filter.  Never
+            // fall back to Calling's standalone dept/desig/emp state --
+            // that would silently AND them together and over-narrow.
             filters={{
               from: range === 'custom' ? from : '',
               to:   range === 'custom' ? to   : '',
               range: range === 'custom' ? '' : range,
-              // Reuse the shared Analytics Scope + Scope Value picker
-              // when the user is scoping by employee / department /
-              // designation.  Also honour the standalone department /
-              // designation / employee filters used by Calling mode.
-              department: (scope === 'department' && scopeValue) ? scopeValue : (department || ''),
-              designation: (scope === 'designation' && scopeValue) ? scopeValue : (designation || ''),
-              employee: (scope === 'employee' && scopeValue) ? scopeValue : (employee || ''),
+              scopeType:  scope || '',
+              scopeValue: scopeValue || '',
+              department:  scope === 'department'  && scopeValue ? scopeValue : '',
+              designation: scope === 'designation' && scopeValue ? scopeValue : '',
+              employee:    scope === 'employee'    && scopeValue ? scopeValue : '',
             }}
             canExport={user?.role === 'hr' || user?.role === 'super_admin' || !!user?.isHOD}
           />
