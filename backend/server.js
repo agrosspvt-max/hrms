@@ -44,6 +44,10 @@ app.use('/api/audit', require('./routes/auditRoutes'));
 app.use('/api', require('./routes/productRoutes'));
 app.use('/api/submission-control', require('./routes/submissionControlRoutes'));
 app.use('/api/daily-review', require('./routes/dailyReviewRoutes'));
+// Phase 69 -- Daily Self Review analytics module.  Pure read-only
+// aggregation over the existing DailyReflection collection; no new
+// data model, no impact on the daily-review workflow.
+app.use('/api/self-review', require('./routes/dailySelfReviewRoutes'));
 app.use('/api/template-analytics', require('./routes/templateAnalyticsRoutes'));
 // Phase 50 — per-employee, per-day notes on the Attendance calendar.
 // Independent of Tasks / Assignments / Submissions / Notifications so

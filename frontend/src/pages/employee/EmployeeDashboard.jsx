@@ -2670,12 +2670,24 @@ function DailyReflectionCard() {
       .catch(() => {});
   }, []);  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Phase 69 -- Self Rating is required.  Validation runs both here
+  // (helpful inline feedback) AND server-side (single source of truth).
+  const ratingValid = rating !== '' && rating !== null && rating !== undefined
+    && Number.isFinite(Number(rating))
+    && Number(rating) >= 0 && Number(rating) <= 10;
+  const ratingError = rating === '' || rating === null || rating === undefined
+    ? 'Self Rating is required.'
+    : !ratingValid
+      ? 'Enter a number between 0 and 10.'
+      : '';
+
   const save = async () => {
+    if (!ratingValid) { toast.error(ratingError); return; }
     setBusy(true);
     try {
       await api.post('/daily-review/reflection', {
         date: todayIso,
-        selfRating: rating,
+        selfRating: Number(rating),
         selfNote: note,
         idea: ideaTxt,
       });
@@ -2691,16 +2703,23 @@ function DailyReflectionCard() {
         <div>
           <div className="text-sm font-semibold text-slate-800">Daily Reflection</div>
           <div className="text-[11px] text-slate-500">
-            One reflection per day, even when you have multiple assignments. HR / HOD sees this once on the review screen.
+            Self Rating is required today. Note + Business Idea are optional.
+            HR / HOD sees this once on the review screen.
           </div>
         </div>
         {savedAt && <span className="text-[11px] text-slate-500">Saved {savedAt.toLocaleTimeString()}</span>}
       </div>
       <div className="grid md:grid-cols-3 gap-3">
         <div>
-          <label className="label">Rating (0-10)</label>
-          <input className="input" type="number" min="0" max="10" step="0.5" placeholder="0 - 10"
+          <label className="label">Self Rating (0-10) <span className="text-red-500">*</span></label>
+          <input
+            className={`input ${!ratingValid && rating !== '' ? 'border-red-400 focus:border-red-500' : ''}`}
+            type="number" min="0" max="10" step="0.5" placeholder="0 - 10"
+            required
             value={rating} onChange={(e) => setRating(e.target.value)} />
+          {rating !== '' && !ratingValid && (
+            <div className="text-[11px] text-red-600 mt-1">{ratingError}</div>
+          )}
         </div>
         <div className="md:col-span-2">
           <label className="label">Note</label>
@@ -2714,7 +2733,7 @@ function DailyReflectionCard() {
           value={ideaTxt} onChange={(e) => setIdea(e.target.value)} />
       </div>
       <div className="flex justify-end">
-        <button className="btn-secondary" disabled={busy} onClick={save}>
+        <button className="btn-secondary" disabled={busy || !ratingValid} onClick={save}>
           {busy ? 'Saving…' : 'Save Reflection'}
         </button>
       </div>

@@ -354,6 +354,51 @@ const submitOne = asyncHandler(async (req, res) => {
     res.status(400);
     throw new Error(`Today is a holiday: ${holidayToday.name}. No submissions are required.`);
   }
+
+  // Phase 69 -- Self Rating is now required before ANY assignment can
+  // be submitted.  Accept the rating inline (upsert onto the day's
+  // DailyReflection) OR require an existing reflection with a valid
+  // rating.  The Daily Self Review analytics module treats every
+  // reflection as authoritative -- enforcing this here keeps the data
+  // set clean without duplicating rating storage.
+  {
+    const DailyReflection = require('../models/DailyReflection');
+    const subDay = sub.date ? startOfDay(sub.date) : today;
+    const inlineRatingRaw = selfRating;
+    let inlineRating = null;
+    if (inlineRatingRaw !== undefined && inlineRatingRaw !== null && inlineRatingRaw !== '') {
+      const n = Number(inlineRatingRaw);
+      if (!Number.isFinite(n) || n < 0 || n > 10) {
+        res.status(400);
+        throw new Error('Self Rating must be a number between 0 and 10.');
+      }
+      inlineRating = n;
+    }
+    if (inlineRating !== null) {
+      await DailyReflection.findOneAndUpdate(
+        { employee: req.user._id, date: subDay },
+        {
+          $set: {
+            selfRating: inlineRating,
+            lastEditedBy: req.user._id,
+            ...(selfNote !== undefined ? { selfNote: String(selfNote || '') } : {}),
+            ...(idea     !== undefined ? { idea:     String(idea     || '') } : {}),
+          },
+          $setOnInsert: { employee: req.user._id, date: subDay },
+        },
+        { upsert: true, setDefaultsOnInsert: true },
+      );
+    } else {
+      const existing = await DailyReflection.findOne({ employee: req.user._id, date: subDay })
+        .select('selfRating').lean();
+      const ok = existing && typeof existing.selfRating === 'number'
+        && existing.selfRating >= 0 && existing.selfRating <= 10;
+      if (!ok) {
+        res.status(400);
+        throw new Error('Please fill your Daily Self Rating (0-10) before submitting today\'s assignments.');
+      }
+    }
+  }
   let earned = 0;
   let total = 0;
 

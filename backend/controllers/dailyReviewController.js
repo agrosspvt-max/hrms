@@ -761,10 +761,22 @@ const getDay = asyncHandler(async (req, res) => {
 const saveReflection = asyncHandler(async (req, res) => {
   const { date, selfRating, selfNote, idea } = req.body || {};
   const day = _resolveDay(date);
-  const $set = { lastEditedBy: req.user._id };
-  if (selfRating !== undefined) $set.selfRating = selfRating === '' ? undefined : Number(selfRating);
-  if (selfNote   !== undefined) $set.selfNote   = String(selfNote || '');
-  if (idea       !== undefined) $set.idea       = String(idea || '');
+  // Phase 69 -- Self Rating is now a REQUIRED numeric between 0 and 10.
+  // The Daily Self Review analytics depend on every reflection having
+  // a rating; enforcing at the API layer stops a client from bypassing
+  // the frontend field.  Note + idea stay optional.
+  if (selfRating === undefined || selfRating === null || selfRating === '') {
+    res.status(400);
+    throw new Error('Self Rating (0-10) is required.');
+  }
+  const ratingNum = Number(selfRating);
+  if (!Number.isFinite(ratingNum) || ratingNum < 0 || ratingNum > 10) {
+    res.status(400);
+    throw new Error('Self Rating must be a number between 0 and 10.');
+  }
+  const $set = { lastEditedBy: req.user._id, selfRating: ratingNum };
+  if (selfNote !== undefined) $set.selfNote = String(selfNote || '');
+  if (idea     !== undefined) $set.idea     = String(idea || '');
   const doc = await DailyReflection.findOneAndUpdate(
     { employee: req.user._id, date: day },
     { $set, $setOnInsert: { employee: req.user._id, date: day } },

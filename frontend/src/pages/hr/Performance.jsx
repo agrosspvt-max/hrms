@@ -12,6 +12,9 @@ import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { fmtCurrency, fmtPct, fmtAvg, fmtInt, errMsg } from '../../utils/helpers';
+// Phase 69 -- Daily Self Review analytics tab (pure read over the
+// existing DailyReflection collection).
+import SelfReviewMode from './SelfReviewMode.jsx';
 
 const RED = '#ef4444'; const ORANGE = '#f97316'; const AMBER = '#f59e0b';
 const GREEN = '#22c55e'; const BLUE = '#3b82f6'; const VIOLET = '#8b5cf6'; const SLATE = '#94a3b8';
@@ -56,11 +59,14 @@ export default function Performance() {
   const hodAnalyticsType = (user?.hodDepartment?.analyticsType || user?.department?.analyticsType || 'standard');
   const isCallingHOD = isHOD && hodAnalyticsType === 'calling';
   const defaultMode = isHOD ? (isCallingHOD ? 'calling' : 'pendency') : 'pendency';
+  // Phase 69 -- Daily Self Review is available to everyone who can see
+  // the Performance page (HR / SA / any HOD).  It only reads reflections
+  // and role-scopes server-side, so it's safe alongside every mode.
   const allowedModes = isHOD
     ? (isCallingHOD
-        ? ['pendency', 'completion', 'calling']
-        : ['pendency', 'completion'])
-    : ['pendency', 'completion', 'calling'];
+        ? ['pendency', 'completion', 'calling', 'selfReview']
+        : ['pendency', 'completion', 'selfReview'])
+    : ['pendency', 'completion', 'calling', 'selfReview'];
 
   const [mode, setMode] = useState(defaultMode);
   const [range, setRange] = useState('30');
@@ -148,6 +154,11 @@ export default function Performance() {
     if (recurrence) params.recurrence = recurrence;
     if (includeTest) params.includeTest = 'true';
     setLoading(true);
+    // Phase 69 -- Self Review mode owns its data fetch inside the
+    // SelfReviewMode component (it has multiple sub-endpoints for
+    // overview / ideas / notes / employee detail), so the parent
+    // simply flags itself ready and skips the shared /dashboard call.
+    if (mode === 'selfReview') { setData({ mode: 'selfReview' }); setLoading(false); return; }
     // Calling mode hits its own analytics endpoint (role-scoped at the
     // controller).  Other modes keep their original pendency/completion
     // endpoints unchanged.
@@ -237,7 +248,7 @@ export default function Performance() {
 
       {/* Mode toggle -- only tabs allowed for the caller's role appear. */}
       <div className="inline-flex rounded-xl border border-slate-200 bg-slate-50 p-1">
-        {[['pendency', 'Pendency Review'], ['completion', 'Completion Review'], ['calling', 'Calling Analytics']]
+        {[['pendency', 'Pendency Review'], ['completion', 'Completion Review'], ['calling', 'Calling Analytics'], ['selfReview', 'Daily Self Review']]
           .filter(([k]) => allowedModes.includes(k))
           .map(([k, label]) => (
           <button key={k} onClick={() => {
@@ -395,7 +406,23 @@ export default function Performance() {
       </div>
 
       {loading || !data ? <Loader /> : (
-        mode === 'pendency' ? <PendencyMode data={data} onDrill={openDrill} />
+        mode === 'selfReview' ? (
+          <SelfReviewMode
+            filters={{
+              from: range === 'custom' ? from : '',
+              to:   range === 'custom' ? to   : '',
+              range: range === 'custom' ? '' : range,
+              department: (mode === 'pendency' || mode === 'completion')
+                ? (scope === 'department' ? scopeValue : '')
+                : department,
+              employee: (mode === 'pendency' || mode === 'completion')
+                ? (scope === 'employee' ? scopeValue : '')
+                : employee,
+            }}
+            canExport={user?.role === 'hr' || user?.role === 'super_admin' || !!user?.isHOD}
+          />
+        )
+        : mode === 'pendency' ? <PendencyMode data={data} onDrill={openDrill} />
         : mode === 'completion' ? <CompletionMode data={data} onDrill={openDrill} />
         : <CallingMode
             data={data}
