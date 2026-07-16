@@ -11,6 +11,12 @@ router.use(protect);
 
 router.get('/employee/summary', c.employeeSummary);
 
+// Phase-1 architecture: current-state cards for the Dashboard.  Derived
+// counts over existing collections; never writes.  See
+// dashboardAlertsController for the exact query set.
+const alerts = require('../controllers/dashboardAlertsController');
+router.get('/alerts', alerts.mine);
+
 router.get('/hr/today', authorize('hr'), c.hrToday);
 router.get('/hr/backlog', backlogGate, c.hrBacklog);
 router.get('/hr/performance', authorize('hr'), c.hrPerformance);

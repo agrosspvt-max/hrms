@@ -65,6 +65,22 @@ app.use('/api/realtime', require('./routes/realtimeRoutes'));
 // etc.  Tag catalogue lives at /api/interaction-tags.
 app.use('/api/interactions',      require('./routes/interactionRoutes'));
 app.use('/api/interaction-tags',  require('./routes/interactionTagRoutes'));
+// Phase 75 (Alert-Notification-Reminder redesign, Phase 1) -- the
+// compliance engine used to run inside GET /api/submissions/today.
+// It now runs only via the scheduler + this explicit action endpoint
+// so read handlers stay pure.
+app.use('/api/compliance',        require('./routes/complianceRoutes'));
+// Phase 75 Phase 2 -- Reminder + Timeline read/write surfaces.
+app.use('/api/reminders',         require('./routes/reminderRoutes'));
+app.use('/api/timeline',          require('./routes/timelineRoutes'));
+
+// Phase 75 Phase 2 -- register event-bus subscribers ONCE at boot.
+// Every subscriber is idempotent; publishers use services/events.
+try {
+  require('./services/subscribers/notificationProjector').register();
+  require('./services/subscribers/reminderProjector').register();
+  require('./services/subscribers/realtimeMirror').register();
+} catch (e) { console.error('[events] subscriber boot error:', e.message); }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date() }));
 
@@ -227,6 +243,12 @@ const start = async () => {
     const { start: startTagSeed } = require('./services/interactionTagSeeder');
     startTagSeed();
   } catch (e) { console.error('[interaction-tag-seed] boot error:', e.message); }
+  // Phase 75 Phase 2 -- reminder scheduler.  Fires alert:changed for
+  // reminders that just became due; never writes a Notification.
+  try {
+    const { start: startReminderSched } = require('./services/reminderScheduler');
+    startReminderSched();
+  } catch (e) { console.error('[reminder-scheduler] boot error:', e.message); }
   app.listen(PORT, () => console.log(`[server] HRMS API running on :${PORT}`));
 };
 

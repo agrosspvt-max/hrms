@@ -84,13 +84,14 @@ const _upsertAutoPenalty = async (doc) => {
     probable: false,
   };
   const existing = await Penalty.findOne(filter).lean();
-  if (existing) return existing;
+  // Phase-1 architecture: distinguish "found existing" from "just
+  // created" so the enforcer callers can gate side-effects (notify /
+  // realtime / audit) on `created === true`.  The Notification writer
+  // also dedupes by eventKey, but avoiding the pointless call keeps
+  // the log noise + SSE fan-out honest.
+  if (existing) return { doc: existing, created: false };
   try {
     const created = await Penalty.create(doc);
-    // Verification-audit fix -- spec item 11 requires the audit
-    // trail to record automatic penalty creation.  Fires ONCE at
-    // first-insert; subsequent findOne hits skip this branch so
-    // refreshing 100 times still produces exactly one audit row.
     _logSystemAudit({
       action: 'penalty.auto.create',
       targetId: created._id,
@@ -105,12 +106,11 @@ const _upsertAutoPenalty = async (doc) => {
         dependencyIds: doc.dependencyIds || [],
       },
     });
-    return created.toObject();
+    return { doc: created.toObject(), created: true };
   } catch (e) {
-    // Duplicate key -- someone else inserted concurrently.  No
-    // audit written because the winning insert already logged one.
     if (e && e.code === 11000) {
-      return Penalty.findOne(filter).lean();
+      const raced = await Penalty.findOne(filter).lean();
+      return { doc: raced, created: false };
     }
     throw e;
   }
@@ -270,19 +270,12 @@ const enforceAbsentSubmission = async ({ employeeId, previousDay }) => {
   for (const s of subs) {
     if (s.templateType && s.templateType !== 'task' && s.templateType !== 'custom') continue;
 
-    const p = await _upsertAutoPenalty({
+    const { doc: p, created: didCreate } = await _upsertAutoPenalty({
       employee: employeeId,
-      // Phase 64 Part 2 -- new category name.  Old 'absent_submission'
-      // records stay in place (Part 8 backward compat); the enum keeps
-      // both values so historical rows still classify correctly.
       category: 'missed_submission',
       source: 'automatic',
       probable: false,
       status: 'active',
-      // Wipe the day's earned marks by penalising exactly Earned.
-      // Because Final = max(0, Earned − Penalties), this produces
-      // the "Final = 0" result the spec requires while leaving the
-      // original earnedPoints untouched for transparency.
       penaltyMarks: Number(s.earnedPoints) || 0,
       targetDate: target,
       submission: s._id,
@@ -293,12 +286,15 @@ const enforceAbsentSubmission = async ({ employeeId, previousDay }) => {
     });
     if (p) {
       created.push(p);
-      // Best-effort notification -- never blocks the engine.
-      notify.notifyPenalty({
-        employeeId,
-        penalty: p,
-        mode: 'active',
-      });
+      // Phase-1 architecture: only notify on FIRST insert.  Repeated
+      // engine runs (dashboard load, cron restart, StrictMode double
+      // mount) find the existing row and no side-effect fires.  Even
+      // if this guard is bypassed, the Notification writer's
+      // (recipient, eventKey, variant) unique index still collapses
+      // duplicates at the DB.
+      if (didCreate) {
+        notify.notifyPenalty({ employeeId, penalty: p, mode: 'active' });
+      }
     }
 
     // Any probable record for this same tuple is now resolved.
@@ -394,8 +390,8 @@ const enforceDependencyPending = async ({ employeeId, day }) => {
     employeeMessage: `${overdue.length} dependency task${overdue.length === 1 ? ' is' : 's are'} overdue by more than 3 days. Resolve to lift the daily penalty.`,
     effectiveDate: target,
   };
-  const p = await _upsertAutoPenalty(doc);
-  if (p) {
+  const { doc: p, created: didCreate } = await _upsertAutoPenalty(doc);
+  if (p && didCreate) {
     notify.notifyPenalty({ employeeId, penalty: p, mode: 'active' });
   }
   return p;
@@ -504,7 +500,7 @@ const enforcePerformanceLock = async ({ employeeId, day }) => {
   const oldest = overdue.reduce((min, o) =>
     (!min || new Date(o.pendingSince) < new Date(min.pendingSince)) ? o : min, null);
 
-  const p = await _upsertAutoPenalty({
+  const { doc: p, created: didCreate } = await _upsertAutoPenalty({
     employee: employeeId,
     category: 'performance_lock',
     source: 'automatic',
@@ -525,7 +521,7 @@ const enforcePerformanceLock = async ({ employeeId, day }) => {
       resolveBy: oldest.resolveBy,
     } : {},
   });
-  if (p) notify.notifyPenalty({ employeeId, penalty: p, mode: 'active' });
+  if (p && didCreate) notify.notifyPenalty({ employeeId, penalty: p, mode: 'active' });
   return p;
 };
 

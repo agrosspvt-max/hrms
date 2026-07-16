@@ -118,6 +118,11 @@ const applyEvaluationMode = async ({
       employeeMessage: `${LABEL[mode]}: ${note || penalty.reason || ''}`.trim(),
     },
     mode: mode === 'restore' ? 'probable' : 'active',
+    // Phase-1 dedupe: each HR recovery action is a distinct event on
+    // the SAME penalty document (restore / information / neutral) --
+    // pass an explicit event tag so the (recipient, eventKey, variant)
+    // partial unique index treats each transition as its own message.
+    event: `recovery.${mode}`,
   };
   const pendingSideEffects = {
     fire: (fireReq = req) => {

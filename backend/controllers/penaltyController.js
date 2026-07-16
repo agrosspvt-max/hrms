@@ -779,6 +779,7 @@ const waiveFinancial = asyncHandler(async (req, res) => {
       employeeId: p.employee,
       penalty: { ...p.toObject(), employeeMessage: `Financial penalty waived: ${p.restorationReason || p.reason || ''}`.trim() },
       mode: 'probable',
+      event: 'waived',
     });
   } catch (_) { /* silent */ }
   try { rt.publish(p.employee, 'penalty:changed', { penaltyId: p._id, financialStatus: 'waived' }); } catch (_) {}
@@ -812,6 +813,7 @@ const resolveFinancial = asyncHandler(async (req, res) => {
       employeeId: p.employee,
       penalty: { ...p.toObject(), employeeMessage: `Financial penalty resolved: ${p.restorationReason || p.reason || ''}`.trim() },
       mode: 'probable',
+      event: 'resolved',
     });
   } catch (_) { /* silent */ }
   try { rt.publish(p.employee, 'penalty:changed', { penaltyId: p._id, financialStatus: 'resolved' }); } catch (_) {}
@@ -900,6 +902,7 @@ const markFinancialDeducted = asyncHandler(async (req, res) => {
         employeeId: r.employee,
         penalty: { ...r, employeeMessage: `Financial penalty of ₹${r.amount || 0} deducted from your ${salaryMonth} salary.` },
         mode: 'active',
+        event: `deducted.${salaryMonth}`,
       });
       try { rt.publish(r.employee, 'penalty:changed', { penaltyId: r._id, financialStatus: 'deducted' }); } catch (_) {}
     }

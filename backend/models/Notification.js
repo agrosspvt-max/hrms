@@ -46,7 +46,31 @@ const notificationSchema = new mongoose.Schema(
 
     // Stable de-dupe key used by event/birthday notification firing so the
     // same reminder is not sent twice (e.g. on repeated dashboard loads).
+    // Phase-1 architecture: every "one-shot" business event (penalty
+    // applied, leave decided, salary generated, etc.) writes a unique
+    // eventKey and a partial-unique index (below) collapses duplicates
+    // at the DB layer.  Legacy rows carry '' and are ignored by the
+    // partial index so nothing has to migrate.
     eventKey: { type: String, default: '', index: true },
+
+    // Cross-module link back to the entity that caused this notification
+    // (Penalty, Leave, SalarySlip, Interaction, etc.).  Populated on new
+    // writes; the Notification Center uses it to render "View source"
+    // links without string-parsing the message.
+    sourceRef: {
+      module: { type: String, default: '' },
+      id:     { type: mongoose.Schema.Types.ObjectId },
+    },
+
+    // Same eventKey can produce different messages depending on the
+    // recipient's role (e.g. "leave.decided:approved" -> the employee
+    // gets the "approved" variant; management gets a "team leave
+    // decided" variant).  Default 'default' keeps a stable unique key
+    // for single-variant events.
+    variant: { type: String, default: 'default' },
+
+    // Archive support for the Notification Center (Phase-2 UI).
+    archivedAt: { type: Date },
 
     // Phase 45 — Priority Notices.  HR / Super Admin may flag broadcasts
     // as 'important' or 'urgent'; the Employee Dashboard surfaces those
@@ -88,5 +112,17 @@ const notificationSchema = new mongoose.Schema(
 
 notificationSchema.index({ recipient: 1, read: 1, createdAt: -1 });
 notificationSchema.index({ recipient: 1, type: 1, eventKey: 1 });
+// Phase-1 dedupe.  A single business event may target a single
+// recipient with at most one row per variant.  The partial filter
+// leaves legacy rows (eventKey === '') alone so no migration is
+// required and legacy callers keep working while we migrate them.
+notificationSchema.index(
+  { recipient: 1, eventKey: 1, variant: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { eventKey: { $exists: true, $type: 'string', $ne: '' } },
+    name: 'notif_dedupe_recipient_event_variant',
+  },
+);
 
 module.exports = mongoose.model('Notification', notificationSchema);

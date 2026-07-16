@@ -266,14 +266,13 @@ const getToday = asyncHandler(async (req, res) => {
 
   const backlog = await getBacklog(employee._id, today);
 
-  // Phase 61 -- lazy Penalty Engine pass.  Every getToday triggers the
-  // idempotent daily run (yesterday's enforcement + today's probable
-  // warnings) so the employee sees warnings and past-day penalties
-  // without waiting for a cron.  Never blocks the response.
-  try {
-    await penaltyEngine.runDaily({ employeeId: employee._id, day: today });
-    await penaltyEngine.runProbablesForToday({ employeeId: employee._id, day: today });
-  } catch (e) { console.error('[getToday] penaltyEngine:', e.message); }
+  // Phase-1 architecture (read/write separation): GET handlers must
+  // never mutate business state.  The compliance sweep now runs only
+  // via (a) the boot + daily 00:15 local scheduler in
+  // `services/dailyComplianceScheduler.js` and (b) the explicit
+  // `POST /api/compliance/refresh` action the client can call from
+  // a button once per session if they want an immediate re-scan.
+  // GET /submissions/today is a pure read.
 
   // Phase 61 -- attach Final Marks + penalty breakdown for the UI.
   try { await attachFinalMarks(submissions); }
