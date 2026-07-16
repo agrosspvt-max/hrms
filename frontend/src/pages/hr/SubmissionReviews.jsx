@@ -3,6 +3,10 @@ import { Link } from 'react-router-dom';
 import api from '../../api/axios';
 import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
+// useAuth is used by DailyReviewPanel to detect a pure HOD caller so
+// only pure HODs see the HOD Recommendation textarea + send it in the
+// finalize payload.
+import { useAuth } from '../../context/AuthContext.jsx';
 import { errMsg, fmtDate } from '../../utils/helpers';
 import { subscribe } from '../../realtime';
 
@@ -815,6 +819,11 @@ function EmployeeDayCard({ card, open, onToggle, onReload, selected = false, onS
             employeeId={employee._id}
             date={date}
             review={review}
+            /* First submission on the card carries the current
+               hodRecommendation (populated in dailyReviewController).
+               We pass the whole array so the panel can also detect
+               whether HR has finalised (locks the textarea). */
+            submissions={submissions}
             onSaved={onReload}
           />
         </div>
@@ -1779,24 +1788,43 @@ function BulkScoreModal({ cards, onClose, onDone }) {
 /* ===================================================================== */
 /* Daily Innovation entry                                                 */
 /* ===================================================================== */
-function DailyReviewPanel({ employeeId, date, review, onSaved }) {
+function DailyReviewPanel({ employeeId, date, review, submissions = [], onSaved }) {
   const reviewed = review && review.reviewStatus === 'reviewed';
   const [i, setI]     = useState(String(review?.ideaMarks ?? ''));
   const [maxI, setMaxI] = useState(String(review?.maxIdeaMarks ?? '2'));
   const [iFb, setIFb] = useState(review?.ideaFeedback || '');
   const [busy, setBusy] = useState(false);
   const toast = useToast();
+  const { user } = useAuth();
+
+  // "Pure HOD" per Phase 26: an HOD account that isn't ALSO HR or SA.
+  // Only pure HODs write the HOD Recommendation for HR; HR / SA see
+  // the recommendation via the HodReviewDetails card above.
+  const isPureHOD = !!(user?.isHOD && user.role !== 'hr' && user.role !== 'super_admin');
+
+  // The recommendation lives on each Submission's embedded sub-doc.
+  // The daily-review grouped feed populates hodRecommendation on
+  // every submission, so any of them can seed the textarea (they're
+  // kept in lock-step by the backend loop in finalizeDay).
+  const primary = submissions?.[0] || null;
+  const currentRecText = primary?.hodRecommendation?.text || '';
+  const [hodRec, setHodRec] = useState(currentRecText);
+  useEffect(() => { setHodRec(currentRecText); /* eslint-disable-next-line */ }, [currentRecText]);
 
   const save = async () => {
     setBusy(true);
     try {
-      await api.post('/daily-review/finalize', {
+      const body = {
         employeeId,
         date,
         ideaMarks: Number(i) || 0,
         maxIdeaMarks: Number(maxI) || 2,
         ideaFeedback: iFb,
-      });
+      };
+      // Send the recommendation ONLY when the caller is a pure HOD --
+      // HR / SA finalisation is unchanged and never touches this field.
+      if (isPureHOD) body.hodRecommendation = hodRec || '';
+      await api.post('/daily-review/finalize', body);
       toast.success(reviewed ? 'Daily review updated' : 'Daily review finalised');
       onSaved?.();
     } catch (err) { toast.error(errMsg(err)); }
@@ -1827,6 +1855,30 @@ function DailyReviewPanel({ employeeId, date, review, onSaved }) {
           <textarea className="input" rows={2} value={iFb} onChange={(e) => setIFb(e.target.value)} />
         </div>
       </div>
+
+      {/* HOD Recommendation for HR (informational; internal only).
+          Rendered only for pure HODs.  Locked once HR finalises.
+          Employee never sees it -- scrubbed by utils/hodRecommendation
+          on every non-HR / non-author read path. */}
+      {isPureHOD && (
+        <div>
+          <label className="label">HOD Recommendation for HR (Optional)</label>
+          <textarea
+            className="input"
+            rows={3}
+            value={hodRec}
+            onChange={(e) => setHodRec(e.target.value)}
+            placeholder="Internal note for HR / Super Admin only. E.g. Dealer denied the visit — recommend verification. / Excellent week — recommend recognition."
+            disabled={reviewed}
+          />
+          <div className="text-[11px] text-slate-500 mt-1">
+            {reviewed
+              ? 'Locked — HR has finalised this day.'
+              : 'Visible only to HR and Super Admin. The employee never sees this.'}
+          </div>
+        </div>
+      )}
+
       <div className="flex justify-end">
         <button className="btn-primary" disabled={busy} onClick={save}>
           {busy ? 'Saving…' : (reviewed ? 'Update Daily Review' : 'Finalise Day')}

@@ -893,6 +893,15 @@ const finalizeDay = asyncHandler(async (req, res) => {
   // 'hod_reviewed' so HR / SA see "HOD Approved — Awaiting HR".  Leave
   // reviewStatus untouched (stays pending) and never write to the
   // top-level reviewedBy / reviewedAt — those are HR-only audit fields.
+  // HOD Recommendation for HR (optional, informational only).
+  // Accepted only when a pure HOD is finalising (per Phase 26 gating),
+  // editable until HR flips the day to reviewStatus='reviewed', silent
+  // on all other paths -- no notifications / reminders / timeline /
+  // realtime, per the feature spec.
+  const incomingHodRec = req.body?.hodRecommendation;
+  const hasHodRec = incomingHodRec !== undefined && incomingHodRec !== null;
+  const nextHodRecText = hasHodRec ? String(incomingHodRec || '').trim() : null;
+
   for (const s of subs) {
     if (isPureHOD) {
       s.hodReview = {
@@ -905,6 +914,50 @@ const finalizeDay = asyncHandler(async (req, res) => {
       s.currentReviewStage = 'hod_reviewed';
       // Do NOT touch reviewStatus / reviewedBy / reviewedAt / earned -
       // those reflect HR finalisation only.
+      // HOD Recommendation upsert -- create on first write, update on
+      // subsequent writes, allow explicit clear.  Refuses silently if
+      // HR has already finalised (guard below).
+      if (hasHodRec) {
+        if (s.reviewStatus === 'reviewed') {
+          res.status(400);
+          throw new Error('HOD Recommendation is locked once HR has completed the review.');
+        }
+        const prev = s.hodRecommendation || {};
+        const hadPrev = !!(prev && prev.text);
+        const now = new Date();
+        if (nextHodRecText.length === 0 && hadPrev) {
+          s.hodRecommendation = {
+            text: '',
+            createdBy: prev.createdBy || req.user._id,
+            createdAt: prev.createdAt || now,
+            updatedBy: req.user._id,
+            updatedAt: now,
+          };
+          logAudit(req, {
+            action: 'hod.recommendation.updated',
+            targetType: 'Submission',
+            targetId: s._id,
+            targetLabel: `Recommendation cleared on ${new Date(s.date).toISOString().slice(0, 10)}`,
+            meta: { cleared: true },
+          });
+        } else if (nextHodRecText.length > 0) {
+          s.hodRecommendation = {
+            text: nextHodRecText,
+            createdBy: prev.createdBy || req.user._id,
+            createdAt: prev.createdAt || now,
+            updatedBy: req.user._id,
+            updatedAt: now,
+          };
+          logAudit(req, {
+            action: hadPrev ? 'hod.recommendation.updated' : 'hod.recommendation.created',
+            targetType: 'Submission',
+            targetId: s._id,
+            targetLabel: `Recommendation on ${new Date(s.date).toISOString().slice(0, 10)}`,
+            meta: { length: nextHodRecText.length },
+          });
+        }
+        // (both prev and next empty -> nothing to do)
+      }
       s.reviewHistory = s.reviewHistory || [];
       s.reviewHistory.push({
         reviewedBy: req.user._id,
