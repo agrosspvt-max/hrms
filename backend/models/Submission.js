@@ -494,6 +494,23 @@ const submissionSchema = new mongoose.Schema(
       },
     },
 
+    // HOD Recommendation for HR (informational only).  Optional single
+    // note the HOD leaves for HR / Super Admin while reviewing.
+    //
+    //   - Employees never see this (scrubbed by scrubHodRecommendation).
+    //   - HOD may edit until HR finalises the submission.
+    //   - Never triggers notifications, reminders, timeline or realtime.
+    //
+    // Structure is deliberately small + self-contained so future
+    // modules (Meetings & Notes) can copy or reference it as-is.
+    hodRecommendation: {
+      text:       { type: String, default: '' },
+      createdBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      createdAt:  { type: Date },
+      updatedBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      updatedAt:  { type: Date },
+    },
+
     // Immutable-ish audit trail of every review action across stages.
     reviewHistory: {
       type: [

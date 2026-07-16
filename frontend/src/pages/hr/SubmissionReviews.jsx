@@ -1886,22 +1886,45 @@ function HodReviewBadge({ sub }) {
 
 function HodReviewDetails({ sub }) {
   const s = hodReviewState(sub);
-  if (!s) return null;
   const h = sub.hodReview || {};
-  // Awaiting state has no reviewer / timestamp yet -- skip the detail row.
-  if (!h.reviewedAt) return null;
+  const rec = sub.hodRecommendation && (sub.hodRecommendation.text || '').trim() ? sub.hodRecommendation : null;
+  // If neither a review nor a recommendation exists, nothing to show.
+  if (!s && !rec) return null;
   return (
-    <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 text-[12px] text-slate-700">
-      <span className="font-semibold">{s.label}</span>
-      <span className="text-slate-500"> · </span>
-      Reviewed by <b>{h.reviewedBy?.name || '—'}</b>
-      <span className="text-slate-500"> · {new Date(h.reviewedAt).toLocaleString()}</span>
-      {h.remarks && (
-        <div className="mt-1 text-[12px] text-slate-700">
-          <span className="font-semibold">HOD remarks:</span> {h.remarks}
+    <>
+      {s && h.reviewedAt && (
+        <div className="px-4 py-2 bg-slate-50 border-b border-slate-100 text-[12px] text-slate-700">
+          <span className="font-semibold">{s.label}</span>
+          <span className="text-slate-500"> · </span>
+          Reviewed by <b>{h.reviewedBy?.name || '—'}</b>
+          <span className="text-slate-500"> · {new Date(h.reviewedAt).toLocaleString()}</span>
+          {h.remarks && (
+            <div className="mt-1 text-[12px] text-slate-700">
+              <span className="font-semibold">HOD remarks:</span> {h.remarks}
+            </div>
+          )}
         </div>
       )}
-    </div>
+      {/* HOD Recommendation for HR (informational; internal only).  Neutral
+          styling per spec -- no warning / error colours.  Shown above the
+          HR review controls so HR reads it before deciding. */}
+      {rec && (
+        <div className="mx-4 mt-3 mb-2 rounded border border-slate-200 bg-white px-3 py-2 text-[13px]">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1">
+            HOD Recommendation for HR
+          </div>
+          <div className="text-slate-800 whitespace-pre-wrap">{rec.text}</div>
+          <div className="text-[11px] text-slate-500 mt-1.5">
+            By&nbsp;
+            <b className="text-slate-700">
+              {rec.updatedBy?.name || rec.createdBy?.name || '—'}
+            </b>
+            &nbsp;·&nbsp;
+            {new Date(rec.updatedAt || rec.createdAt).toLocaleString()}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

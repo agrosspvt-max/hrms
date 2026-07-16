@@ -44,6 +44,9 @@ function buildDraft(s) {
   return {
     remarks: s.hodReview?.remarks || '',
     recommend: s.hodReview?.recommend || '',
+    // HOD Recommendation for HR (internal, optional).  Editable
+    // until HR completes the final review; locked afterwards.
+    hodRecommendation: s.hodRecommendation?.text || '',
     sheetMarks,
     fieldMarks,
   };
@@ -178,6 +181,10 @@ function Detail({ s, draft, setDraft, onSaved }) {
       const payload = {};
       if (perms.canRemark) payload.remarks = draft.remarks;
       if (perms.canRecommend) payload.recommend = draft.recommend;
+      // HOD Recommendation for HR (optional, informational).  Always
+      // send the current value so an edit-to-empty is treated as an
+      // explicit clear; backend refuses if HR has already finalised.
+      payload.hodRecommendation = draft.hodRecommendation || '';
       if (perms.canMarks) {
         if (isSheet) {
           payload.scores = ((s.sheet && s.sheet.scores) || []).map((sc) => ({
@@ -296,6 +303,25 @@ function Detail({ s, draft, setDraft, onSaved }) {
             <textarea className="input" rows={2} value={draft.remarks} onChange={(e) => setDraft({ remarks: e.target.value })} placeholder="Your observations for HR..." />
           </div>
         )}
+        {/* HOD Recommendation for HR (internal, informational).  Editable
+            until HR completes the review; locked afterwards.  Never
+            visible to the employee. */}
+        <div>
+          <label className="label">HOD Recommendation for HR (Optional)</label>
+          <textarea
+            className="input"
+            rows={3}
+            value={draft.hodRecommendation}
+            onChange={(e) => setDraft({ hodRecommendation: e.target.value })}
+            placeholder="Internal note for HR / Super Admin only. E.g. Dealer denied the visit — recommend verification. / Excellent week — recommend recognition."
+            disabled={s.reviewStatus === 'reviewed'}
+          />
+          <div className="text-[11px] text-slate-500 mt-1">
+            {s.reviewStatus === 'reviewed'
+              ? 'Locked — HR has finalised this submission.'
+              : 'Visible only to HR and Super Admin. The employee never sees this.'}
+          </div>
+        </div>
         <div className="flex items-center justify-between flex-wrap gap-2">
           {perms.canRecommend ? (
             <div className="flex items-center gap-2">

@@ -41,6 +41,10 @@ const { logAudit }   = require('../utils/audit');
 const notify         = require('../services/notifyEvents');
 // Phase 60 -- HOD visibility gate for the Employee Private Remark.
 const { scrubPrivateRemark } = require('../utils/privateRemark');
+// HOD Recommendation for HR -- scrub alongside privateRemark so every
+// path that returns Submissions to non-HR / non-author callers hides
+// the note in exactly one place.
+const { scrubHodRecommendation } = require('../utils/hodRecommendation');
 // Phase 65.2 -- Submission Review honours the SAME rollout cutoff used
 // by the Missed Submission compliance engine.  The cutoff ONLY
 // suppresses historical "Not Submitted" detection; historical
@@ -297,6 +301,8 @@ const listGrouped = asyncHandler(async (req, res) => {
     // Phase 16: surface the HOD reviewer's identity so HR sees who
     // approved / returned each submission without an extra round-trip.
     .populate('hodReview.reviewedBy', 'name role')
+    .populate('hodRecommendation.createdBy', 'name role')
+    .populate('hodRecommendation.updatedBy', 'name role')
     .sort({ employee: 1, submittedAt: 1, _id: 1 })
     .lean();
 
@@ -718,7 +724,10 @@ const listGrouped = asyncHandler(async (req, res) => {
   // granted reviewers get the field zeroed out.  Self-view isn't a
   // concern here because the grouped feed never returns cards for the
   // current caller.
-  for (const c of out) scrubPrivateRemark(c.submissions || [], req.user);
+  for (const c of out) {
+    scrubPrivateRemark(c.submissions || [], req.user);
+    scrubHodRecommendation(c.submissions || [], req.user);
+  }
   res.json(out);
 });
 
@@ -747,6 +756,8 @@ const getDay = asyncHandler(async (req, res) => {
       .populate('template', 'title templateType customKind customSections customFields privateRemarkEnabled privateRemarkLabel privateRemarkRequired')
       .populate('assignment', 'frequency scheduleLabel')
       .populate('hodReview.reviewedBy', 'name role')
+    .populate('hodRecommendation.createdBy', 'name role')
+    .populate('hodRecommendation.updatedBy', 'name role')
       .sort({ submittedAt: 1, _id: 1 }).lean(),
     DailyReflection.findOne({ employee: employee._id, date: day }).lean(),
     DailyReview.findOne({ employee: employee._id, date: day }).populate('reviewedBy', 'name role').lean(),
@@ -757,6 +768,7 @@ const getDay = asyncHandler(async (req, res) => {
 
   // Phase 60 -- HOD scrub before responding.
   scrubPrivateRemark(submissions, req.user);
+  scrubHodRecommendation(submissions, req.user);
   res.json({ employee, date: day, submissions, reflection: reflection || null, review: review || null });
 });
 

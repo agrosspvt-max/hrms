@@ -16,6 +16,11 @@ const { liveSubmissionFilter } = require('../utils/submissionFilter');
 const rt = require('../services/realtime');
 // Phase 60 -- Employee Private Remark visibility gate.
 const { scrubPrivateRemark } = require('../utils/privateRemark');
+// HOD Recommendation for HR is HR / SA / HOD-author only.  Same
+// scrub-in-one-place pattern as scrubPrivateRemark; called alongside
+// every existing scrubPrivateRemark call so no future endpoint can
+// leak the note.
+const { scrubHodRecommendation } = require('../utils/hodRecommendation');
 // Phase 61 -- Penalty Engine hooks.
 const penaltyEngine = require('../services/penaltyEngine');
 const { attachFinalMarks } = require('../services/penaltyMath');
@@ -282,6 +287,7 @@ const getToday = asyncHandler(async (req, res) => {
   // no-op for self.  Call it anyway in case a future endpoint reuses
   // this handler with a non-owning caller.
   scrubPrivateRemark(submissions, req.user);
+  scrubHodRecommendation(submissions, req.user);
 
   res.json({
     date: today,
@@ -1217,6 +1223,7 @@ const history = asyncHandler(async (req, res) => {
   // Phase 60 -- employee history is self-view, scrub is a no-op but
   // is called for consistency across every submission read path.
   scrubPrivateRemark(items, req.user);
+  scrubHodRecommendation(items, req.user);
   res.json(items);
 });
 
@@ -1325,6 +1332,7 @@ const listForReview = asyncHandler(async (req, res) => {
   // Phase 60 -- HR review feed.  HR/SA see the field; anyone else
   // (feature-permission grants) gets it scrubbed.
   scrubPrivateRemark(out, req.user);
+  scrubHodRecommendation(out, req.user);
   res.json(out);
 });
 
@@ -1481,6 +1489,7 @@ const reviewSubmission = asyncHandler(async (req, res) => {
   // Phase 60 -- reviewSubmission is HR/SA-only; scrub is a no-op but
   // keeps the call site symmetrical with the HOD path.
   scrubPrivateRemark(sub, req.user);
+  scrubHodRecommendation(sub, req.user);
   res.json(sub);
 });
 
@@ -1536,6 +1545,7 @@ const listForHodReview = asyncHandler(async (req, res) => {
   // Phase 60 -- HOD review feed: ALWAYS scrub. The remark is off-
   // limits to HOD reviewers per the Phase 60 visibility rule.
   scrubPrivateRemark(out, req.user);
+  scrubHodRecommendation(out, req.user);
   res.json(out);
 });
 
@@ -1619,11 +1629,62 @@ const hodReviewSubmission = asyncHandler(async (req, res) => {
     timestamp: new Date(),
   });
 
+  // HOD Recommendation for HR (optional, informational only).  Editable
+  // until HR finalises (reviewStatus !== 'reviewed').  Never triggers
+  // notifications / reminders / timeline / realtime -- purely passive
+  // information HR sees on the review screen.
+  if (req.body.hodRecommendation !== undefined) {
+    if (sub.reviewStatus === 'reviewed') {
+      res.status(400);
+      throw new Error('HOD Recommendation is locked once HR has completed the review.');
+    }
+    const { logAudit } = require('../utils/audit');
+    const nextText = String(req.body.hodRecommendation || '').trim();
+    const prev = sub.hodRecommendation || {};
+    const hadPrev = !!(prev && prev.text);
+    const now = new Date();
+    if (nextText.length === 0 && hadPrev) {
+      // Explicit clear -- treat as an update to empty; keep the audit
+      // trail so HR can see the note was removed.
+      sub.hodRecommendation = {
+        text: '',
+        createdBy: prev.createdBy || req.user._id,
+        createdAt: prev.createdAt || now,
+        updatedBy: req.user._id,
+        updatedAt: now,
+      };
+      logAudit(req, {
+        action: 'hod.recommendation.updated',
+        targetType: 'Submission',
+        targetId: sub._id,
+        targetLabel: `Recommendation cleared on ${new Date(sub.date).toISOString().slice(0, 10)}`,
+        meta: { cleared: true },
+      });
+    } else if (nextText.length > 0) {
+      sub.hodRecommendation = {
+        text: nextText,
+        createdBy: prev.createdBy || req.user._id,
+        createdAt: prev.createdAt || now,
+        updatedBy: req.user._id,
+        updatedAt: now,
+      };
+      logAudit(req, {
+        action: hadPrev ? 'hod.recommendation.updated' : 'hod.recommendation.created',
+        targetType: 'Submission',
+        targetId: sub._id,
+        targetLabel: `Recommendation on ${new Date(sub.date).toISOString().slice(0, 10)}`,
+        meta: { length: nextText.length },
+      });
+    }
+    // If both prev and nextText are empty, nothing to do.
+  }
+
   await sub.save();
   // Phase 60 -- HOD review path.  Scrub the Private Remark before
   // returning the submission JSON so the HOD can never see it, not
   // even in the response to their own review action.
   scrubPrivateRemark(sub, req.user);
+  scrubHodRecommendation(sub, req.user);
   res.json(sub);
 });
 

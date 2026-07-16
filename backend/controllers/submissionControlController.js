@@ -35,6 +35,7 @@ const { logAudit } = require('../utils/audit');
 const { rebuildCarryForward } = require('../services/carryForwardRebuild');
 // Phase 60 -- Employee Private Remark visibility gate for HOD reviewers.
 const { scrubPrivateRemark } = require('../utils/privateRemark');
+const { scrubHodRecommendation } = require('../utils/hodRecommendation');
 // Phase 61 -- Final Marks + penalty breakdown on the modal.
 const { attachFinalMarks } = require('../services/penaltyMath');
 
@@ -204,6 +205,7 @@ const get = asyncHandler(async (req, res) => {
   // the scrub is added defensively so a future feature-permission
   // grant to a HOD couldn't leak the remark.
   scrubPrivateRemark(s, req.user);
+  scrubHodRecommendation(s, req.user);
   res.json(s);
 });
 
@@ -280,6 +282,7 @@ const update = asyncHandler(async (req, res) => {
   });
   // Phase 60 -- edit response defensive scrub (HR/SA-only endpoint).
   scrubPrivateRemark(s, req.user);
+  scrubHodRecommendation(s, req.user);
   res.json(s);
 });
 
