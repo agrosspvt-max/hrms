@@ -60,6 +60,11 @@ app.use('/api/penalties', require('./routes/penaltyRoutes'));
 // (notifications, leave requests, salary slips, attendance edits, etc.)
 // to the affected user(s) so the UI updates without a manual refresh.
 app.use('/api/realtime', require('./routes/realtimeRoutes'));
+// Phase 74 -- Employee Interactions: unified HR case-management +
+// searchable history of every meeting, note, warning, appreciation
+// etc.  Tag catalogue lives at /api/interaction-tags.
+app.use('/api/interactions',      require('./routes/interactionRoutes'));
+app.use('/api/interaction-tags',  require('./routes/interactionTagRoutes'));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date() }));
 
@@ -215,6 +220,13 @@ const start = async () => {
     const { start: startArchive } = require('./services/legacyMissedSubmissionArchive');
     startArchive();
   } catch (e) { console.error('[legacy-compliance-archive] boot error:', e.message); }
+  // Phase 74 -- seed the default Employee Interactions tag catalogue.
+  // Idempotent upsert-by-slug; re-runs perform zero writes once every
+  // default tag exists.
+  try {
+    const { start: startTagSeed } = require('./services/interactionTagSeeder');
+    startTagSeed();
+  } catch (e) { console.error('[interaction-tag-seed] boot error:', e.message); }
   app.listen(PORT, () => console.log(`[server] HRMS API running on :${PORT}`));
 };
 

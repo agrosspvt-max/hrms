@@ -15,6 +15,10 @@ import Organization from './pages/hr/Organization.jsx';
 import WorkAssignments from './pages/hr/WorkAssignments.jsx';
 import Contacts from './pages/hr/Contacts.jsx';
 import EventsCalendar from './pages/hr/EventsCalendar.jsx';
+// Phase 74 -- Employee Interactions module.
+import EmployeeInteractions from './pages/hr/EmployeeInteractions.jsx';
+import ManageInteractionTags from './pages/hr/ManageInteractionTags.jsx';
+import MyInteractions from './pages/employee/MyInteractions.jsx';
 import ManageAccess from './pages/superadmin/ManageAccess.jsx';
 import FeatureAccess from './pages/superadmin/FeatureAccess.jsx';
 import Departments from './pages/hr/Departments.jsx';
@@ -148,6 +152,10 @@ export default function App() {
         <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
         <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
         <Route path="/events" element={<ProtectedRoute><EventsCalendar /></ProtectedRoute>} />
+        {/* Phase 74 -- Employee Interactions module. */}
+        <Route path="/interactions" element={<ProtectedRoute role="hr" feature="employeeInteractions"><EmployeeInteractions /></ProtectedRoute>} />
+        <Route path="/interactions/tags" element={<ProtectedRoute role="super_admin"><ManageInteractionTags /></ProtectedRoute>} />
+        <Route path="/my-interactions" element={<ProtectedRoute><MyInteractions /></ProtectedRoute>} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

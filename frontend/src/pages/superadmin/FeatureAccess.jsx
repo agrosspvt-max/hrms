@@ -59,6 +59,8 @@ const MODULE_CATALOG = [
     ] },
   { key: 'contacts',          label: 'Contacts', levels: LEVEL_OPTIONS },
   { key: 'eventsHolidays',    label: 'Events & Holidays', levels: LEVEL_OPTIONS },
+  // Phase 74 -- Employee Interactions module (unified HR case-management).
+  { key: 'employeeInteractions', label: 'Employee Interactions', levels: LEVEL_OPTIONS },
   { key: 'auditLog',          label: 'Audit Log' },
   { key: 'sendAlerts',        label: 'Send Alerts' },
   { key: 'performance', label: 'Performance', perfSections: [

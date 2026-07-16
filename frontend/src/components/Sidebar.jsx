@@ -58,6 +58,8 @@ const GRANTED_MODULES = [
   { key: 'salary',            to: '/salary',            label: 'Salary',            icon: I.money },
   { key: 'contacts',          to: '/contacts',          label: 'Contacts',          icon: I.people },
   { key: 'eventsHolidays',    to: '/events',            label: 'Events & Holidays', icon: I.calendar },
+  // Phase 74 -- Employee Interactions (HR case-management + searchable history).
+  { key: 'employeeInteractions', to: '/interactions',    label: 'Employee Interactions', icon: I.review },
   { key: 'auditLog',          to: '/audit',             label: 'Audit Log',         icon: I.audit },
   { key: 'sendAlerts',        to: '/sent-alerts',       label: 'Send Alerts',       icon: I.send },
   { key: 'performance',       to: '/performance',       label: 'Performance',       icon: I.chart },
@@ -104,6 +106,9 @@ function buildNav(user) {
           { to: '/my-attendance', label: 'My Attendance', icon: I.attendance },
           { to: '/my-leaves', label: 'My Leaves', icon: I.leave },
           { to: '/my-salary', label: 'My Salary Slips', icon: I.doc },
+          // Phase 74 -- employees see meetings they're invited to +
+          // interactions explicitly marked Employee Visible.
+          { to: '/my-interactions', label: 'My Interactions', icon: I.review },
           { to: '/contacts', label: 'Contacts', icon: I.people },
         ],
       },
@@ -140,6 +145,9 @@ function buildNav(user) {
         { to: '/sent-alerts', label: 'Send Alerts', icon: I.send },
         { to: '/reset-requests', label: 'Reset Requests', icon: I.reset, badgeKey: 'resetRequests' },
         { to: '/events', label: 'Events & Holidays', icon: I.calendar },
+        // Phase 74 -- Employee Interactions.
+        { to: '/interactions', label: 'Employee Interactions', icon: I.review },
+        ...(isSA ? [{ to: '/interactions/tags', label: 'Manage Tags', icon: I.tools }] : []),
         { to: '/contacts', label: 'Contacts', icon: I.people },
         { to: '/salary', label: 'Salary', icon: I.money },
         // Phase 61 -- Fines & Penalties module.
