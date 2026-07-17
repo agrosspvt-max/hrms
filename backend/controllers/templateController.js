@@ -109,7 +109,14 @@ const get = asyncHandler(async (req, res) => {
  * task templates shouldn't carry excel columns, and vice-versa.
  */
 // Phase 12: extended fieldType set + new builder UI flags.
-const CUSTOM_FIELD_TYPES = ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date', 'currency', 'percentage', 'yes_no', 'time'];
+// Phase 53.1 / bugfix: 'none' (status-only field) was added to the
+// Template.customFieldSchema enum + the frontend Value Type dropdown
+// but never added to this controller-side whitelist.  Because the
+// write path coerces any unknown value to 'number', picking "None"
+// (or any future new type) in the builder silently reverted to
+// "Number" on Save.  Keep this list in sync with the model enum in
+// backend/models/Template.js.
+const CUSTOM_FIELD_TYPES = ['number', 'text', 'textarea', 'dropdown', 'auto', 'readonly', 'date', 'currency', 'percentage', 'yes_no', 'time', 'none'];
 const CUSTOM_VISIBLE_ROLES = ['employee', 'hod', 'hr', 'super_admin'];
 const DEP_TYPES = ['independent', 'dependent'];
 const REVIEW_FLOWS = ['direct_hr', 'hod_first'];
