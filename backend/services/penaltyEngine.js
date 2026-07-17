@@ -40,6 +40,9 @@ const Attendance    = require('../models/Attendance');
 const DependencyTask = require('../models/DependencyTask');
 const notify        = require('./notifyEvents');
 const { startOfDay } = require('../utils/dateHelpers');
+// Shared historical-expectation service.  See services/expectedSubmissions
+// for the invariant that ties this engine to Submission Review.
+const expectedSubmissions = require('./expectedSubmissions');
 // Verification-audit fix (spec item 11) -- every AUTOMATIC penalty
 // creation must land in the audit trail.  Because the engine runs
 // outside any HTTP request, we use a synthetic sentinel ObjectId
@@ -199,12 +202,12 @@ const sweepProbableAbsentSubmission = async ({ employeeId, day }) => {
   if (!present) return [];
 
   // Every submission the daily engine seeded for this employee/day.
-  const subs = await Submission.find({
-    employee: employeeId,
-    date: target,
-    submitted: false,
-    deleted: { $ne: true },
-  }).select('_id template templateType').lean();
+  // Historical expectation -- Submission is the immutable record.
+  // See services/expectedSubmissions HISTORICAL INVARIANT.
+  const subs = await expectedSubmissions.getMissedSubmissions({
+    employeeId,
+    day: target,
+  });
 
   if (!subs.length) return [];
 
@@ -251,18 +254,18 @@ const enforceAbsentSubmission = async ({ employeeId, previousDay }) => {
   // Phase 65.1 rollout gate -- Missed Submission compliance only
   // applies to days on or after the effective-from date.  Historical
   // days are treated as legacy: no penalty, no notification, no
-  // reopen path.  Single guard for the whole engine.
-  const { isBeforeRollout } = require('../config/complianceRollout');
-  if (isBeforeRollout(target)) return [];
+  // reopen path.  Delegated to expectedSubmissions so the gate is
+  // applied identically here and in Submission Review.
+  if (expectedSubmissions.isBeforeComplianceRollout(target)) return [];
   const present = await _isPresentAttendance(employeeId, target);
   if (!present) return [];
 
-  const subs = await Submission.find({
-    employee: employeeId,
-    date: target,
-    submitted: false,
-    deleted: { $ne: true },
-  }).lean();
+  // Historical expectation -- Submission is the immutable record.
+  // See services/expectedSubmissions HISTORICAL INVARIANT.
+  const subs = await expectedSubmissions.getMissedSubmissions({
+    employeeId,
+    day: target,
+  });
 
   if (!subs.length) return [];
 

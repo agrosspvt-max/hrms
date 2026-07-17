@@ -53,6 +53,12 @@ const { scrubHodRecommendation } = require('../utils/hodRecommendation');
 // (see _evaluateNotSubmittedForDay below).  Single source of truth --
 // never introduce a second date here.
 const { isBeforeRollout } = require('../config/complianceRollout');
+// Historical expectation service.  Submission Review consumes this so
+// membership matches the Penalty Engine EXACTLY -- the same
+// (employee, date) row set on both sides eliminates the whole class of
+// "Assignment changed after the day passed" bugs.  See
+// services/expectedSubmissions for the HISTORICAL INVARIANT.
+const expectedSubmissions = require('../services/expectedSubmissions');
 
 /**
  * Phase 23.3 — Attach dependent-task hand-offs to each submission so the
@@ -100,23 +106,36 @@ const _attachDependencies = async (submissions) => {
 const _resolveDay = (raw) => startOfDay(raw ? new Date(raw) : new Date());
 
 /**
- * Phase 63 -- Not Submitted eligibility for ONE (employee, day) pair.
+ * Not Submitted eligibility for ONE (employee, day) pair.
  *
- * Encodes the seven-condition spec from Phase 28 in a single pure
- * function so BOTH the single-date branch (unchanged behaviour) and
- * the new range branch reuse the exact same rules.  Never touches the
- * DB itself -- the caller pre-fetches everything and passes it via
- * `ctx`.
+ * MEMBERSHIP now derives from the shared historical expectation
+ * service (services/expectedSubmissions), which reads from Submission
+ * stubs -- the immutable per-day record -- NOT from current Assignment
+ * config.  This is what keeps the page in lock-step with the Penalty
+ * Engine: if the engine says "this employee owed work", the page
+ * shows them; if the engine says nothing, the page shows nothing.
+ *
+ * Attendance-review employees remain a SEPARATE workflow keyed off
+ * AttendanceConfirmation.  We branch on `attendanceMode` up front and
+ * never mix the two decisions.
  *
  *   ctx = {
  *     day:            Date  (UTC midnight)
  *     employee:       full employee row (weeklyOff, attendanceMode, department, designation, ...)
- *     holiday:        Holiday for `day` (or null)
+ *     holiday:        Holiday for `day` (or null)   -- display context only
  *     submitted:      boolean  -- did the employee submit for `day`?
  *     confirmed:      boolean  -- attendance_review only: did they file confirmation?
  *     leave:          approved Leave overlapping `day` (or null)
- *     assignments:    Array of Assignment docs already populated with `template`
+ *     stubs:          Array of Submission stubs for the day (already
+ *                     preloaded via getSubmissionStubs).  When absent,
+ *                     `assignments` is used as legacy fallback and the
+ *                     helper will treat every assignment as its own
+ *                     "missed" row (single-date path only).
+ *     assignments:    Array of Assignment docs -- kept for DISPLAY
+ *                     enrichment (title / templateType / scheduleLabel).
  *     attendance:     Attendance row for `day` (or null)
+ *     reopenPenaltiesByStubId: Map<stubId, Penalty>  -- pre-batched
+ *                              reopen index so per-stub state is O(1).
  *   }
  *
  * Returns:
@@ -125,67 +144,113 @@ const _resolveDay = (raw) => startOfDay(raw ? new Date(raw) : new Date());
  *     onLeave:         boolean
  *     hasAssignments:  boolean -- employee was expected to submit
  *     submitted:       boolean -- alias so callers avoid re-checking
- *     scheduledToday:  Array of Assignment docs actually scheduled on `day`
+ *     scheduledToday:  Array of Assignment-ish objects for DISPLAY.
+ *                      Derived from the missed stubs (assignment FK ->
+ *                      populated Assignment) when available; falls back
+ *                      to the stub itself when the assignment was later
+ *                      deleted / revoked.
+ *     stubStates:      parallel array of classifySubmissionState results.
  *     attendanceLabel: string  -- for the card badge
+ *     ignoredPreRollout: boolean
  *   }
- *
- * "Reuse the same validation logic" per spec item 12 (backward compat).
  */
 const _evaluateNotSubmittedForDay = (ctx) => {
-  const { day, employee: e, holiday, submitted, confirmed, leave, assignments, attendance } = ctx;
+  const { day, employee: e, holiday, submitted, confirmed, leave, assignments,
+          attendance, stubs, reopenPenaltiesByStubId } = ctx;
 
-  const submittedToday = e.attendanceMode === 'attendance_review'
-    ? !!confirmed
-    : !!submitted;
+  // -----------------------------------------------------------
+  // Attendance-review branch (kept SEPARATE by design).
+  // Membership is the AttendanceConfirmation row, not a Submission
+  // stub.  No changes to existing behaviour.
+  // -----------------------------------------------------------
+  if (e.attendanceMode === 'attendance_review') {
+    const submittedToday = !!confirmed;
+    if (!submittedToday && isBeforeRollout(day)) {
+      return {
+        eligible: false, onLeave: false, hasAssignments: false,
+        submitted: false, scheduledToday: [], stubStates: [],
+        attendanceLabel: '', ignoredPreRollout: true,
+      };
+    }
+    const onLeave = !!(leave && leave.dayType !== 'half');
+    const eligible = !onLeave && !submittedToday;
+    const isWeeklyOff = (e.weeklyOff || [0]).includes(day.getUTCDay());
+    const attendanceLabel = attendance
+      ? attendance.status
+      : (isWeeklyOff ? 'weekly_off' : (holiday ? 'holiday' : 'absent'));
+    return {
+      eligible,
+      onLeave,
+      hasAssignments: true,
+      submitted: submittedToday,
+      scheduledToday: [],
+      stubStates: [],
+      attendanceLabel,
+    };
+  }
 
-  // Phase 65.2 -- Effective From cutoff.  Per spec the evaluation order
-  // is:
-  //   1. Submission exists                    -> Submitted
-  //   2. Else day < Effective From            -> Ignore  (return here)
-  //   3. Else Attendance says Present         -> Not Submitted
-  //   4. Else if Leave                        -> On Leave
-  //   5. Else                                 -> Ignore
-  //
-  // "Ignore" means the day contributes NOTHING to Expected Submission /
-  // Submitted / Not Submitted / On Leave / cards / statistics.  The
-  // callers already short-circuit when hasAssignments/onLeave/eligible
-  // are all false, so returning a fully-zeroed result naturally skips
-  // the day everywhere without touching either call site.
+  // -----------------------------------------------------------
+  // Submission-based branch.  Membership comes from stubs.
+  // -----------------------------------------------------------
+  // Any live stub with submitted:true satisfies the day -- this
+  // matches the Penalty Engine's implicit rule (no penalty when a
+  // stub is submitted) and honours the "Submitted takes priority in
+  // the evaluation order" spec.
+  const dayStubs = Array.isArray(stubs) ? stubs : [];
+  const submittedStubs = dayStubs.filter((s) => s.submitted);
+  const missedStubs    = dayStubs.filter((s) => !s.submitted);
+  const submittedToday = !!submitted || submittedStubs.length > 0;
+
+  // Rollout gate.  When nothing is submitted AND we are pre-cutoff,
+  // the whole day is invisible -- no card, no counter, no penalty
+  // (Penalty Engine returns early on the same condition).
   if (!submittedToday && isBeforeRollout(day)) {
     return {
-      eligible: false,
-      onLeave: false,
-      hasAssignments: false,
-      submitted: false,
-      scheduledToday: [],
-      attendanceLabel: '',
-      ignoredPreRollout: true,
+      eligible: false, onLeave: false, hasAssignments: false,
+      submitted: false, scheduledToday: [], stubStates: [],
+      attendanceLabel: '', ignoredPreRollout: true,
     };
   }
 
   const isWeeklyOff = (e.weeklyOff || [0]).includes(day.getUTCDay());
   const nonWorking  = isWeeklyOff || !!holiday;
 
-  const scheduledToday = (assignments || []).filter((a) => {
-    if (!a.template) return false;
-    if (nonWorking) {
-      if (a.holidayOverride !== true) return false;
-      if (a.overrideScope !== 'all') {
-        const start = a.startDate ? startOfDay(a.startDate) : null;
-        if (!start || start.getTime() !== day.getTime()) return false;
-      }
-    }
-    return isScheduledOn(a, day);
+  // Full-day approved leave suppresses the day.  Half-day leave does
+  // NOT (employee still owed the other half).
+  const onLeave = !!(leave && leave.dayType !== 'half');
+
+  // Per-stub state (Draft / Not Submitted / Reopened / ...).
+  const stubStates = missedStubs.map((s) =>
+    expectedSubmissions.classifySubmissionState(s, {
+      reopenPenaltiesByStubId,
+    }));
+
+  // Display enrichment -- prefer the Assignment row from the stub's
+  // FK so the card renders the same title/scheduleLabel it always
+  // has.  Falls back to the stub's populated Submission.template
+  // when the Assignment has since been revoked / deleted.  Only if
+  // BOTH Assignment and Template are unavailable do we surface the
+  // generic '(untitled)' label at the card layer.
+  //
+  // NOTE: this map is DISPLAY ENRICHMENT ONLY.  It never affects
+  // membership -- `missedStubs` above was already frozen.
+  const assignmentById = new Map(
+    (assignments || []).map((a) => [String(a._id), a]),
+  );
+  const scheduledToday = missedStubs.map((s) => {
+    const a = s.assignment ? assignmentById.get(String(s.assignment)) : null;
+    if (a) return a;
+    // Assignment row is gone; use the stub's populated template.
+    return {
+      _id: s.assignment || s._id,
+      template: s.template || null,
+      templateType: s.templateType || '',
+      scheduleLabel: s.scheduleLabel || '',
+    };
   });
 
-  // attendance_review employees don't need template assignments to
-  // qualify -- their daily attendance confirmation is the work item.
-  const hasAssignments = e.attendanceMode === 'attendance_review'
-    ? true
-    : scheduledToday.length > 0;
-
-  const onLeave = !!leave;
-  const eligible = !onLeave && !submittedToday && hasAssignments;
+  const hasAssignments = dayStubs.length > 0;
+  const eligible = !onLeave && !submittedToday && missedStubs.length > 0;
 
   const attendanceLabel = attendance
     ? attendance.status
@@ -197,7 +262,12 @@ const _evaluateNotSubmittedForDay = (ctx) => {
     hasAssignments,
     submitted: submittedToday,
     scheduledToday,
+    stubStates,
     attendanceLabel,
+    // Kept for callers that still want the raw missed rows (frontend
+    // "Draft / Reopened" badge, penalty enrichment).
+    missedStubs,
+    nonWorking,
   };
 };
 
@@ -388,14 +458,19 @@ const listGrouped = asyncHandler(async (req, res) => {
       .lean();
     const empIdList = fullEmployees.map((e) => e._id);
 
-    // Pre-load assignments ONCE per employee, then filter per day
-    // inside the evaluator -- the same input the dailyEngine uses.
+    // Assignment lookup is now DISPLAY ENRICHMENT only.  Membership
+    // comes from Submission stubs (see services/expectedSubmissions).
+    // We still fetch the currently-active assignment rows so the card
+    // can render the same title / scheduleLabel / templateType it
+    // always has -- when the assignment has since been revoked or
+    // deleted, the evaluator falls back to the Submission's cached
+    // fields, so the card remains renderable.
     const assignmentsByEmp = new Map();
     for (const e of fullEmployees) {
       const orList = [{ targetType: 'employee', targetRef: e._id }];
       if (e.department) orList.push({ targetType: 'department', targetRef: e.department._id || e.department });
       if (e.designation) orList.push({ targetType: 'designation', targetRef: e.designation });
-      const rows = await Assignment.find({ active: true, $or: orList })
+      const rows = await Assignment.find({ $or: orList })
         .populate('template', 'title customKind templateType privateRemarkEnabled privateRemarkLabel privateRemarkRequired').lean();
       assignmentsByEmp.set(String(e._id), rows);
     }
@@ -412,14 +487,42 @@ const listGrouped = asyncHandler(async (req, res) => {
     // ================================================================
     if (isRange) {
       // Batch-load everything we need for the whole window.
-      const submissionsRange = await Submission.find({
+      // Pull EVERY live stub (submitted + unsubmitted) so the
+      // evaluator can classify per-stub state without extra reads.
+      // Populate template so a card can still resolve its title
+      // even when the Assignment row has been revoked / deleted.
+      const stubsRange = await Submission.find({
         employee: { $in: empIdList },
         date: { $gte: dayStart, $lte: dayEnd },
-        submitted: true,
         ...liveSubmissionFilter({}),
-      }).select('employee date').lean();
-      const submittedByEmpDay = new Set(
-        submissionsRange.map((s) => `${String(s.employee)}__${_dayKeyStr(s.date)}`)
+      }).select('_id employee date assignment template templateType submitted lastDraftSavedAt hodReview.recommend currentReviewStage scheduleLabel')
+        .populate('template', 'title templateType customKind')
+        .lean();
+      const stubsByEmpDay = new Map();
+      for (const s of stubsRange) {
+        const k = `${String(s.employee)}__${_dayKeyStr(s.date)}`;
+        if (!stubsByEmpDay.has(k)) stubsByEmpDay.set(k, []);
+        stubsByEmpDay.get(k).push(s);
+      }
+      // Convenience set for the "at least one submitted" check used
+      // by the summary counters (matches previous behaviour).
+      const submittedByEmpDay = new Set();
+      for (const [k, arr] of stubsByEmpDay.entries()) {
+        if (arr.some((s) => s.submitted)) submittedByEmpDay.add(k);
+      }
+
+      // Reopen-penalty index for stubs in the window so per-stub
+      // state classification is O(1) per stub.
+      const PenaltyRange = require('../models/Penalty');
+      const stubIds = stubsRange.filter((s) => !s.submitted).map((s) => s._id);
+      const reopenPens = stubIds.length ? await PenaltyRange.find({
+        submission: { $in: stubIds },
+        category:   { $in: ['missed_submission', 'absent_submission'] },
+        source:     'automatic',
+        probable:   false,
+      }).select('submission reopenRequest').lean() : [];
+      const reopenPenaltiesByStubId = new Map(
+        reopenPens.filter((p) => p.submission).map((p) => [String(p.submission), p]),
       );
 
       const confsRange = await AttendanceConfirmation.find({
@@ -475,8 +578,10 @@ const listGrouped = asyncHandler(async (req, res) => {
             submitted:  submittedByEmpDay.has(`${empId}__${dk}`),
             confirmed:  confirmedByEmpDay.has(`${empId}__${dk}`),
             leave,
+            stubs: stubsByEmpDay.get(`${empId}__${dk}`) || [],
             assignments: assignmentsByEmp.get(empId) || [],
             attendance: null, // range cards don't show per-day badge
+            reopenPenaltiesByStubId,
           });
 
           // Summary buckets tally per-employee-day, matching the
@@ -600,13 +705,43 @@ const listGrouped = asyncHandler(async (req, res) => {
     // shape has never changed, so the existing UI still works.
     // ================================================================
     const day = dayEnd;
-    const submittedRows = await Submission.find({
+    // Pull EVERY live stub for the day (submitted + unsubmitted).  The
+    // evaluator uses these to decide membership -- Submission is the
+    // historical source of truth, not Assignment config.  Populate
+    // template so a card renders a title even after the Assignment
+    // row is revoked / deleted (dangling FK, live template).
+    const dayStubs = await Submission.find({
       employee: { $in: empIdList },
       date: day,
-      submitted: true,
       ...liveSubmissionFilter({}),
-    }).select('employee').lean();
-    const submittedEmpIds = new Set(submittedRows.map((s) => String(s.employee)));
+    }).select('_id employee date assignment template templateType submitted lastDraftSavedAt hodReview.recommend currentReviewStage scheduleLabel')
+      .populate('template', 'title templateType customKind')
+      .lean();
+    const stubsByEmp = new Map();
+    for (const s of dayStubs) {
+      const k = String(s.employee);
+      if (!stubsByEmp.has(k)) stubsByEmp.set(k, []);
+      stubsByEmp.get(k).push(s);
+    }
+    // "Did the employee submit at least one row today?" (used by the
+    // summary counter path; membership itself is per-stub below).
+    const submittedEmpIds = new Set();
+    for (const [k, arr] of stubsByEmp.entries()) {
+      if (arr.some((s) => s.submitted)) submittedEmpIds.add(k);
+    }
+
+    // Reopen-penalty index for the day's unsubmitted stubs.
+    const PenaltySingle = require('../models/Penalty');
+    const singleStubIds = dayStubs.filter((s) => !s.submitted).map((s) => s._id);
+    const singleReopenPens = singleStubIds.length ? await PenaltySingle.find({
+      submission: { $in: singleStubIds },
+      category:   { $in: ['missed_submission', 'absent_submission'] },
+      source:     'automatic',
+      probable:   false,
+    }).select('submission reopenRequest').lean() : [];
+    const reopenPenaltiesByStubIdSingle = new Map(
+      singleReopenPens.filter((p) => p.submission).map((p) => [String(p.submission), p]),
+    );
 
     const reviewModeConfs = await AttendanceConfirmation.find({
       employee: { $in: fullEmployees.filter((e) => e.attendanceMode === 'attendance_review').map((e) => e._id) },
@@ -647,8 +782,10 @@ const listGrouped = asyncHandler(async (req, res) => {
         submitted:  submittedEmpIds.has(empId),
         confirmed:  confirmedEmpIds.has(empId),
         leave:      leaveByEmp.get(empId) || null,
+        stubs:      stubsByEmp.get(empId) || [],
         assignments: assignmentsByEmp.get(empId) || [],
         attendance:  attByEmp.get(empId) || null,
+        reopenPenaltiesByStubId: reopenPenaltiesByStubIdSingle,
       });
 
       if (result.onLeave) summary.onApprovedLeave += 1;
@@ -667,13 +804,23 @@ const listGrouped = asyncHandler(async (req, res) => {
           department: e.department?.name || '',
         },
         date: day,
-        assignments: result.scheduledToday.map((a) => ({
+        assignments: result.scheduledToday.map((a, i) => ({
           _id: a._id,
           title: a.template?.title || '(untitled)',
           templateType: a.template?.templateType || '',
           customKind: a.template?.customKind || '',
           scheduleLabel: a.scheduleLabel || '',
+          // Per-stub state so the UI can badge Draft / Reopened /
+          // Not Submitted without extra endpoints.
+          state: result.stubStates ? result.stubStates[i] : 'not_submitted',
         })),
+        // Aggregated state -- if any stub is reopened OR a draft is
+        // in progress, surface it at the card level too.
+        state: (result.stubStates || []).includes('reopened')
+          ? 'reopened'
+          : (result.stubStates || []).includes('draft')
+              ? 'draft'
+              : 'not_submitted',
         attendance: result.attendanceLabel,
         leave: null,
       });
