@@ -160,11 +160,34 @@ const _evaluateNotSubmittedForDay = (ctx) => {
 
   // -----------------------------------------------------------
   // Attendance-review branch (kept SEPARATE by design).
-  // Membership is the AttendanceConfirmation row, not a Submission
-  // stub.  No changes to existing behaviour.
+  //
+  // FIX: Attendance and Submission are two INDEPENDENT workflows.
+  // AttendanceConfirmation records that an employee marked themselves
+  // present -- it is NOT a completed submission.  Interpreting
+  // `confirmed` as "submitted" made attendance-review employees vanish
+  // from Not Submitted the moment they confirmed attendance, even
+  // when every one of their template stubs was still `submitted:false`
+  // AND the Penalty Engine (which correctly reads from Submission)
+  // had already issued a missed_submission penalty for them.  That
+  // divergence between Submission Review and Penalty Engine is what
+  // this change closes.
+  //
+  // Membership now derives from Submission stubs -- identical to the
+  // submission-based branch -- so the two paths give the same answer
+  // for the same person on the same day.  AttendanceConfirmation is
+  // preserved as an input on the ctx (callers still pass it and the
+  // preload query is unchanged) but is no longer read for membership;
+  // it remains available for any display-only enrichment.  The
+  // attendance badge continues to be sourced from the Attendance row,
+  // matching the current submission-based logic verbatim.
   // -----------------------------------------------------------
   if (e.attendanceMode === 'attendance_review') {
-    const submittedToday = !!confirmed;
+    const dayStubs = Array.isArray(stubs) ? stubs : [];
+    const submittedStubs = dayStubs.filter((s) => s.submitted);
+    const missedStubs    = dayStubs.filter((s) => !s.submitted);
+    const submittedToday = !!submitted || submittedStubs.length > 0;
+
+    // Rollout gate -- same rule as submission-based / Penalty Engine.
     if (!submittedToday && isBeforeRollout(day)) {
       return {
         eligible: false, onLeave: false, hasAssignments: false,
@@ -172,20 +195,58 @@ const _evaluateNotSubmittedForDay = (ctx) => {
         attendanceLabel: '', ignoredPreRollout: true,
       };
     }
-    const onLeave = !!(leave && leave.dayType !== 'half');
-    const eligible = !onLeave && !submittedToday;
+
     const isWeeklyOff = (e.weeklyOff || [0]).includes(day.getUTCDay());
+    const nonWorking  = isWeeklyOff || !!holiday;
+
+    // Full-day approved leave suppresses; half-day does not.  Same
+    // rule as the submission-based branch so both paths behave
+    // symmetrically.
+    const onLeave = !!(leave && leave.dayType !== 'half');
+
+    // Per-stub state (Draft / Not Submitted / Reopened / ...).
+    const stubStates = missedStubs.map((s) =>
+      expectedSubmissions.classifySubmissionState(s, {
+        reopenPenaltiesByStubId,
+      }));
+
+    // Display enrichment -- prefer the Assignment row from the stub's
+    // FK, fall back to the stub's populated template, and finally to
+    // a generic label.  Never affects membership.
+    const assignmentById = new Map(
+      (assignments || []).map((a) => [String(a._id), a]),
+    );
+    const scheduledToday = missedStubs.map((s) => {
+      const a = s.assignment ? assignmentById.get(String(s.assignment)) : null;
+      if (a) return a;
+      return {
+        _id: s.assignment || s._id,
+        template: s.template || null,
+        templateType: s.templateType || '',
+        scheduleLabel: s.scheduleLabel || '',
+      };
+    });
+
+    const hasAssignments = dayStubs.length > 0;
+    const eligible = !onLeave && !submittedToday && missedStubs.length > 0;
+
+    // Attendance badge preserved verbatim -- Attendance row is the
+    // source; AttendanceConfirmation is intentionally NOT consulted
+    // here (it drives a separate workflow).
     const attendanceLabel = attendance
       ? attendance.status
       : (isWeeklyOff ? 'weekly_off' : (holiday ? 'holiday' : 'absent'));
+
     return {
       eligible,
       onLeave,
-      hasAssignments: true,
+      hasAssignments,
       submitted: submittedToday,
-      scheduledToday: [],
-      stubStates: [],
+      scheduledToday,
+      stubStates,
       attendanceLabel,
+      missedStubs,
+      nonWorking,
     };
   }
 
