@@ -65,6 +65,9 @@ app.use('/api/realtime', require('./routes/realtimeRoutes'));
 // etc.  Tag catalogue lives at /api/interaction-tags.
 app.use('/api/interactions',      require('./routes/interactionRoutes'));
 app.use('/api/interaction-tags',  require('./routes/interactionTagRoutes'));
+// Redesign: Notes knowledge-base (Personal Notes + Note Types).
+// Reuses the InteractionTag catalogue + mentions autocomplete.
+app.use('/api/notes',             require('./routes/noteRoutes'));
 // Phase 75 (Alert-Notification-Reminder redesign, Phase 1) -- the
 // compliance engine used to run inside GET /api/submissions/today.
 // It now runs only via the scheduler + this explicit action endpoint

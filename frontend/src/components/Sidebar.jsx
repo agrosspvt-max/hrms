@@ -145,9 +145,9 @@ function buildNav(user) {
         { to: '/sent-alerts', label: 'Send Alerts', icon: I.send },
         { to: '/reset-requests', label: 'Reset Requests', icon: I.reset, badgeKey: 'resetRequests' },
         { to: '/events', label: 'Events & Holidays', icon: I.calendar },
-        // Phase 74 -- Employee Interactions.
+        // Employee Interactions redesign: single workspace entry.
+        // Meetings, Notes, and Manage Tags now live inside as tabs.
         { to: '/interactions', label: 'Employee Interactions', icon: I.review },
-        ...(isSA ? [{ to: '/interactions/tags', label: 'Manage Tags', icon: I.tools }] : []),
         { to: '/contacts', label: 'Contacts', icon: I.people },
         { to: '/salary', label: 'Salary', icon: I.money },
         // Phase 61 -- Fines & Penalties module.

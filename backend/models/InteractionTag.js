@@ -14,7 +14,17 @@ const interactionTagSchema = new mongoose.Schema(
     slug:        { type: String, required: true, trim: true, lowercase: true, unique: true },
     category: {
       type: String,
-      enum: ['performance', 'behaviour', 'compliance', 'hr', 'custom'],
+      // Redesign: 15 preset categories with default colors surfaced by
+      // the frontend Manage Tags UI.  Legacy values (performance /
+      // behaviour / compliance / hr / custom) remain valid enum
+      // members so existing tag rows keep working with no migration.
+      enum: [
+        'performance', 'behaviour', 'compliance', 'hr',           // legacy
+        'warning', 'discipline', 'appreciation', 'attendance',
+        'development', 'information', 'reminder', 'complaint',
+        'customer', 'finance', 'management', 'training',
+        'custom',
+      ],
       default: 'custom',
       index: true,
     },

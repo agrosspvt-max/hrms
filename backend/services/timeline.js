@@ -22,6 +22,9 @@ const Interaction            = require('../models/Interaction');
 const InteractionNote        = require('../models/InteractionNote');
 const AttendanceConfirmation = require('../models/AttendanceConfirmation');
 const Reminder               = require('../models/Reminder');
+// Redesign: knowledge-base notes surface in the employee's timeline
+// whenever they're mentioned in one.
+const Note                   = require('../models/Note');
 
 const deepLinkFor = ({ entityType, entityId }) => {
   if (!entityType || !entityId) return '';
@@ -30,7 +33,8 @@ const deepLinkFor = ({ entityType, entityId }) => {
     case 'penalty':      return `/penalties?open=${entityId}`;
     case 'leave':        return `/my-leaves?open=${entityId}`;
     case 'salary_slip':  return `/my-salary?open=${entityId}`;
-    case 'interaction':  return `/interactions?open=${entityId}`;
+    case 'interaction':  return `/interactions?meeting=${entityId}`;
+    case 'note':         return `/interactions?note=${entityId}`;
     case 'attendance':   return `/my-attendance`;
     case 'reminder':     return '/'; // dashboard widget already shows it
     default:             return '';
@@ -266,6 +270,29 @@ const collect = async ({ subject, from, to, types }) => {
       }
     }
     rowsPerType.attendance = rows;
+  }
+
+  // ---- Notes mentioning the subject --------------------------------
+  if (wants('note')) {
+    const rows = [];
+    const notes = await Note.find({
+      mentions: subjId,
+      createdAt: dateBetween,
+    }).select('_id createdAt title noteType personal createdBy')
+      .populate('createdBy', 'name')
+      .populate('noteType', 'name color icon').lean();
+    for (const n of notes) {
+      rows.push(_mkRow({
+        occurredAt: n.createdAt,
+        entityType: 'note', entityId: n._id,
+        title: n.personal ? 'Note (personal)' : `Note · ${n.noteType?.name || 'Untyped'}`,
+        summary: n.title,
+        icon: n.noteType?.icon || '📝',
+        color: n.noteType?.color || '#8b5cf6',
+        actor: n.createdBy ? { _id: n.createdBy._id, name: n.createdBy.name } : null,
+      }));
+    }
+    rowsPerType.note = rows;
   }
 
   // ---- Reminder completions ----------------------------------------
