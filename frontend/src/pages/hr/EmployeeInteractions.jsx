@@ -6,6 +6,8 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import Modal from '../../components/Modal.jsx';
 import SearchableSelect from '../../components/SearchableSelect.jsx';
 import { ClickableCard } from '../../components/AnalyticsDrillDown.jsx';
+import MentionTagTextarea from '../../components/MentionTagTextarea.jsx';
+import ParticipantPicker from '../../components/ParticipantPicker.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, fmtDate } from '../../utils/helpers';
@@ -309,7 +311,7 @@ function NewInteractionModal({ onClose, onCreated, employees, departments, tags 
   const [f, setF] = useState({
     type: 'meeting', title: '', description: '', visibility: 'hr_only',
     meeting: { date: '', time: '', durationMinutes: 30, mode: 'offline', location: '', meetingType: '' },
-    participants: [], tags: [], department: '',
+    participants: [], tags: [], mentions: [], department: '',
     followUp: { required: false, dueDate: '' },
   });
   const [busy, setBusy] = useState(false);
@@ -359,7 +361,15 @@ function NewInteractionModal({ onClose, onCreated, employees, departments, tags 
           </div>
           <div className="md:col-span-2">
             <label className="label">Description</label>
-            <textarea className="input" rows={3} value={f.description} onChange={(e) => set('description', e.target.value)} placeholder="Use ! to mention an employee, @ to tag." />
+            <MentionTagTextarea
+              rows={3}
+              value={f.description}
+              onChange={(v) => set('description', v)}
+              tags={tags}
+              onMentionPicked={(u) => set('mentions', Array.from(new Set([...(f.mentions || []), String(u._id)])))}
+              onTagPicked={(t) => set('tags', Array.from(new Set([...(f.tags || []), String(t._id)])))}
+              placeholder="Type ! to mention an employee, @ to add a tag."
+            />
           </div>
         </div>
 
@@ -393,23 +403,23 @@ function NewInteractionModal({ onClose, onCreated, employees, departments, tags 
 
         <div>
           <label className="label">Participants</label>
-          <select
-            multiple className="input h-32"
+          <ParticipantPicker
             value={f.participants}
-            onChange={(e) => set('participants', [...e.target.selectedOptions].map((o) => o.value))}>
-            {employees.map((u) => <option key={u._id} value={u._id}>{u.name} · {u.employeeId} · {u.department?.name || u.department || ''}</option>)}
-          </select>
-          <div className="text-[11px] text-slate-500 mt-1">Hold Ctrl/Cmd to select multiple.</div>
+            onChange={(next) => set('participants', next)}
+            employees={employees}
+          />
         </div>
 
         <div>
           <label className="label">Tags</label>
-          <select
-            multiple className="input h-24"
+          <ParticipantPicker
             value={f.tags}
-            onChange={(e) => set('tags', [...e.target.selectedOptions].map((o) => o.value))}>
-            {tags.filter((t) => !t.archived).map((t) => <option key={t._id} value={t._id}>@{t.name} · {t.category}</option>)}
-          </select>
+            onChange={(next) => set('tags', next)}
+            employees={(tags || []).filter((t) => !t.archived).map((t) => ({
+              _id: t._id, name: `@${t.name}`, employeeId: t.category, department: '',
+            }))}
+          />
+          <div className="text-[11px] text-slate-500 mt-1">Tags can also be added by typing <span className="font-mono">@</span> inside the description or a note.</div>
         </div>
 
         <div className="grid md:grid-cols-3 gap-3 items-end">
@@ -507,13 +517,25 @@ function InteractionDetailModal({ id, onClose, onChanged, tags, employees, canMa
           {canManage && (
             <div className="card card-body space-y-2 border-brand-200">
               <div className="text-sm font-semibold">Add Note</div>
-              <textarea className="input" rows={3} placeholder="Add an internal note (use ! for mentions, @ for tags)"
-                value={noteBody} onChange={(e) => setNoteBody(e.target.value)} />
+              <MentionTagTextarea
+                rows={3}
+                value={noteBody}
+                onChange={setNoteBody}
+                tags={tags}
+                onMentionPicked={() => { /* body already has !Name */ }}
+                onTagPicked={(t) => setNoteTags((cur) => Array.from(new Set([...cur, String(t._id)])))}
+                placeholder="Type ! to mention an employee, @ to add a tag."
+              />
               <div className="flex flex-wrap items-center gap-2">
-                <select multiple className="input h-16 max-w-[260px]" value={noteTags}
-                  onChange={(e) => setNoteTags([...e.target.selectedOptions].map((o) => o.value))}>
-                  {tags.filter((t) => !t.archived).map((t) => <option key={t._id} value={t._id}>@{t.name}</option>)}
-                </select>
+                <div className="flex-1 min-w-[220px]">
+                  <ParticipantPicker
+                    value={noteTags}
+                    onChange={setNoteTags}
+                    employees={(tags || []).filter((t) => !t.archived).map((t) => ({
+                      _id: t._id, name: `@${t.name}`, employeeId: t.category, department: '',
+                    }))}
+                  />
+                </div>
                 <select className="input max-w-[180px]" value={noteVis} onChange={(e) => setNoteVis(e.target.value)}>
                   <option value="hr_only">HR Only</option>
                   <option value="managers_hr">Managers + HR</option>

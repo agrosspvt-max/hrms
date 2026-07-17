@@ -30,6 +30,11 @@ const InteractionNote = require('../models/InteractionNote');
 const InteractionTag  = require('../models/InteractionTag');
 const User = require('../models/User');
 const { logAudit } = require('../utils/audit');
+// Phase-2 event bus: publishing interaction.created fans the notification
+// out to every participant via the existing notificationProjector
+// subscriber -- one row per participant, deduped by
+// (recipient, `meeting.created:<id>`, variant) at the DB layer.
+const events = require('../services/events');
 
 /* ------------------------------------------------------------------ */
 /* Permission helpers                                                   */
@@ -95,14 +100,31 @@ const list = asyncHandler(async (req, res) => {
   if (q.followUp === 'open')     where['followUp.required'] = true, where['followUp.resolvedAt'] = { $exists: false };
   if (q.followUp === 'resolved') where['followUp.resolvedAt'] = { $exists: true };
 
-  if (q.search) {
-    const term = String(q.search).trim().toLowerCase();
-    if (term) where.searchText = { $regex: term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
-  }
-
   // HOD scoping: clamp to their department if they're neither HR nor SA.
   if (req.user.role !== 'hr' && req.user.role !== 'super_admin' && req.user.isHOD && req.user.hodDepartment) {
     where.department = req.user.hodDepartment;
+  }
+
+  // Global search: case-insensitive partial match against BOTH the
+  // parent Interaction.searchText and any child InteractionNote row.
+  // Previous behaviour only searched the parent, so a note containing
+  // "needs a raise" would never surface for the query "raise".  We
+  // now widen the query to pull interactions whose notes match.
+  if (q.search) {
+    const raw = String(q.search).trim();
+    if (raw) {
+      const escaped = raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const rx = new RegExp(escaped, 'i');   // case-insensitive
+      // Find every InteractionNote whose searchText matches so we can
+      // include the parent interactions in the result.
+      const matchingNoteIds = await InteractionNote.find({ searchText: rx })
+        .select('interaction').lean();
+      const parentIdsFromNotes = matchingNoteIds.map((n) => n.interaction);
+      where.$or = [
+        { searchText: rx },
+        ...(parentIdsFromNotes.length ? [{ _id: { $in: parentIdsFromNotes } }] : []),
+      ];
+    }
   }
 
   const [rows, total, noteCounts] = await Promise.all([
@@ -188,6 +210,27 @@ const create = asyncHandler(async (req, res) => {
     targetLabel: `${doc.type} · ${doc.title}`,
     meta: { participants: participants.length, tags: tagIds.length },
   });
+
+  // Publish the domain event AFTER save + audit.  The subscriber in
+  // services/subscribers/notificationProjector.js turns this into one
+  // Notification per participant (upsert-by-eventKey, so a caller
+  // retry / cron restart cannot duplicate).  Doc is passed as a plain
+  // object with populated participant + createdBy so the subscriber
+  // doesn't have to re-query.
+  try {
+    const populated = doc.toObject ? doc.toObject() : doc;
+    // Attach a shallow createdBy identity for the message signature.
+    populated.createdByName = req.user?.name;
+    events.publish('interaction.created', {
+      interaction: populated,
+      createdBy: req.user?._id,
+    });
+  } catch (err) {
+    // Publishing must never fail the create -- the audit + row already
+    // landed; realtime / notifications can retry via a manual refresh.
+    console.error('[interaction.create] events.publish failed:', err.message);
+  }
+
   res.status(201).json(doc);
 });
 
