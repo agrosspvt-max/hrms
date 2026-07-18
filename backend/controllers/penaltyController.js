@@ -280,17 +280,63 @@ const cancel = asyncHandler(async (req, res) => {
   if (!['pending', 'scheduled', 'active'].includes(p.status)) {
     res.status(400); throw new Error('Only active / scheduled penalties can be cancelled');
   }
+  // Snapshot the pre-mutation status so the audit meta can record
+  // what state the penalty was in before HR cancelled it.
+  const previousStatus = p.status;
+
   p.status = 'cancelled';
   p.cancelledBy = req.user._id;
   p.cancelledAt = new Date();
   p.cancelReason = String(req.body.reason || '').trim();
   await p.save();
+
+  // Enrich the audit entry with business context so someone reading
+  // the log months later can understand the event without opening
+  // the Penalty document.  Only tiny scalar fields are stored --
+  // never the full Employee / Submission / Template docs.  Both
+  // lookups run in parallel and are wrapped in try / catch so an
+  // enrichment failure never blocks the cancel response.
+  let employeeSnap = null;
+  let submissionSnap = null;
+  try {
+    const Submission = require('../models/Submission');
+    [employeeSnap, submissionSnap] = await Promise.all([
+      User.findById(p.employee).select('name employeeId').lean(),
+      p.submission
+        ? Submission.findById(p.submission)
+            .select('date template assignment')
+            .populate('template', 'title')
+            .populate('assignment', 'scheduleLabel')
+            .lean()
+        : Promise.resolve(null),
+    ]);
+  } catch (_) { /* audit enrichment is best-effort */ }
+
   logAudit(req, {
     action: 'penalty.cancel',
     targetType: 'Penalty',
     targetId: p._id,
-    targetLabel: `${p.category}`,
-    meta: { reason: p.cancelReason },
+    // targetLabel gains the employee code so log listings surface
+    // the "who" at a glance without opening the row.
+    targetLabel: employeeSnap?.employeeId
+      ? `${p.category} · ${employeeSnap.employeeId}`
+      : `${p.category}`,
+    meta: {
+      reason: p.cancelReason,
+      previousStatus,
+      category: p.category,
+      employeeRef:  String(p.employee),
+      employeeId:   employeeSnap?.employeeId || null,
+      employeeName: employeeSnap?.name       || null,
+      submissionId: p.submission ? String(p.submission) : null,
+      templateTitle: submissionSnap?.template?.title || null,
+      scheduleLabel: submissionSnap?.assignment?.scheduleLabel || null,
+      // Prefer the submission's date (the actual work day); fall
+      // back to the penalty's targetDate for penalties that don't
+      // reference a submission (manual marks / completion / financial).
+      workDate: submissionSnap?.date || p.targetDate || null,
+      targetDate: p.targetDate || null,
+    },
   });
   // Verification-audit fix -- push a realtime event so the
   // employee's dashboard warning card + Fines & Penalties feed
