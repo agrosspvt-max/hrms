@@ -8,6 +8,12 @@ router.use(protect);
 // authenticated can hit this (it always upserts onto req.user._id).
 router.post('/reflection', c.saveReflection);
 
+// Employee reads their OWN reflection for a date.  Scoped to
+// req.user._id -- no employeeId param, no HR / HOD gate.  Returns
+// null when nothing has been filed yet.  Used by the employee
+// dashboard to hydrate the Daily Reflection card on page load.
+router.get('/my-reflection', c.getMyReflection);
+
 // HR / SA / HOD: grouped review feed + per-day drill + finalise.
 // Controller enforces role-aware visibility + HOD department clamp.
 router.get('/grouped',  c.listGrouped);

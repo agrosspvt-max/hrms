@@ -581,11 +581,23 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       };
     } else {
       // Task template: tasks[] + addedTasks[].
-      payload.tasks = (sub.tasks || []).map((t) => ({
-        taskId: t._id,
-        status: t.status,
-        pendingReason: t.pendingReason,
-      }));
+      //
+      // Draft save reads from the SAME local state the render + submit
+      // paths use (`taskState`), not from the server-side snapshot
+      // `sub.tasks`.  Previously the payload copied `t.status` / `t.pendingReason`
+      // straight off `sub.tasks`, so the user's UI selections never
+      // left the browser and every autosave / manual save wrote back
+      // the initial 'pending_submit'.  The `?? t.status` fallback
+      // preserves the seeded server value for tasks the employee has
+      // not yet touched in the current session.
+      payload.tasks = (sub.tasks || []).filter((t) => !t.addedByEmployee).map((t) => {
+        const st = taskState[sub._id]?.[t._id] || {};
+        return {
+          taskId: t._id,
+          status: st.status ?? t.status,
+          pendingReason: st.pendingReason ?? t.pendingReason,
+        };
+      });
       payload.addedTasks = (addedTasks[sub._id] || []).filter((t) => (t.title || '').trim());
     }
     return payload;
@@ -626,6 +638,14 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     // Phase 60 -- reseed the Employee Private Remark so a partial
     // autosave survives page reload.
     const privateRemarksSeed = {};
+    // Task template: rehydrate the working copy of every task row from
+    // the persisted Submission so a page refresh restores what the
+    // employee saved as a draft.  Mirrors the custom-template seeding
+    // pattern below: build a *Seed map keyed on submissionId, then
+    // merge with `...prev` last so any in-flight typed edits win over
+    // a background refetch.
+    const taskStateSeed = {};
+    const addedTasksSeed = {};
     (a.data.submissions || []).forEach((s) => {
       // Phase 60 -- reseed the private remark on every unsubmitted
       // template that has the feature turned on.  Works for both
@@ -636,6 +656,23 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
       }
       if (s.templateType === 'sheet' && !s.submitted && s.sheet) {
         seed[s._id] = JSON.parse(JSON.stringify(s.sheet));
+      }
+      // Task template seeding.  `templateType` may be undefined on
+      // very old submissions (pre-templateType field); treating that
+      // as 'task' matches the render fallback further down.
+      if ((s.templateType === 'task' || !s.templateType) && !s.submitted) {
+        const rows = {};
+        (s.tasks || []).filter((t) => !t.addedByEmployee).forEach((t) => {
+          rows[String(t._id)] = {
+            status: t.status || 'pending_submit',
+            pendingReason: t.pendingReason || '',
+          };
+        });
+        if (Object.keys(rows).length > 0) taskStateSeed[s._id] = rows;
+        const added = (s.tasks || [])
+          .filter((t) => t.addedByEmployee && (t.title || '').trim())
+          .map((t) => ({ title: t.title }));
+        if (added.length > 0) addedTasksSeed[s._id] = added;
       }
       if (s.templateType === 'custom' && !s.submitted) {
         const ctx = {};
@@ -703,6 +740,11 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     setExtraTasks((prev) =>   ({ ...extraTasksSeed,    ...prev }));
     setProductSales((prev) => ({ ...productSalesSeed,  ...prev }));
     setFarmerRecords((prev) =>({ ...farmerRecordsSeed, ...prev }));
+    // Task template -- same prev-wins spread order so in-flight typed
+    // edits are not clobbered by a background refetch triggered by a
+    // realtime event.
+    setTaskState((prev) =>    ({ ...taskStateSeed,     ...prev }));
+    setAddedTasks((prev) =>   ({ ...addedTasksSeed,    ...prev }));
     // Phase 60 -- seed the private remark drafts; keep any in-flight
     // typed text (prev) rather than clobbering with the server copy.
     setPrivateRemarks((prev) => ({ ...privateRemarksSeed, ...prev }));
@@ -2659,16 +2701,30 @@ function DailyReflectionCard() {
   const [savedAt, setSavedAt] = useState(null);
   const toast = useToast();
 
-  // Best-effort load of today's reflection so HR-side edits / prior
-  // saves don't get wiped if the page is refreshed.
+  // Hydrate the card from the employee's OWN saved reflection so a
+  // page refresh restores what was already filed today.  Uses the
+  // dedicated `/daily-review/my-reflection` endpoint (req.user._id,
+  // no employeeId param, no HR / HOD gate).  Returns null when the
+  // employee hasn't filed yet -- the card simply stays empty.
   useEffect(() => {
-    api.get('/daily-review/day', { params: { employeeId: 'self', date: todayIso } })
+    let cancelled = false;
+    api.get('/daily-review/my-reflection', { params: { date: todayIso } })
       .then(({ data }) => {
-        // 'self' isn't supported server-side -- this fails 400 -- which
-        // is fine; the employee just starts with empty fields.
+        if (cancelled || !data) return;
+        if (data.selfRating !== undefined && data.selfRating !== null) {
+          setRating(String(data.selfRating));
+        }
+        if (typeof data.selfNote === 'string') setNote(data.selfNote);
+        if (typeof data.idea === 'string')     setIdea(data.idea);
+        // Prefer the persistence timestamp so the pill reads
+        // "Saved HH:MM" after a page refresh -- falls back to
+        // createdAt when a very old row predates the field.
+        const ts = data.updatedAt || data.createdAt;
+        if (ts) setSavedAt(new Date(ts));
       })
-      .catch(() => {});
-  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+      .catch(() => { /* card starts empty on any error */ });
+    return () => { cancelled = true; };
+  }, [todayIso]);
 
   // Phase 69 -- Self Rating is required.  Validation runs both here
   // (helpful inline feedback) AND server-side (single source of truth).

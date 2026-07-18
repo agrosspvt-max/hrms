@@ -981,6 +981,32 @@ const getDay = asyncHandler(async (req, res) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* Employee reads their OWN day's reflection                           */
+/*                                                                    */
+/* Dedicated endpoint so the employee dashboard can hydrate the        */
+/* Daily Reflection card on page load without going through            */
+/* `GET /daily-review/day`, which requires a real employeeId ObjectId  */
+/* and an HR / HOD / SA role.  This handler:                          */
+/*                                                                    */
+/*   - Uses req.user._id.  No employeeId query param, no impersonation.*/
+/*   - Returns null when nothing has been filed for the day yet.       */
+/*   - Never writes.  Does not touch Submission, Attendance, or        */
+/*     any other collection.                                          */
+/*                                                                    */
+/* Scope is intentionally Daily Reflection only -- keeping this        */
+/* separate from `/submissions/today` preserves the domain isolation   */
+/* between Submissions and Daily Reflection.                          */
+/* ------------------------------------------------------------------ */
+const getMyReflection = asyncHandler(async (req, res) => {
+  const day = _resolveDay(req.query.date);
+  const doc = await DailyReflection.findOne({
+    employee: req.user._id,
+    date: day,
+  }).lean();
+  res.json(doc || null);
+});
+
+/* ------------------------------------------------------------------ */
 /* Employee saves their own day's reflection                           */
 /* ------------------------------------------------------------------ */
 const saveReflection = asyncHandler(async (req, res) => {
@@ -1795,4 +1821,4 @@ const editSubmissionValue = asyncHandler(async (req, res) => {
   res.json({ ok: true, submission: sub });
 });
 
-module.exports = { listGrouped, getDay, saveReflection, finalizeDay, bulkFinalize, editTaskStatus, editTaskMarks, editSubmissionValue };
+module.exports = { listGrouped, getDay, getMyReflection, saveReflection, finalizeDay, bulkFinalize, editTaskStatus, editTaskMarks, editSubmissionValue };
