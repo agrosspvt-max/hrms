@@ -25,6 +25,7 @@ import InteractionsWorkspace from './pages/hr/interactions/InteractionsWorkspace
 import MyInteractions from './pages/employee/MyInteractions.jsx';
 import MyCompliance from './pages/employee/MyCompliance.jsx';
 import ComplianceWorkspace from './pages/hr/compliance/ComplianceWorkspace.jsx';
+import RuleBuilderPage from './pages/hr/compliance/RuleBuilderPage.jsx';
 import ManageAccess from './pages/superadmin/ManageAccess.jsx';
 import FeatureAccess from './pages/superadmin/FeatureAccess.jsx';
 import Departments from './pages/hr/Departments.jsx';
@@ -150,6 +151,13 @@ export default function App() {
             the existing /penalties route while both live under the
             dual-write window. */}
         <Route path="/hr/compliance" element={<ProtectedRoute role="hr" feature="penalties"><ComplianceWorkspace /></ProtectedRoute>} />
+        {/* Rule Builder -- full-page create / edit / clone form.
+            Backend gate: `compliance.rules` flag; endpoint returns 404
+            when off so the page shows an inline load error instead of
+            crashing. */}
+        <Route path="/hr/compliance/rules/new"        element={<ProtectedRoute role="hr" feature="penalties"><RuleBuilderPage /></ProtectedRoute>} />
+        <Route path="/hr/compliance/rules/:id/edit"   element={<ProtectedRoute role="hr" feature="penalties"><RuleBuilderPage /></ProtectedRoute>} />
+        <Route path="/hr/compliance/rules/:id/clone"  element={<ProtectedRoute role="hr" feature="penalties"><RuleBuilderPage /></ProtectedRoute>} />
 
         {/* HOD (Head of Department) routes - employee + isHOD */}
         <Route path="/team" element={<ProtectedRoute hod><HODEmployees /></ProtectedRoute>} />

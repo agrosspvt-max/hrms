@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../../../api/axios';
 import { Loader, EmptyState } from '../../../components/Loader.jsx';
 import ActionBadge from '../../../components/compliance/ActionBadge.jsx';
 import { fmtDate, errMsg } from '../../../utils/helpers';
 import { useToast } from '../../../context/ToastContext.jsx';
+import RuleHistoryPanel from './RuleHistoryPanel.jsx';
+import useComplianceRegistry from '../../../hooks/useComplianceRegistry.js';
 
 /**
  * ComplianceWorkspace -- unified HR page.  Three tabs:
@@ -308,12 +311,27 @@ function IncidentsTab() {
 }
 
 // -----------------------------------------------------------
-// Rules tab
+// Rules tab -- rich management view.
+//
+// Search + category / status / severity filter + sort +
+// summary counters + per-row quick actions (Edit / Clone /
+// History / Enable / Disable).  Create button routes to the
+// full-page Rule Builder at /hr/compliance/rules/new.
 // -----------------------------------------------------------
 function RulesTab() {
   const [rows, setRows] = useState(null);
   const [err, setErr]   = useState(null);
+  const [q, setQ]       = useState('');
+  const [category, setCategory] = useState('');
+  const [status, setStatus]     = useState('');
+  const [severity, setSeverity] = useState('');
+  const [sort, setSort]         = useState('name');
+  const [historyRule, setHistoryRule] = useState(null);
   const toast = useToast();
+  const navigate = useNavigate();
+  // QA-fix H4 -- registry-driven filter dropdowns.
+  const { categories: CATEGORIES, severities: SEVERITIES } = useComplianceRegistry();
+
   const load = () => {
     setRows(null); setErr(null);
     api.get('/compliance/rules')
@@ -321,39 +339,226 @@ function RulesTab() {
       .catch((e) => setErr(errMsg(e)));
   };
   useEffect(load, []);
+  // QA-fix H2 -- confirmation dialog before enable/disable.
+  //
+  // Enabling a scoped-to-all-employees rule can materialise thousands
+  // of incidents on the very next scheduler tick (00:15 local) and
+  // may write real financial fines.  We block the action behind
+  // window.confirm with a message that surfaces:
+  //   - direction (enable vs. disable)
+  //   - the rule's severity + code
+  //   - a heightened warning when the rule contains financial fines
+  //     or actions marked as recurring
+  const _highImpactWarnings = (rule) => {
+    const warnings = [];
+    const actions = rule.actions || [];
+    if (actions.some((a) => a.enabled !== false && a.type === 'financial_fine')) {
+      warnings.push('• contains a FINANCIAL FINE');
+    }
+    if (actions.some((a) => a.enabled !== false && a.config && a.config.recurring === true)) {
+      warnings.push('• contains RECURRING actions that re-fire every day the incident stays active');
+    }
+    if ((rule.escalation || []).length > 0) {
+      warnings.push(`• has ${rule.escalation.length} escalation step(s) that will fire on aged incidents`);
+    }
+    return warnings;
+  };
   const toggle = async (rule) => {
+    const goingToEnable = !rule.enabled;
+    const verb = goingToEnable ? 'ENABLE' : 'DISABLE';
+    const warnings = goingToEnable ? _highImpactWarnings(rule) : [];
+    const lines = [
+      `${verb} the rule "${rule.name}" (${rule.code})?`,
+      '',
+      goingToEnable
+        ? 'Enabling this rule may start generating compliance incidents on the next scheduler run.'
+        : 'Disabling this rule stops it from firing on the next scheduler run. Existing incidents are not affected.',
+    ];
+    if (warnings.length) {
+      lines.push('', 'This rule:', ...warnings);
+    }
+    lines.push('', 'Continue?');
+    if (!window.confirm(lines.join('\n'))) return;
     try {
       await api.post(`/compliance/rules/${rule._id}/${rule.enabled ? 'disable' : 'enable'}`);
       toast.success(`Rule ${rule.enabled ? 'disabled' : 'enabled'}.`);
       load();
     } catch (e) { toast.error(errMsg(e)); }
   };
+
+  const filtered = useMemo(() => {
+    if (!rows) return [];
+    const needle = q.trim().toLowerCase();
+    let out = rows.filter((r) => {
+      if (needle && !(r.name || '').toLowerCase().includes(needle)
+          && !(r.code || '').toLowerCase().includes(needle)
+          && !(r.description || '').toLowerCase().includes(needle)) return false;
+      if (category && r.category !== category) return false;
+      if (severity && r.severity !== severity) return false;
+      if (status === 'enabled'  && !r.enabled) return false;
+      if (status === 'disabled' &&  r.enabled) return false;
+      return true;
+    });
+    const sevRank = { low: 0, medium: 1, high: 2, critical: 3 };
+    out.sort((a, b) => {
+      if (sort === 'name')      return (a.name || '').localeCompare(b.name || '');
+      if (sort === 'code')      return (a.code || '').localeCompare(b.code || '');
+      if (sort === 'category')  return (a.category || '').localeCompare(b.category || '');
+      if (sort === 'severity')  return (sevRank[b.severity] || 0) - (sevRank[a.severity] || 0);
+      if (sort === 'updated')   return new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0);
+      if (sort === 'actions')   return (b.actions || []).length - (a.actions || []).length;
+      return 0;
+    });
+    return out;
+  }, [rows, q, category, status, severity, sort]);
+
+  const counts = useMemo(() => {
+    const total = rows ? rows.length : 0;
+    const enabled = rows ? rows.filter((r) => r.enabled).length : 0;
+    return { total, enabled, disabled: total - enabled, shown: filtered.length };
+  }, [rows, filtered]);
+
   if (err) return <div className="text-sm text-red-600 border rounded-md p-3 bg-red-50">Rules load failed: {err}</div>;
   if (!rows) return <Loader />;
-  if (rows.length === 0) return <EmptyState title="No rules seeded" />;
+
   return (
-    <div className="space-y-2">
-      {rows.map((r) => (
-        <div key={r._id} className="border rounded-md p-3 flex items-start justify-between gap-2 flex-wrap">
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold">{r.name}</div>
-            <div className="text-xs text-slate-500">
-              {r.code} · <span className="capitalize">{r.category}</span> · {r.severity}
-            </div>
-            <div className="text-xs text-slate-500 mt-1">
-              {r.actions.length} action(s) · v{r.version}
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium ${r.enabled ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-600'}`}>
-              {r.enabled ? 'ENABLED' : 'DISABLED'}
-            </span>
-            <button className="btn-secondary !py-1 !text-xs" onClick={() => toggle(r)}>
-              {r.enabled ? 'Disable' : 'Enable'}
-            </button>
+    <div className="space-y-3">
+      {/* header + counters + create ------------------------------- */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex gap-2 text-xs">
+          <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-700 font-medium">
+            {counts.total} total
+          </span>
+          <span className="px-2 py-1 rounded-full bg-green-100 text-green-800 font-medium">
+            {counts.enabled} enabled
+          </span>
+          <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">
+            {counts.disabled} disabled
+          </span>
+          <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-600 font-medium">
+            {counts.shown} shown
+          </span>
+        </div>
+        <div className="ml-auto">
+          <button className="btn-primary !text-xs" onClick={() => navigate('/hr/compliance/rules/new')}>
+            + Create rule
+          </button>
+        </div>
+      </div>
+
+      {/* filters -------------------------------------------------- */}
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+        <input
+          type="search" placeholder="Search name / code / description"
+          value={q} onChange={(e) => setQ(e.target.value)}
+          className="md:col-span-2 border rounded-md text-sm px-2 py-1.5"
+        />
+        <select value={category} onChange={(e) => setCategory(e.target.value)} className="border rounded-md text-sm px-2 py-1.5">
+          <option value="">All categories</option>
+          {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+        </select>
+        <select value={severity} onChange={(e) => setSeverity(e.target.value)} className="border rounded-md text-sm px-2 py-1.5">
+          <option value="">All severities</option>
+          {SEVERITIES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+        </select>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className="border rounded-md text-sm px-2 py-1.5">
+          <option value="">All statuses</option>
+          <option value="enabled">Enabled only</option>
+          <option value="disabled">Disabled only</option>
+        </select>
+        <select value={sort} onChange={(e) => setSort(e.target.value)} className="border rounded-md text-sm px-2 py-1.5">
+          <option value="name">Sort: Name (A–Z)</option>
+          <option value="code">Sort: Code</option>
+          <option value="category">Sort: Category</option>
+          <option value="severity">Sort: Severity ↓</option>
+          <option value="actions">Sort: Action count ↓</option>
+          <option value="updated">Sort: Recently updated</option>
+        </select>
+      </div>
+
+      {/* empty state --------------------------------------------- */}
+      {filtered.length === 0 && (
+        <div className="border rounded-md p-6 text-center bg-white">
+          <div className="text-sm font-semibold">No rules match these filters.</div>
+          <div className="text-xs text-slate-500 mt-1">
+            {counts.total === 0
+              ? 'No rules exist yet. Click "Create rule" to add the first one.'
+              : 'Try removing filters or the search term.'}
           </div>
         </div>
-      ))}
+      )}
+
+      {/* rows ---------------------------------------------------- */}
+      {filtered.length > 0 && (
+        <div className="space-y-2">
+          {filtered.map((r) => (
+            <RuleRow
+              key={r._id}
+              rule={r}
+              severities={SEVERITIES}
+              onEdit={() => navigate(`/hr/compliance/rules/${r._id}/edit`)}
+              onClone={() => navigate(`/hr/compliance/rules/${r._id}/clone`)}
+              onToggle={() => toggle(r)}
+              onHistory={() => setHistoryRule(r)}
+            />
+          ))}
+        </div>
+      )}
+
+      {historyRule && (
+        <RuleHistoryPanel
+          ruleId={historyRule._id}
+          ruleLabel={`${historyRule.name} (${historyRule.code})`}
+          onClose={() => setHistoryRule(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function RuleRow({ rule: r, severities, onEdit, onClone, onToggle, onHistory }) {
+  // QA-fix H4 -- registry-driven severity + detector labels.
+  const { detectors: DETECTORS } = useComplianceRegistry();
+  const sev = (severities || []).find((s) => s.value === r.severity)
+    || { tone: 'bg-slate-100 text-slate-700', label: r.severity };
+  const det = (DETECTORS || []).find((d) => d.value === r.detector) || null;
+  const scope = ['departments', 'designations', 'templates', 'employeeIds']
+    .reduce((sum, k) => sum + (((r.scope || {})[k]) || []).length, 0);
+  const updated = r.updatedAt ? fmtDate(r.updatedAt) : '';
+  return (
+    <div className="border rounded-md p-3 bg-white">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="text-sm font-semibold truncate">{r.name}</div>
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${sev.tone}`}>{sev.label}</span>
+            <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${r.enabled ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-600'}`}>
+              {r.enabled ? 'ENABLED' : 'DISABLED'}
+            </span>
+            <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-slate-100 text-slate-700 capitalize">
+              {r.category}
+            </span>
+          </div>
+          <div className="text-xs text-slate-500 mt-0.5">
+            <code className="text-slate-600 mr-2">{r.code}</code>
+            {det ? det.label : r.detector} · v{r.version}
+          </div>
+          <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-x-3">
+            <span>{(r.actions || []).length} action(s)</span>
+            <span>{(r.escalation || []).length} escalation step(s)</span>
+            <span>{scope === 0 ? 'scope: all employees' : `scope: ${scope} target(s)`}</span>
+            {updated && <span>updated {updated}</span>}
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button className="btn-secondary !py-1 !text-xs" onClick={onHistory}>History</button>
+          <button className="btn-secondary !py-1 !text-xs" onClick={onClone}>Clone</button>
+          <button className="btn-secondary !py-1 !text-xs" onClick={onEdit}>Edit</button>
+          <button className="btn-secondary !py-1 !text-xs" onClick={onToggle}>
+            {r.enabled ? 'Disable' : 'Enable'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

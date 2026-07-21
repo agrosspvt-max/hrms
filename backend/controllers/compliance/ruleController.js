@@ -119,12 +119,17 @@ const disable = asyncHandler(async (req, res) => {
 const history = asyncHandler(async (req, res) => {
   _flagGate(req, res);
   if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only.'); }
+  // QA-fix H1 -- populate actor so the drawer can display the real
+  // user's name/email instead of falling back to an ObjectId suffix.
   const rows = await AuditLog.find({
     targetType: 'ComplianceRule',
     targetId: req.params.id,
     action: { $in: ['compliance.rule.create', 'compliance.rule.update',
                     'compliance.rule.enable', 'compliance.rule.disable'] },
-  }).sort({ createdAt: -1 }).lean();
+  })
+    .sort({ createdAt: -1 })
+    .populate('actor', 'name email')
+    .lean();
   res.json(rows);
 });
 
