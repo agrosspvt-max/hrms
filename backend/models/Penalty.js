@@ -75,7 +75,20 @@ const penaltySchema = new mongoose.Schema(
   {
     employee: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
 
-    /** Category -- see comment above.  Extendable enum. */
+    /**
+     * Category -- see comment above.  Extendable enum.
+     *
+     * @deprecated Phase 10 -- three legacy values remain in the enum
+     * for historical rows but new writes MUST use the v2 replacements:
+     *
+     *   absent_submission   -> missed_submission
+     *   manual_marks        -> marks_adjustment
+     *   manual_completion   -> completion_adjustment
+     *
+     * Removal is planned after the compliance.legacyGone soak window.
+     * Do NOT drop these from the enum until every historical row has
+     * been migrated (a separate migration job, not this cleanup PR).
+     */
     category: {
       type: String,
       enum: [
@@ -296,6 +309,19 @@ const penaltySchema = new mongoose.Schema(
     evaluationPeriod: {
       startDate: { type: Date, default: null },
       endDate:   { type: Date, default: null },
+    },
+
+    /* -------- Compliance & Accountability v2 (Phase 9) --------
+     * Nullable back-reference from a legacy Penalty row to the
+     * ComplianceIncident that produced it.  Dual-write phase
+     * (Phase 9): every new Penalty row carries an incidentId; older
+     * rows are `null` and stay `null`.  Reads on /penalties/* enrich
+     * the response with incident context when this is set. */
+    incidentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ComplianceIncident',
+      default: null,
+      index: true,
     },
   },
   { timestamps: true }

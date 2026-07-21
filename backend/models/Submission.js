@@ -596,5 +596,11 @@ submissionSchema.index({ employee: 1, date: 1 });
 // analytics path a covered index when both flags are checked together,
 // which is the default case on every analytics + leaderboard query.
 submissionSchema.index({ deleted: 1, isTestData: 1 });
+// Batch-2 fix #7 -- multikey index over `tasks.status` so the
+// compliance performance-lock detector's `find({employee, 'tasks.status':'pending'})`
+// hits an index instead of scanning the whole collection.
+// Sparse: submissions without a tasks array (excel/sheet/custom
+// templates) don't waste index entries.
+submissionSchema.index({ employee: 1, 'tasks.status': 1 }, { sparse: true });
 
 module.exports = mongoose.model('Submission', submissionSchema);

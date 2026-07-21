@@ -23,6 +23,11 @@
  */
 const penaltyEngine = require('./penaltyEngine');
 const User = require('../models/User');
+// Compliance & Accountability v2 -- gated by `compliance.newEngine`.
+// When the flag is off this require path is still loaded (cheap;
+// scaffold only) but tick() is never called.
+const { isEnabled } = require('../config/featureFlags');
+const complianceV2 = require('./compliance');
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 let _timerId = null;
@@ -74,6 +79,19 @@ const _runOnceForAll = async () => {
     _lastRunKey = dayKey;
     console.log(`[compliance-scheduler] daily sweep complete ` +
       `(${ok} ok, ${failed} failed) for ${dayKey}`);
+
+    // Compliance v2 tick.  Runs AFTER the legacy sweep so both write
+    // paths see the same snapshot of Submission / Attendance data.
+    // Flag-gated: when off, this is a zero-cost skip.  Idempotent on
+    // repeat calls via the ComplianceIncident partial-unique index.
+    if (isEnabled('compliance.newEngine')) {
+      try {
+        await complianceV2.ruleEvaluationScheduler.tick({ day: startedAt });
+      } catch (e) {
+        console.error('[compliance-v2/tick] failed:', e.message);
+      }
+    }
+
     return { ok, failed, dayKey };
   } catch (err) {
     console.error('[compliance-scheduler] sweep aborted:', err.message);

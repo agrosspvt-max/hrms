@@ -194,6 +194,17 @@ const _isPresentAttendance = async (employeeId, day) => {
  * entirely to the DAY-AFTER path (enforceMissedSubmission).
  */
 const sweepProbableAbsentSubmission = async ({ employeeId, day }) => {
+  // @deprecated Phase 10 -- probable warnings are permanently
+  // disabled (Phase 64 Part 2) and the compliance v2 detectors do
+  // not read them.  Kept as a no-op so existing require paths keep
+  // resolving.  Marked for removal after the post-soak cleanup PR.
+  try {
+    const dep = require('./deprecations');
+    dep.warn(dep.CODES.LEGACY_PROBABLE_SWEEP,
+      'penaltyEngine.sweepProbableAbsentSubmission is deprecated; ' +
+      'the compliance v2 detectors handle this entirely.  Scheduled ' +
+      'for removal after the compliance.legacyGone soak window.');
+  } catch (_) { /* silent */ }
   // Phase 64 Part 2: no same-day warnings; day-1 is a draft window.
   return [];
   // eslint-disable-next-line no-unreachable
@@ -338,6 +349,19 @@ const resolveAbsentSubmissionOnSubmit = async ({ submissionId }) => {
         'reopenRequest.completedAt': new Date(),
       } }
   );
+  // Batch-1 fix #1 -- mirror-resolve any v2 ComplianceIncident that
+  // tracks the same submission.  Gated by `compliance.newEngine`;
+  // silent when off.  Failure never blocks the legacy path.
+  try {
+    const { isEnabled } = require('../config/featureFlags');
+    if (isEnabled('compliance.newEngine')) {
+      const incidentService = require('./compliance/incidents/incidentService');
+      await incidentService.resolveIncidentsBySubmission({
+        submissionId,
+        reason: 'auto: submission filed',
+      });
+    }
+  } catch (e) { console.error('[penaltyEngine] v2 resolveBySubmission failed:', e.message); }
 };
 
 /* ================================================================
@@ -415,6 +439,17 @@ const onDependencyResolved = async ({ employeeId, dependencyId }) => {
     { employee: employeeId, category: 'dependency_pending', status: 'active' },
     { $set: { status: 'resolved', resolvedAt: new Date() } }
   );
+  // Batch-1 fix #1 -- mirror-resolve v2 dependency_pending incidents.
+  try {
+    const { isEnabled } = require('../config/featureFlags');
+    if (isEnabled('compliance.newEngine')) {
+      const incidentService = require('./compliance/incidents/incidentService');
+      await incidentService.resolveDependencyIncidentsForEmployee({
+        employeeId,
+        reason: `auto: last open dependency (${dependencyId || 'n/a'}) resolved`,
+      });
+    }
+  } catch (e) { console.error('[penaltyEngine] v2 resolveDependency failed:', e.message); }
 };
 
 /* ================================================================
@@ -553,6 +588,17 @@ const onPendingTaskResolved = async ({ employeeId, day = new Date() }) => {
       });
     } catch (_) { /* silent */ }
   }
+  // Batch-1 fix #1 -- mirror-resolve v2 performance_lock incidents.
+  try {
+    const { isEnabled } = require('../config/featureFlags');
+    if (isEnabled('compliance.newEngine')) {
+      const incidentService = require('./compliance/incidents/incidentService');
+      await incidentService.resolvePerformanceLockIncidentsForEmployee({
+        employeeId,
+        reason: 'auto: no overdue pending tasks remain',
+      });
+    }
+  } catch (e) { console.error('[penaltyEngine] v2 resolvePerformanceLock failed:', e.message); }
 };
 
 /**

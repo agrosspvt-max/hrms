@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import useComplianceConfig, { isFeatureEnabled } from '../hooks/useComplianceConfig.js';
 import api from '../api/axios';
 
 const Icon = ({ d, size = 18 }) => (
@@ -109,6 +110,11 @@ function buildNav(user) {
           // Phase 74 -- employees see meetings they're invited to +
           // interactions explicitly marked Employee Visible.
           { to: '/my-interactions', label: 'My Interactions', icon: I.review },
+          // Compliance v2 -- surfaced only when the backend flag
+          // `compliance.employeeCardV2` is on.  The link is filtered
+          // out at render time via useComplianceConfig; when the flag
+          // is off the item disappears from the sidebar entirely.
+          { to: '/my-compliance', label: 'My Compliance', icon: I.doc, complianceGated: true },
           { to: '/contacts', label: 'Contacts', icon: I.people },
         ],
       },
@@ -166,7 +172,20 @@ const pathMatches = (to, pathname) => pathname === to || (to !== '/' && pathname
 export default function Sidebar({ open, onClose }) {
   const { user } = useAuth();
   const location = useLocation();
-  const nav = buildNav(user);
+  // Compliance v2 -- filter the /my-compliance sidebar link out when
+  // the backend flag `compliance.employeeCardV2` is off.  Uses the
+  // same cached snapshot the dashboard reads so we don't add an
+  // extra request.
+  const complianceCfg = useComplianceConfig();
+  const rawNav = buildNav(user);
+  const complianceOn = isFeatureEnabled(complianceCfg, 'employeeCardV2');
+  const nav = rawNav.map((entry) => {
+    if (entry.type !== 'group' || !Array.isArray(entry.items)) return entry;
+    return {
+      ...entry,
+      items: entry.items.filter((it) => !it.complianceGated || complianceOn),
+    };
+  });
 
   // ---- badge counts ----
   const [counts, setCounts] = useState({ notifications: 0, resetRequests: 0, hodReviews: 0, myTasks: 0 });

@@ -23,6 +23,8 @@ import EventsCalendar from './pages/hr/EventsCalendar.jsx';
 // localStorage.
 import InteractionsWorkspace from './pages/hr/interactions/InteractionsWorkspace.jsx';
 import MyInteractions from './pages/employee/MyInteractions.jsx';
+import MyCompliance from './pages/employee/MyCompliance.jsx';
+import ComplianceWorkspace from './pages/hr/compliance/ComplianceWorkspace.jsx';
 import ManageAccess from './pages/superadmin/ManageAccess.jsx';
 import FeatureAccess from './pages/superadmin/FeatureAccess.jsx';
 import Departments from './pages/hr/Departments.jsx';
@@ -144,6 +146,10 @@ export default function App() {
         <Route path="/salary" element={<ProtectedRoute role="hr" feature="salary"><HRSalary /></ProtectedRoute>} />
         {/* Phase 61 -- Fines & Penalties module. */}
         <Route path="/penalties" element={<ProtectedRoute role="hr" feature="penalties"><FinesPenalties /></ProtectedRoute>} />
+        {/* Compliance & Accountability v2 -- HR workspace.  Additive to
+            the existing /penalties route while both live under the
+            dual-write window. */}
+        <Route path="/hr/compliance" element={<ProtectedRoute role="hr" feature="penalties"><ComplianceWorkspace /></ProtectedRoute>} />
 
         {/* HOD (Head of Department) routes - employee + isHOD */}
         <Route path="/team" element={<ProtectedRoute hod><HODEmployees /></ProtectedRoute>} />
@@ -160,6 +166,11 @@ export default function App() {
         <Route path="/interactions" element={<ProtectedRoute role="hr" feature="employeeInteractions"><InteractionsWorkspace /></ProtectedRoute>} />
         <Route path="/interactions/tags" element={<ProtectedRoute role="hr" feature="employeeInteractions"><InteractionsWorkspace /></ProtectedRoute>} />
         <Route path="/my-interactions" element={<ProtectedRoute><MyInteractions /></ProtectedRoute>} />
+        {/* Compliance v2 -- My Compliance workspace.  The page loads
+            /api/compliance/config on mount; when the feature flag is
+            off the endpoints return empty payloads and the page shows
+            an "Empty timeline / No incidents" state. */}
+        <Route path="/my-compliance" element={<ProtectedRoute><MyCompliance /></ProtectedRoute>} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />

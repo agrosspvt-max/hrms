@@ -106,6 +106,21 @@ const _dateWindow = (req) => {
  * GET /api/penalties/dashboard
  */
 const dashboard = asyncHandler(async (req, res) => {
+  // @deprecated Phase 10 -- HR should read
+  // GET /api/compliance/dashboard/summary + /incidents when
+  // compliance.dashboardV2 is on.  The legacy endpoint keeps
+  // working through the read-shim so existing consumers do not
+  // break; the Deprecation header nudges migrating clients.
+  try {
+    const dep = require('../services/deprecations');
+    dep.warn(dep.CODES.LEGACY_PENALTY_DASHBOARD,
+      'GET /api/penalties/dashboard is deprecated; use ' +
+      'GET /api/compliance/incidents + /api/compliance/dashboard/*.');
+    dep.stampResponse(res, {
+      code: dep.CODES.LEGACY_PENALTY_DASHBOARD,
+      replacement: '/api/compliance/incidents',
+    });
+  } catch (_) { /* silent */ }
   const scope = await _scopeToUser(req);
   const window = _dateWindow(req);
   const where = { ...scope, ...excludeLegacyClause() };
@@ -154,6 +169,20 @@ const mine = asyncHandler(async (req, res) => {
  */
 const createManual = asyncHandler(async (req, res) => {
   if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only'); }
+  // @deprecated Phase 10 -- HR should create incidents via
+  // POST /api/compliance/incidents once compliance.dashboardV2 is on.
+  // Legacy route stays functional; a Deprecation header points at
+  // the replacement URL.  Removal is pending post-soak cleanup PR.
+  try {
+    const dep = require('../services/deprecations');
+    dep.warn(dep.CODES.LEGACY_PENALTY_MANUAL,
+      'POST /api/penalties/manual is deprecated; use ' +
+      'POST /api/compliance/incidents once compliance.dashboardV2 is enabled.');
+    dep.stampResponse(res, {
+      code: dep.CODES.LEGACY_PENALTY_MANUAL,
+      replacement: '/api/compliance/incidents',
+    });
+  } catch (_) { /* silent */ }
   const {
     employee, type,
     marks, completionPercent, reason,

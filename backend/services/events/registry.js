@@ -220,6 +220,56 @@ const REGISTRY = Object.freeze({
     owner: 'reminderController (done | dismiss | snooze | cancel | complete)',
     notification: false, timeline: true,  reminder: true,  realtime: true,
   },
+
+  // ---- Compliance & Accountability v2 -----------------------------
+  // Additive.  Every event below is written into ComplianceEvent AND
+  // published on the existing realtime bus.  Notification / timeline
+  // flags mirror the legacy `penalty.*` codes so consumers can move
+  // over without changing behaviour.
+  'compliance.incident_created': {
+    owner: 'services/compliance/incidents.incidentService.recordIncident',
+    notification: false, timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.incident_effective': {
+    owner: 'services/compliance/incidents.incidentService.promoteToActive',
+    notification: true,  timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.action_applied': {
+    owner: 'services/compliance/actions.actionEngine.apply',
+    notification: false, timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.notification_sent': {
+    owner: 'services/compliance/actions.executors.notificationExecutor',
+    notification: true,  timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.waiver_requested': {
+    owner: 'services/compliance/waiver.waiverService.request',
+    notification: true,  timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.waiver_decided': {
+    owner: 'services/compliance/waiver.waiverService.decide',
+    notification: true,  timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.recovery_applied': {
+    owner: 'services/compliance/recovery.recoveryService.apply',
+    notification: true,  timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.incident_resolved': {
+    owner: 'services/compliance/incidents.incidentService.resolveIncident',
+    notification: false, timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.incident_cancelled': {
+    owner: 'services/compliance/incidents.incidentService.cancelIncident',
+    notification: true,  timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.escalated': {
+    owner: 'services/compliance/escalation.escalationRunner.run',
+    notification: true,  timeline: true,  reminder: false, realtime: true,
+  },
+  'compliance.rule_updated': {
+    owner: 'services/compliance/rules.ruleService.update',
+    notification: false, timeline: false, reminder: false, realtime: true,
+  },
 });
 
 /** Look up an event type; returns undefined if unknown. */

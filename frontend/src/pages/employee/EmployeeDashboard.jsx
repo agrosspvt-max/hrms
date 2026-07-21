@@ -16,6 +16,19 @@ import { delayBadgeClass, delayLabel, errMsg, fmtDate } from '../../utils/helper
 import { subscribe } from '../../realtime';
 // Phase 50 -- shared notes modal + dashboard Today's / Upcoming panels.
 import AttendanceNotesModal from '../../components/AttendanceNotesModal.jsx';
+import ComplianceCard from '../../components/compliance/ComplianceCard.jsx';
+import useComplianceConfig, { isFeatureEnabled } from '../../hooks/useComplianceConfig.js';
+
+/**
+ * ComplianceCardBlock -- tiny wrapper that reads the flag snapshot
+ * from the backend and only renders the ComplianceCard when the
+ * `employeeCardV2` feature is on.
+ */
+function ComplianceCardBlock() {
+  const cfg = useComplianceConfig();
+  if (!isFeatureEnabled(cfg, 'employeeCardV2')) return null;
+  return <ComplianceCard />;
+}
 
 /* ------------------------------------------------------------------ */
 /* Phase 19: Draft autosave status pill + Save Draft button.          */
@@ -1565,6 +1578,15 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           } catch (_) { /* silent */ }
         }}
       />
+
+      {/* Compliance & Accountability v2 -- additive card, gated by
+          `compliance.employeeCardV2`.  When the flag is off the
+          server returns feature.employeeCardV2:false and the block
+          renders nothing.  Never REPLACES PenaltyWarnings during the
+          rollout window; parallel visibility so Phase 9 dual-write
+          stays visually consistent. */}
+      <ComplianceCardBlock />
+
 
       {/* Today's tasks per submission */}
       {!data.onLeave && !data.weeklyOff && !data.holiday && (

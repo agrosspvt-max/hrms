@@ -225,6 +225,28 @@ const start = async () => {
     const { start: startCompliance } = require('./services/dailyComplianceScheduler');
     startCompliance();
   } catch (e) { console.error('[compliance-scheduler] boot error:', e.message); }
+  // Compliance & Accountability v2 -- scaffold + feature-flag banner.
+  // The v2 engine's registries, natural-key helpers and dates helpers
+  // load here so tests / detectors can import from a single barrel.
+  // Every downstream v2 behaviour is gated by its own feature flag, so
+  // loading the barrel does NOT change runtime behaviour on its own.
+  try {
+    require('./services/compliance').logBoot();
+  } catch (e) { console.error('[compliance-v2] scaffold boot error:', e.message); }
+  // Phase 3 -- idempotent built-in ComplianceRule seeder.  Seeds every
+  // rule with `enabled: false`, so no downstream behaviour changes even
+  // when the flag is on; HR flips rules on individually from the editor.
+  try {
+    const { start: startRuleSeed } = require('./services/compliance/rules/ruleSeed');
+    startRuleSeed();
+  } catch (e) { console.error('[compliance-rules-seed] boot error:', e.message); }
+  // Phase 6 -- ledger reconciler.  Nightly integrity check at 02:00
+  // local; boot catch-up runs immediately.  Gated by
+  // `compliance.reconciler`.
+  try {
+    const { start: startReconciler } = require('./services/compliance/reconciliation/ledgerReconciler');
+    startReconciler();
+  } catch (e) { console.error('[compliance/reconciler] boot error:', e.message); }
   // One-time normalisation: every existing employee not on
   // auto_attendance is set to attendance_review.  Idempotent + async
   // so a re-run performs zero writes and boot is never blocked.
