@@ -57,6 +57,10 @@ export default function Contacts() {
   const [modal, setModal] = useState(null);
   const [drawer, setDrawer] = useState(null);
   const [recentIds, setRecentIds] = useState(loadRecent());
+  // Two-tab surface: Contacts (existing directory) and Company
+  // Documents (lightweight HR document library).  Only one tab body
+  // is visible at a time; the header (title + tab bar) is shared.
+  const [tab, setTab] = useState('contacts');
 
   const load = async () => {
     setLoading(true);
@@ -141,7 +145,7 @@ export default function Contacts() {
           <h1 className="text-2xl font-bold">Contacts</h1>
           <p className="text-sm text-slate-500">Your work contact book — internal teammates &amp; trusted external partners.</p>
         </div>
-        {canManage && (
+        {tab === 'contacts' && canManage && (
           <div className="flex gap-2">
             <a className="btn-secondary" href={authUrl('/api/contacts/export.csv')}>Export CSV</a>
             <button className="btn-secondary" onClick={() => setModal({ mode: 'create', data: { kind: 'employee', linkedEmployee: '', scopeOfWork: '', category: 'general' } })}>+ Internal Contact</button>
@@ -149,6 +153,27 @@ export default function Contacts() {
           </div>
         )}
       </div>
+
+      {/* Tab bar -- shared header, one section body visible at a time. */}
+      <div className="flex items-center gap-2 border-b border-slate-200">
+        {[
+          { key: 'contacts',  label: 'Contacts' },
+          { key: 'documents', label: 'Company Documents' },
+        ].map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTab(t.key)}
+            className={`px-4 py-2 text-sm border-b-2 -mb-px ${tab === t.key
+              ? 'border-brand-500 text-brand-700 font-semibold'
+              : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'contacts' && <>
 
       {/* HR analytics */}
       {canManage && analytics && (
@@ -286,12 +311,13 @@ export default function Contacts() {
         />
       )}
 
-      {/* Company Documents -- lightweight document library.
-          HR / Super Admin get the management UI; employees see
-          only documents flagged visibleToEmployees:true.  Section
-          lives at the bottom of the Contacts page so it's the
-          single "team knowledge base" surface. */}
-      <CompanyDocuments />
+      </>}
+
+      {/* Company Documents tab body -- lightweight document library.
+          HR / Super Admin get the management UI; employees see only
+          documents flagged visibleToEmployees:true.  Renders as its
+          own tab so the two surfaces feel like one feature. */}
+      {tab === 'documents' && <CompanyDocuments />}
     </div>
   );
 }

@@ -75,11 +75,10 @@ export default function CompanyDocuments() {
   };
 
   return (
-    <section className="space-y-3">
+    <section className="space-y-4">
       <div className="flex items-end justify-between gap-2 flex-wrap">
         <div>
-          <h2 className="text-lg font-semibold text-slate-900">Company Documents</h2>
-          <p className="text-xs text-slate-500">
+          <p className="text-sm text-slate-500">
             {canManage
               ? 'HR-managed document library. Employees see documents marked "Visible to employees".'
               : 'Documents shared by your organisation. Click View to read.'}
@@ -95,52 +94,54 @@ export default function CompanyDocuments() {
       {err && <div className="text-sm text-red-600 border rounded-md p-2 bg-red-50">{err}</div>}
       {!err && !docs && <Loader />}
       {docs && docs.length === 0 && (
-        <EmptyState title="No company documents available." />
+        <EmptyState title="No company documents available." subtitle={canManage ? 'Upload your first document above.' : 'Ask HR to add documents to the library.'} />
       )}
 
       {docs && docs.length > 0 && (
-        <ul className="divide-y border rounded-md bg-white">
+        <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
           {docs.map((d) => (
-            <li key={d._id} className="p-3 flex items-start gap-3 flex-wrap">
-              <div className="text-2xl">📄</div>
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-medium text-slate-800">{d.title}</span>
-                  {canManage && !d.visibleToEmployees && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">HR only</span>
-                  )}
-                  {canManage && !d.isActive && (
-                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Inactive</span>
-                  )}
+            <div key={d._id} className="card card-body flex flex-col gap-2">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-lg bg-red-50 text-red-600 grid place-items-center text-lg shrink-0">
+                  📄
                 </div>
-                {d.description && (
-                  <div className="text-xs text-slate-500 mt-0.5">{d.description}</div>
-                )}
-                <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-x-3">
-                  {d.effectiveDate && <span>Effective: {fmtDate(d.effectiveDate)}</span>}
-                  <span>{d.fileName}</span>
-                  <span>{(d.size / 1024).toFixed(0)} KB</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-slate-800 truncate">{d.title}</span>
+                    {canManage && !d.visibleToEmployees && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">HR only</span>
+                    )}
+                    {canManage && !d.isActive && (
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">Inactive</span>
+                    )}
+                  </div>
+                  {d.description && (
+                    <div className="text-xs text-slate-500 mt-0.5 line-clamp-2">{d.description}</div>
+                  )}
+                  {d.effectiveDate && (
+                    <div className="text-[11px] text-slate-500 mt-1">Effective: {fmtDate(d.effectiveDate)}</div>
+                  )}
                   {canManage && (
-                    <>
-                      <span>By {d.uploadedBy?.name || 'HR'}</span>
-                      <span>{d.uploadedAt ? new Date(d.uploadedAt).toLocaleString() : ''}</span>
-                    </>
+                    <div className="text-[11px] text-slate-400 mt-1">
+                      Uploaded by {d.uploadedBy?.name || 'HR'}
+                      {d.uploadedAt ? ` · ${new Date(d.uploadedAt).toLocaleDateString()}` : ''}
+                    </div>
                   )}
                 </div>
               </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button className="btn-secondary !py-1 !text-xs" onClick={() => openView(d)}>View</button>
+              <div className="flex items-center gap-1 flex-wrap pt-1 border-t border-slate-100">
+                <button className="btn-primary !py-1 !text-xs" onClick={() => openView(d)}>View</button>
                 {canManage && (
                   <>
                     <button className="btn-secondary !py-1 !text-xs" onClick={() => setModal({ mode: 'edit', doc: d })}>Edit</button>
-                    <button className="btn-secondary !py-1 !text-xs" onClick={() => setReplaceFor(d)}>Replace file</button>
-                    <button className="btn-secondary !py-1 !text-xs text-red-600" disabled={busyId === d._id} onClick={() => remove(d)}>Delete</button>
+                    <button className="btn-secondary !py-1 !text-xs" onClick={() => setReplaceFor(d)}>Replace</button>
+                    <button className="btn-secondary !py-1 !text-xs text-red-600 ml-auto" disabled={busyId === d._id} onClick={() => remove(d)}>Delete</button>
                   </>
                 )}
               </div>
-            </li>
+            </div>
           ))}
-        </ul>
+        </div>
       )}
 
       {modal && (
