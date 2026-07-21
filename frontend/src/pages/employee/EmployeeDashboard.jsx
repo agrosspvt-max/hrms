@@ -2088,60 +2088,26 @@ function CustomTemplateForm({
     } else if (f.fieldType === 'number' || f.fieldType === 'currency' || f.fieldType === 'percentage') {
       const prefix = f.fieldType === 'currency'   ? '₹' : '';
       const suffix = f.fieldType === 'percentage' ? '%' : '';
-      // Phase 58 — Number tasks may carry a second "Out Of" value.
-      // When enableOutOf is on, render two inputs side-by-side; the
-      // second value is stored in meta.outOfValue so the submission
-      // handler can pick it up alongside status + remark.
-      if (f.enableOutOf) {
-        const outOf = m.outOfValue ?? '';
-        const remaining = (Number(outOf) || 0) - (Number(v) || 0);
-        valueControl = (
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <div className="text-[10px] text-slate-500 mb-0.5">Completed</div>
-              <input
-                className="input"
-                type="number"
-                step="any"
-                min="0"
-                value={v ?? ''}
-                onChange={(e) => onChange(f.key, e.target.value === '' ? '' : Number(e.target.value))}
-              />
-            </div>
-            <div>
-              <div className="text-[10px] text-slate-500 mb-0.5">{f.outOfLabel || 'Out Of'}</div>
-              <input
-                className="input"
-                type="number"
-                step="any"
-                min="0"
-                value={outOf}
-                onChange={(e) => onMeta(f.key, { outOfValue: e.target.value === '' ? 0 : Number(e.target.value) })}
-              />
-              {Number(outOf) > 0 && Number(v) >= 0 && (
-                <div className="text-[10px] text-slate-500 mt-0.5">
-                  Remaining: <b>{Math.max(0, remaining)}</b>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      } else {
-        valueControl = (
-          <div className="relative">
-            {prefix && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{prefix}</span>}
-            <input
-              className={`input ${prefix ? 'pl-7' : ''} ${suffix ? 'pr-7' : ''}`}
-              type="number"
-              step="any"
-              min="0"
-              value={v ?? ''}
-              onChange={(e) => onChange(f.key, e.target.value === '' ? '' : Number(e.target.value))}
-            />
-            {suffix && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{suffix}</span>}
-          </div>
-        );
-      }
+      // Phase 58 -- Number tasks may carry a second "Out Of" value
+      // (enableOutOf).  The Out Of input renders on its own second
+      // row below the card's primary row -- see the block right
+      // after this ternary.  Keeping the primary row identical to a
+      // plain number field is what preserves the label + input
+      // alignment across every card in the section grid.
+      valueControl = (
+        <div className="relative">
+          {prefix && <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{prefix}</span>}
+          <input
+            className={`input ${prefix ? 'pl-7' : ''} ${suffix ? 'pr-7' : ''}`}
+            type="number"
+            step="any"
+            min="0"
+            value={v ?? ''}
+            onChange={(e) => onChange(f.key, e.target.value === '' ? '' : Number(e.target.value))}
+          />
+          {suffix && <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">{suffix}</span>}
+        </div>
+      );
     } else {
       // text + any unknown future type fall through here.
       valueControl = (
@@ -2278,6 +2244,48 @@ function CustomTemplateForm({
                   value={m.remark || ''}
                   onChange={(e) => onMeta(f.key, { remark: e.target.value })}
                 />
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Out Of second row.
+            Rendered ONLY for number-flavour fields that opted into
+            `enableOutOf`.  Sits below the primary row so the Value /
+            Status / Remark alignment across every card in the
+            section grid stays intact.  Uses the same 12-col grid the
+            primary row uses so the Out Of input width matches the
+            Status column, and keeps the same prefix / suffix
+            treatment (₹ for currency, % for percentage) the primary
+            input receives.  A subtle top border marks this as a
+            secondary row without changing card height for cards that
+            don't have Out Of enabled. */}
+        {f.enableOutOf && (f.fieldType === 'number' || f.fieldType === 'currency' || f.fieldType === 'percentage') && (
+          <div className="grid md:grid-cols-12 gap-2 pt-2 border-t border-slate-100">
+            <div className="md:col-span-3">
+              <div className="label text-[10px] uppercase">{f.outOfLabel || 'Out Of'}</div>
+              <div className="relative">
+                {f.fieldType === 'currency' && (
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">₹</span>
+                )}
+                <input
+                  className={`input ${f.fieldType === 'currency' ? 'pl-7' : ''} ${f.fieldType === 'percentage' ? 'pr-7' : ''}`}
+                  type="number"
+                  step="any"
+                  min="0"
+                  value={m.outOfValue ?? ''}
+                  onChange={(e) => onMeta(f.key, { outOfValue: e.target.value === '' ? 0 : Number(e.target.value) })}
+                />
+                {f.fieldType === 'percentage' && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm pointer-events-none">%</span>
+                )}
+              </div>
+            </div>
+            {Number(m.outOfValue) > 0 && Number(v) >= 0 && (
+              <div className="md:col-span-9 flex items-end pb-1">
+                <span className="text-[11px] text-slate-500">
+                  Remaining: <b>{Math.max(0, (Number(m.outOfValue) || 0) - (Number(v) || 0))}</b>
+                </span>
               </div>
             )}
           </div>
