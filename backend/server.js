@@ -37,6 +37,7 @@ app.use('/api/attendance-confirmation', require('./routes/attendanceConfirmation
 app.use('/api/feature-permissions', require('./routes/featurePermissionsRoutes'));
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 app.use('/api/contacts', require('./routes/contactRoutes'));
+app.use('/api/company-documents', require('./routes/companyDocumentRoutes'));
 app.use('/api/events', require('./routes/eventRoutes'));
 app.use('/api/holidays', require('./routes/holidayRoutes'));
 app.use('/api/password-reset', require('./routes/passwordResetRoutes'));

@@ -6,6 +6,7 @@ import { Loader, EmptyState } from '../../components/Loader.jsx';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useToast } from '../../context/ToastContext.jsx';
 import { errMsg, authUrl } from '../../utils/helpers';
+import CompanyDocuments from './CompanyDocuments.jsx';
 
 const BADGE_INTERNAL = 'badge bg-blue-50 text-blue-700';
 const BADGE_EXTERNAL = 'badge bg-purple-50 text-purple-700';
@@ -284,6 +285,13 @@ export default function Contacts() {
           onFav={() => toggleFavorite(drawer)}
         />
       )}
+
+      {/* Company Documents -- lightweight document library.
+          HR / Super Admin get the management UI; employees see
+          only documents flagged visibleToEmployees:true.  Section
+          lives at the bottom of the Contacts page so it's the
+          single "team knowledge base" surface. */}
+      <CompanyDocuments />
     </div>
   );
 }
