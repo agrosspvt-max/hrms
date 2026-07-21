@@ -187,6 +187,58 @@ const setStatus = asyncHandler(async (req, res) => {
             createdBy: req.user._id,
             effectiveDate: new Date(),
           });
+          // Compliance v2 additive-write: additionally create a
+          // ComplianceIncident against `attendance_manual_v2` so the
+          // v2 waiver / recovery / cancel / ledger / timeline
+          // machinery covers the same event.  Fully additive with
+          // the legacy Penalty above during the dual-run window;
+          // Phase 10 will retire the legacy write.  Silently no-ops
+          // when the feature flag is off, the rule doesn't exist,
+          // or the rule is disabled.
+          try {
+            const { isEnabled } = require('../config/featureFlags');
+            if (isEnabled('compliance.newEngine')) {
+              const ComplianceRule = require('../models/ComplianceRule');
+              const rule = await ComplianceRule.findOne({ code: 'attendance_manual_v2' }).lean();
+              if (rule && rule.enabled) {
+                const compliance = require('../services/compliance');
+                const nk = compliance.naturalKey.manualIncidentKey({
+                  ruleCode: rule.code,
+                  employeeId: employee._id,
+                  day,
+                  token: `att_flip_${employee._id}_${day.toISOString().slice(0, 10)}`,
+                });
+                const effectiveDate = compliance.dates.computeEffectiveDate(rule, day);
+                await compliance.incidentService.recordIncident({
+                  rule,
+                  employeeId: employee._id,
+                  naturalKey: nk,
+                  incidentDate: day,
+                  effectiveDate,
+                  context: {
+                    workDate: day,
+                    submissionId: sub ? sub._id : null,
+                    departmentId: employee.department || null,
+                    designationId: employee.designation || null,
+                  },
+                  detectorMeta: {
+                    source: 'attendance_flip',
+                    reason: 'HR marked absent -> present with no submission (Performance Penalty).',
+                    // Per-incident override -- deduct exactly the
+                    // marks the employee earned for the day (usually
+                    // 0).  Falls back to the rule config if absent.
+                    hrOverride: { marks: sub ? Number(sub.earnedPoints) || 0 : 0 },
+                  },
+                  source: 'manual',
+                  actor: req.user._id,
+                  req,
+                });
+              }
+            }
+          } catch (v2Err) {
+            // Never block the attendance write on a compliance side effect.
+            console.error('[attendance] v2 incident write failed:', v2Err.message);
+          }
         }
         // Option B ('neutral_adjustment') is a no-op here: no
         // penalty is created; the day is simply ignored.  The

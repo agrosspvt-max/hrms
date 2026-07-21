@@ -6,6 +6,7 @@ import ActionBadge from '../../../components/compliance/ActionBadge.jsx';
 import { fmtDate, errMsg } from '../../../utils/helpers';
 import { useToast } from '../../../context/ToastContext.jsx';
 import RuleHistoryPanel from './RuleHistoryPanel.jsx';
+import CreateIncidentModal from './CreateIncidentModal.jsx';
 import useComplianceRegistry from '../../../hooks/useComplianceRegistry.js';
 
 /**
@@ -161,6 +162,7 @@ function IncidentsTab() {
   const [status, setStatus] = useState('active');
   const [openId, setOpenId] = useState(null);
   const [busy, setBusy]     = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
   const toast = useToast();
 
   const load = () => {
@@ -176,6 +178,21 @@ function IncidentsTab() {
       const { data } = await api.get(`/compliance/incidents/${inc._id}`);
       setOpenId(data);
     } catch (e) { toast.error(errMsg(e)); }
+  };
+
+  // "+ New Incident" -- opens the reusable modal.  Manual incidents
+  // start as `candidate` and become `active` on the next tick, so we
+  // switch the filter to `candidate` after create and auto-select the
+  // returned row.
+  const onIncidentCreated = async (incident) => {
+    if (!incident || !incident._id) { load(); return; }
+    if (incident.status && incident.status !== status) setStatus(incident.status);
+    load();
+    // Best-effort auto-select via the same GET the row uses.
+    try {
+      const { data } = await api.get(`/compliance/incidents/${incident._id}`);
+      setOpenId(data);
+    } catch (_) { /* silent; the row will still appear in the list */ }
   };
 
   const cancel = async (inc) => {
@@ -231,14 +248,28 @@ function IncidentsTab() {
   return (
     <div className="grid md:grid-cols-3 gap-4">
       <div className="md:col-span-1 space-y-2">
-        <div className="flex items-center gap-1">
-          {['candidate','active','resolved','waived','cancelled'].map((k) => (
-            <button key={k} onClick={() => setStatus(k)}
-              className={`px-2 py-1 text-[11px] rounded border capitalize ${status === k ? 'bg-brand-500 text-white border-brand-500' : 'bg-white text-slate-700 border-slate-200'}`}>
-              {k}
-            </button>
-          ))}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-1">
+            {['candidate','active','resolved','waived','cancelled'].map((k) => (
+              <button key={k} onClick={() => setStatus(k)}
+                className={`px-2 py-1 text-[11px] rounded border capitalize ${status === k ? 'bg-brand-500 text-white border-brand-500' : 'bg-white text-slate-700 border-slate-200'}`}>
+                {k}
+              </button>
+            ))}
+          </div>
+          <button
+            className="btn-primary !py-1 !text-xs"
+            onClick={() => setCreateOpen(true)}
+            title="Create a manual compliance incident"
+          >
+            + New Incident
+          </button>
         </div>
+        <CreateIncidentModal
+          open={createOpen}
+          onClose={() => setCreateOpen(false)}
+          onCreated={onIncidentCreated}
+        />
         {err   ? <div className="text-sm text-red-600">Failed: {err}</div>
          : !rows ? <Loader />
          : rows.length === 0 ? <EmptyState title="No incidents" />

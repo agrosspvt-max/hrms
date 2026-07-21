@@ -13,6 +13,8 @@ import EmployeePendency from './EmployeePendency.jsx';
 import EmployeeWorkHistory from './EmployeeWorkHistory.jsx';
 import EmployeeAttendanceTab from './EmployeeAttendanceTab.jsx';
 import EmployeeLeaves from './EmployeeLeaves.jsx';
+import CreateIncidentModal from './compliance/CreateIncidentModal.jsx';
+import useComplianceConfig, { isFeatureEnabled } from '../../hooks/useComplianceConfig.js';
 
 const initials = (name = '') => name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
 
@@ -38,6 +40,74 @@ function RoleChip({ user }) {
   if (user.role === 'hr') return <span className="badge-blue">HR</span>;
   if (user.isHOD) return <span className="badge-green">HOD</span>;
   return <span className="badge-gray">Employee</span>;
+}
+
+/**
+ * ComplianceActionsButton
+ * ------------------------------------------------------------------
+ * "Compliance actions" dropdown on the EmployeeDetail page.  Every
+ * item opens the SAME reusable CreateIncidentModal with the current
+ * employee pre-selected and the appropriate manual rule pre-picked.
+ * No second form; the modal handles everything.
+ *
+ * Gated by `compliance.waiverRecovery` -- when the flag is off, the
+ * `/api/compliance/incidents` endpoints all 404 (see incidentController)
+ * so we hide the entry point entirely.
+ */
+function ComplianceActionsButton({ employee }) {
+  const [open, setOpen] = useState(false);
+  const [preset, setPreset] = useState(null);   // ruleCode string or null
+  const cfg = useComplianceConfig();
+  const enabled = isFeatureEnabled(cfg, 'waiverRecovery');
+  if (!enabled) return null;
+  const items = [
+    { code: 'manual_marks_v2',         label: 'Dock marks…' },
+    { code: 'completion_adjustment_v2',label: 'Adjust completion %…' },
+    { code: 'financial_penalty_v2',    label: 'Levy financial penalty…' },
+  ];
+  const pick = (code) => { setPreset(code); setOpen(true); };
+  const closeMenu = () => setOpen(false);
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        className="btn-secondary w-full"
+        onClick={() => setOpen((o) => !o)}
+      >
+        Compliance actions ▾
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={closeMenu} />
+          <div className="absolute z-40 right-0 mt-1 w-56 bg-white border rounded-md shadow-lg overflow-hidden">
+            {items.map((it) => (
+              <button
+                key={it.code}
+                type="button"
+                onClick={() => pick(it.code)}
+                className="w-full text-left text-sm px-3 py-2 hover:bg-slate-50"
+              >
+                {it.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+      <CreateIncidentModal
+        open={!!preset}
+        onClose={() => { setPreset(null); setOpen(false); }}
+        onCreated={() => { setPreset(null); setOpen(false); }}
+        presetEmployee={{
+          _id: employee._id,
+          name: employee.name,
+          employeeId: employee.employeeId,
+          department: employee.department,
+          designation: employee.designation,
+        }}
+        presetRuleCode={preset}
+      />
+    </div>
+  );
 }
 
 export default function EmployeeDetail() {
@@ -158,6 +228,7 @@ export default function EmployeeDetail() {
               <button className="btn-secondary" onClick={() => setEditOpen(true)}>Edit Salary</button>
               <button className="btn-secondary" onClick={() => setJdOpen(true)}>Edit JD / Scope</button>
               <button className="btn-secondary" onClick={() => setResetOpen(true)}>Reset Password</button>
+              <ComplianceActionsButton employee={emp} />
             </div>
           )}
           {locked && <div className="text-[11px] text-slate-400 italic self-center">Managed by Super Admin</div>}

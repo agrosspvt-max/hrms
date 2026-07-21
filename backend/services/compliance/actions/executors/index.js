@@ -24,7 +24,34 @@ const marksStrategies = require('../../marks/strategies');
 // ---------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------
+/**
+ * HR override lookup.
+ *
+ * Manual-source incidents created via POST /api/compliance/incidents
+ * carry per-incident values on `detectorMeta.hrOverride`.  This lets
+ * HR levy a ₹300 fine on one incident and ₹500 on another without
+ * editing the rule config.  Automatic detectors do NOT populate this
+ * object; those incidents fall through to the rule config as before.
+ *
+ * Precedence, per field:
+ *   1. incident.detectorMeta.hrOverride[key]  (per-incident override)
+ *   2. rule.actions[i].config[key]            (rule default)
+ *   3. built-in fallback (0 / strategy chain)
+ */
+const _override = (incident, key) => {
+  const raw = incident && incident.detectorMeta && incident.detectorMeta.hrOverride
+    ? incident.detectorMeta.hrOverride[key]
+    : undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+};
+
 const _resolveMarks = async ({ rule, actionConfig, incident, employee }) => {
+  // HR override wins.  When an HR-created incident supplies a marks
+  // override, use it as-is and skip the strategy chain.
+  const hr = _override(incident, 'marks');
+  if (hr !== undefined) return hr;
+
   const strat = (actionConfig.config && actionConfig.config.marksStrategy)
     || 'admin_defined';
   const strategyConfig = actionConfig.config && actionConfig.config.strategyConfig || {};
@@ -71,7 +98,10 @@ const addDailyTotal = async (ctx) => {
 };
 
 const fixedMarksReduction = async (ctx) => {
-  const marks = Math.max(0, Number(ctx.actionConfig.config && ctx.actionConfig.config.marks) || 0);
+  // HR override precedence -> rule default.
+  const hr = _override(ctx.incident, 'marks');
+  const cfgMarks = Number(ctx.actionConfig.config && ctx.actionConfig.config.marks) || 0;
+  const marks = Math.max(0, hr !== undefined ? hr : cfgMarks);
   return {
     effectDoc: { actionType: 'fixed_marks_reduction', status: 'active', marks },
     ledgerAppends: marks > 0 ? [{
@@ -87,7 +117,12 @@ const fixedMarksReduction = async (ctx) => {
 // ---------------------------------------------------------------
 const percentReduction = async (ctx) => {
   const cfg = ctx.actionConfig.config || {};
-  const percent = Math.max(0, Number(cfg.percent) || Number(cfg.percentPerDay) || 0);
+  // HR override precedence -> rule default.
+  const hr = _override(ctx.incident, 'percent');
+  const base = hr !== undefined
+    ? hr
+    : (Number(cfg.percent) || Number(cfg.percentPerDay) || 0);
+  const percent = Math.max(0, base);
   const maxCap = Number(cfg.maxCap) || Infinity;
   const clamped = Math.min(percent, maxCap);
   return {
@@ -108,9 +143,14 @@ const financialFine = async (ctx) => {
   const cfg = ctx.actionConfig.config || {};
   const critical = ctx.incident && ctx.incident.detectorMeta
     && ctx.incident.detectorMeta.criticalTask === true;
-  const amount = Math.max(0, Number(
-    critical ? (cfg.criticalAmount || cfg.amount) : cfg.amount,
-  ) || 0);
+  // HR override precedence -> critical rate -> normal rate.  The
+  // override does NOT auto-swap for criticalAmount -- HR entered a
+  // specific number; respect it.
+  const hr = _override(ctx.incident, 'amount');
+  const base = hr !== undefined
+    ? hr
+    : Number(critical ? (cfg.criticalAmount || cfg.amount) : cfg.amount) || 0;
+  const amount = Math.max(0, base);
   return {
     effectDoc: { actionType: 'financial_fine', status: 'active', amount },
     ledgerAppends: amount > 0 ? [{
