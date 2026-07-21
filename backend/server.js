@@ -38,6 +38,9 @@ app.use('/api/feature-permissions', require('./routes/featurePermissionsRoutes')
 app.use('/api/notifications', require('./routes/notificationRoutes'));
 app.use('/api/contacts', require('./routes/contactRoutes'));
 app.use('/api/company-documents', require('./routes/companyDocumentRoutes'));
+app.get('/api/company-documents-test', (req, res) => {
+  res.json({ ok: true });
+});
 app.use('/api/events', require('./routes/eventRoutes'));
 app.use('/api/holidays', require('./routes/holidayRoutes'));
 app.use('/api/password-reset', require('./routes/passwordResetRoutes'));
