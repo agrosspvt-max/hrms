@@ -158,6 +158,13 @@ function buildNav(user) {
         { to: '/salary', label: 'Salary', icon: I.money },
         // Phase 61 -- Fines & Penalties module.
         { to: '/penalties', label: 'Fines & Penalties', icon: I.money },
+        // Compliance & Accountability v2 workspace.  Rendered ONLY
+        // when the backend flag `compliance.dashboardV2` is on so a
+        // half-rolled-out deployment doesn't surface a dead link.
+        // Legacy /penalties stays alongside during the dual-run
+        // window; ops flip `compliance.legacyGone` later to retire
+        // it (out of scope for this rollout).
+        { to: '/hr/compliance', label: 'Compliance', icon: I.audit, complianceGated: 'dashboardV2' },
         ...(isSA ? [
           { to: '/manage-access', label: 'Manage Access', icon: I.admin },
           { to: '/audit', label: 'Audit Log', icon: I.audit },
@@ -172,18 +179,26 @@ const pathMatches = (to, pathname) => pathname === to || (to !== '/' && pathname
 export default function Sidebar({ open, onClose }) {
   const { user } = useAuth();
   const location = useLocation();
-  // Compliance v2 -- filter the /my-compliance sidebar link out when
-  // the backend flag `compliance.employeeCardV2` is off.  Uses the
-  // same cached snapshot the dashboard reads so we don't add an
-  // extra request.
+  // Compliance v2 -- gate compliance-related nav items on the
+  // backend feature snapshot.  Items opt in via `complianceGated`:
+  //   complianceGated: true                -> gated on 'employeeCardV2' (legacy default)
+  //   complianceGated: 'employeeCardV2'    -> explicit
+  //   complianceGated: 'dashboardV2'       -> HR compliance workspace
+  //   complianceGated: 'waiverRecovery'    -> incidents / timeline / ledgers
+  //   complianceGated: 'rules'             -> rules editor
+  // Uses the same cached snapshot the dashboard reads.
   const complianceCfg = useComplianceConfig();
   const rawNav = buildNav(user);
-  const complianceOn = isFeatureEnabled(complianceCfg, 'employeeCardV2');
+  const _flagFor = (gated) => (gated === true ? 'employeeCardV2' : String(gated));
+  const _passesComplianceGate = (item) => {
+    if (!item.complianceGated) return true;
+    return isFeatureEnabled(complianceCfg, _flagFor(item.complianceGated));
+  };
   const nav = rawNav.map((entry) => {
     if (entry.type !== 'group' || !Array.isArray(entry.items)) return entry;
     return {
       ...entry,
-      items: entry.items.filter((it) => !it.complianceGated || complianceOn),
+      items: entry.items.filter(_passesComplianceGate),
     };
   });
 

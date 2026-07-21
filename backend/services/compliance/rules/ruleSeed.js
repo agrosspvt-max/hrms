@@ -215,6 +215,56 @@ const _patchExistingRules = async () => {
   return patched;
 };
 
+/**
+ * Rollout task 4 -- opt-in auto-enable of seeded rules.
+ *
+ * `COMPLIANCE_AUTO_ENABLE_SEEDED` is a comma-separated list of rule
+ * codes to flip `enabled:true` at boot.  Idempotent: a rule that is
+ * already enabled is left alone (no `version` bump, no audit noise).
+ * A rule that HR previously disabled is NOT re-enabled -- HR's edits
+ * still win.  Only rules whose current `enabled` is exactly the
+ * default `false` set by the seeder get flipped, and only when they
+ * were never touched by a human (detected via the absence of an
+ * `updatedBy`).  Guarantees the toggle can't override an HR
+ * decision in a live environment.
+ *
+ * Returns the count of rules actually enabled by this pass.
+ */
+const _autoEnableSeeded = async () => {
+  const raw = String(process.env.COMPLIANCE_AUTO_ENABLE_SEEDED || '').trim();
+  if (!raw) return 0;
+  const codes = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!codes.length) return 0;
+  const SEED_CODES = new Set(SEED.map((s) => s.code));
+  let enabled = 0;
+  for (const code of codes) {
+    // Only touch codes we ourselves ship -- refuse to auto-enable
+    // an arbitrary HR-created rule.
+    if (!SEED_CODES.has(code)) {
+      console.warn('[compliance-rules-seed] auto-enable: unknown seeded code', code);
+      continue;
+    }
+    // Conditional update: only flip when still at the seeded default
+    // (enabled:false, no HR edits).  `updatedBy` can be either
+    // explicit null (Mongoose default) or missing (older rows that
+    // predate the field default), so we match both shapes.  Missing
+    // rule is a no-op.
+    const res = await ComplianceRule.updateOne(
+      {
+        code,
+        enabled: false,
+        $or: [{ updatedBy: null }, { updatedBy: { $exists: false } }],
+      },
+      { $set: { enabled: true }, $inc: { version: 1 } },
+    );
+    if (res && (res.modifiedCount || res.nModified || 0) > 0) {
+      enabled += 1;
+      console.log(`[compliance-rules-seed] auto-enabled ${code}`);
+    }
+  }
+  return enabled;
+};
+
 const run = async () => {
   let created = 0;
   let skipped = 0;
@@ -232,7 +282,8 @@ const run = async () => {
     created += 1;
   }
   const patched = await _patchExistingRules();
-  return { created, skipped, patched, total: SEED.length };
+  const autoEnabled = await _autoEnableSeeded();
+  return { created, skipped, patched, autoEnabled, total: SEED.length };
 };
 
 const start = async () => {
@@ -243,7 +294,8 @@ const start = async () => {
       return { skipped: true };
     }
     const r = await run();
-    console.log(`[compliance-rules-seed] created ${r.created}, skipped ${r.skipped} of ${r.total}`);
+    console.log(`[compliance-rules-seed] created ${r.created}, skipped ${r.skipped} of ${r.total}`
+      + (r.autoEnabled ? `, auto-enabled ${r.autoEnabled}` : ''));
     return r;
   } catch (e) {
     console.error('[compliance-rules-seed] failed:', e.message);
