@@ -5,6 +5,7 @@ import ActionBadge from '../../components/compliance/ActionBadge.jsx';
 import WaiverRequestModal from './WaiverRequestModal.jsx';
 import { fmtDate, errMsg } from '../../utils/helpers';
 import { useToast } from '../../context/ToastContext.jsx';
+import IncidentDetailPanel from '../hr/compliance/IncidentDetailPanel.jsx';
 
 /**
  * My Compliance -- employee's personal compliance workspace.
@@ -118,17 +119,12 @@ function IncidentsTab() {
         ))}
       </div>
       <div className="md:col-span-2">
-        {!openId ? (
-          <div className="text-sm text-slate-500 border rounded-md p-6 bg-slate-50">
-            Select an incident on the left to view details.
-          </div>
-        ) : (
-          <IncidentDetail
-            data={openId}
-            onWaive={() => setWaiverFor({ incident: openId.incident, effects: openId.effects })}
-            onReload={() => openIncident(openId.incident)}
-          />
-        )}
+        <IncidentDetailPanel
+          data={openId}
+          viewer="employee"
+          onWaive={() => setWaiverFor({ incident: openId.incident, effects: openId.effects })}
+          onReload={() => openIncident(openId.incident)}
+        />
       </div>
       <WaiverRequestModal
         open={!!waiverFor}

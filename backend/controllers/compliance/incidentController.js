@@ -136,7 +136,12 @@ const list = asyncHandler(async (req, res) => {
 
 const get = asyncHandler(async (req, res) => {
   _flagGate(res);
-  const row = await ComplianceIncident.findById(req.params.id).lean();
+  // Populate createdBy so the frontend can display "Created by …" for
+  // manual incidents; falls back to no-op when the field is null
+  // (automatic incidents leave createdBy unset).
+  const row = await ComplianceIncident.findById(req.params.id)
+    .populate('createdBy', 'name email')
+    .lean();
   if (!row) { res.status(404); throw new Error('Incident not found.'); }
   if (!_isAdmin(req.user) && String(row.employee) !== String(req.user._id)) {
     res.status(403); throw new Error('You may not view this incident.');

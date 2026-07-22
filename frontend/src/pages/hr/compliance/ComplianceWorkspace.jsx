@@ -7,6 +7,7 @@ import { fmtDate, errMsg } from '../../../utils/helpers';
 import { useToast } from '../../../context/ToastContext.jsx';
 import RuleHistoryPanel from './RuleHistoryPanel.jsx';
 import CreateIncidentModal from './CreateIncidentModal.jsx';
+import IncidentDetailPanel from './IncidentDetailPanel.jsx';
 import useComplianceRegistry from '../../../hooks/useComplianceRegistry.js';
 
 /**
@@ -286,56 +287,16 @@ function IncidentsTab() {
           ))}
       </div>
       <div className="md:col-span-2">
-        {!openId
-          ? <div className="text-sm text-slate-500 border rounded-md p-6 bg-slate-50">Select an incident on the left.</div>
-          : <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <div>
-                  <div className="text-lg font-semibold capitalize">{openId.incident.ruleCode.replace(/_/g, ' ')}</div>
-                  <div className="text-xs text-slate-500">
-                    {fmtDate(openId.incident.incidentDate)} · <span className="capitalize">{openId.incident.status}</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {['candidate','active'].includes(openId.incident.status) && (
-                    <>
-                      <button className="btn-secondary !py-1 !text-xs" disabled={busy} onClick={() => waive(openId.incident)}>Waive</button>
-                      <button className="btn-secondary !py-1 !text-xs" disabled={busy} onClick={() => recover(openId.incident)}>Recover</button>
-                      <button className="btn-ghost !py-1 !text-xs text-red-600" disabled={busy} onClick={() => cancel(openId.incident)}>Cancel</button>
-                    </>
-                  )}
-                </div>
-              </div>
-              <div>
-                <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Actions applied</div>
-                <div className="flex flex-wrap gap-1">
-                  {openId.effects.map((e) => <ActionBadge key={e._id} effect={e} />)}
-                </div>
-              </div>
-              {openId.waivers && openId.waivers.length > 0 && (
-                <div>
-                  <div className="text-xs uppercase font-semibold text-slate-500 mb-1">Waivers</div>
-                  <ul className="space-y-1">
-                    {openId.waivers.map((w) => (
-                      <li key={w._id} className="border rounded-md p-2 text-xs">
-                        <div className="flex items-center justify-between">
-                          <span className="capitalize">{w.status}</span>
-                          <span className="text-slate-500">{new Date(w.requestedAt).toLocaleString()}</span>
-                        </div>
-                        {w.reason && <div className="mt-0.5">Reason: {w.reason}</div>}
-                        {w.status === 'pending' && (
-                          <div className="mt-1 flex items-center gap-2">
-                            <button className="btn-primary !py-1 !text-xs" disabled={busy} onClick={() => decideWaiver(w._id, 'approved')}>Approve</button>
-                            <button className="btn-ghost !py-1 !text-xs text-red-600" disabled={busy} onClick={() => decideWaiver(w._id, 'rejected')}>Reject</button>
-                          </div>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-        }
+        <IncidentDetailPanel
+          data={openId}
+          viewer="hr"
+          busy={busy}
+          onWaive={() => waive(openId.incident)}
+          onRecover={() => recover(openId.incident)}
+          onCancel={() => cancel(openId.incident)}
+          onReload={() => view(openId.incident)}
+          onDecideWaiver={(waiverId, decision) => decideWaiver(waiverId, decision)}
+        />
       </div>
     </div>
   );
