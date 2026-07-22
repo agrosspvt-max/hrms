@@ -189,49 +189,124 @@ function IncidentDetail({ data, onWaive, onReload }) {
 // -----------------------------------------------------------
 // Ledgers
 // -----------------------------------------------------------
+/**
+ * LedgersTab -- shows the employee's own ledger balances.
+ *
+ * Fix for the "incident says written, ledger tab empty" inconsistency:
+ *   1. Fetches all four ledgers on mount so we can show counts on
+ *      each sub-tab AND auto-select the first non-empty one.
+ *   2. Renders a real error message when the endpoint returns 404
+ *      (previously silently rendered empty state, which was
+ *      indistinguishable from a genuinely empty ledger and the
+ *      #1 reason users thought "no data" when the flag was off).
+ *   3. Passes the loaded rows down so LedgerView doesn't refetch.
+ */
+const LEDGER_KINDS = ['marks', 'financial', 'percentage', 'attendance'];
+const LEDGER_LABEL = {
+  marks: 'Marks', financial: 'Financial', percentage: 'Percentage', attendance: 'Attendance',
+};
+
 function LedgersTab() {
-  const [ledger, setLedger] = useState('financial');
+  const [ledger, setLedger] = useState(null);   // resolved after preload
+  const [byKind, setByKind] = useState(null);   // { marks: [...], financial: [...], ... }
+  const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    setByKind(null); setErr(null);
+    Promise.all(LEDGER_KINDS.map((k) =>
+      api.get(`/compliance/ledgers/${k}`)
+        .then(({ data }) => [k, data || []])
+        .catch((e) => {
+          if (e.response?.status === 404) {
+            throw new Error(
+              'Compliance ledgers are not enabled on this deployment (COMPLIANCE_WAIVER_RECOVERY off).'
+            );
+          }
+          throw new Error(errMsg(e));
+        })
+    ))
+      .then((entries) => {
+        if (!alive) return;
+        const map = Object.fromEntries(entries);
+        setByKind(map);
+        // Smart default: prefer the first ledger that actually has data.
+        // Falls back to 'financial' when all four are empty.
+        const firstNonEmpty = LEDGER_KINDS.find((k) => (map[k] || []).length > 0);
+        setLedger(firstNonEmpty || 'financial');
+      })
+      .catch((e) => { if (alive) setErr(e.message || String(e)); });
+    return () => { alive = false; };
+  }, []);
+
+  if (err) return <div className="text-sm text-red-600 border rounded-md p-3 bg-red-50">Ledger load failed: {err}</div>;
+  if (!byKind) return <Loader />;
+
+  const rowsForKind = (k) => (byKind[k] || []);
+  const totalRows = LEDGER_KINDS.reduce((s, k) => s + rowsForKind(k).length, 0);
+
   return (
     <div>
-      <div className="flex items-center gap-2 mb-3">
-        {['marks', 'financial', 'percentage', 'attendance'].map((l) => (
-          <button key={l}
-            onClick={() => setLedger(l)}
-            className={`px-3 py-1 rounded-md text-xs capitalize border ${ledger === l ? 'bg-brand-500 text-white border-brand-500' : 'bg-white text-slate-700 border-slate-200'}`}
-          >
-            {l}
-          </button>
-        ))}
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        {LEDGER_KINDS.map((l) => {
+          const count = rowsForKind(l).length;
+          const active = ledger === l;
+          return (
+            <button key={l}
+              onClick={() => setLedger(l)}
+              className={`px-3 py-1 rounded-md text-xs capitalize border flex items-center gap-1.5 ${active ? 'bg-brand-500 text-white border-brand-500' : 'bg-white text-slate-700 border-slate-200'}`}
+            >
+              {LEDGER_LABEL[l]}
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${active ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-700'}`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
       </div>
-      <LedgerView ledger={ledger} />
+      {totalRows === 0 ? (
+        <EmptyState
+          title="No ledger entries yet"
+          subtitle="Ledger rows appear only after an incident's actions actually write to a ledger (notifications, warnings and performance-lock actions never do)."
+        />
+      ) : (
+        <LedgerView rows={rowsForKind(ledger)} ledger={ledger} byKind={byKind} onJump={setLedger} />
+      )}
     </div>
   );
 }
 
-function LedgerView({ ledger }) {
-  const [rows, setRows] = useState(null);
-  const [err, setErr] = useState(null);
-  useEffect(() => {
-    setRows(null); setErr(null);
-    api.get(`/compliance/ledgers/${ledger}`)
-      .then(({ data }) => setRows(data))
-      .catch((e) => {
-        // Phase 6 only shipped read endpoints via timelineService for
-        // events; ledger read endpoints are Phase 8.  Show a friendly
-        // placeholder until those land.
-        if (e.response?.status === 404) setRows([]);
-        else setErr(errMsg(e));
-      });
-  }, [ledger]);
-
-  const total = useMemo(() => {
-    if (!rows || rows.length === 0) return 0;
-    return rows[rows.length - 1].runningBalance;
-  }, [rows]);
-
-  if (err) return <div className="text-sm text-red-600">Ledger load failed: {err}</div>;
-  if (!rows) return <Loader />;
-  if (rows.length === 0) return <EmptyState title="No ledger entries" subtitle={`Your ${ledger} ledger is empty.`} />;
+function LedgerView({ rows, ledger, byKind, onJump }) {
+  const total = rows.length ? rows[rows.length - 1].runningBalance : 0;
+  if (rows.length === 0) {
+    // The current sub-tab is empty, but other sub-tabs have data.
+    // Point the user at the ones that do.
+    const others = LEDGER_KINDS
+      .filter((k) => k !== ledger && (byKind[k] || []).length > 0);
+    return (
+      <div className="border rounded-md p-4 bg-white space-y-2">
+        <div className="text-sm font-medium text-slate-800">
+          No entries in {LEDGER_LABEL[ledger]} Ledger.
+        </div>
+        <div className="text-xs text-slate-500">
+          This ledger has never been written to for your account. The action types that write to it may not be part of the rules that fired on your record.
+        </div>
+        {others.length > 0 && (
+          <div className="text-xs text-slate-600 pt-1">
+            You do have entries in:&nbsp;
+            {others.map((k, i) => (
+              <span key={k}>
+                <button className="text-brand-600 hover:underline" onClick={() => onJump(k)}>
+                  {LEDGER_LABEL[k]} ({byKind[k].length})
+                </button>
+                {i < others.length - 1 ? ', ' : ''}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
   return (
     <div>
       <div className="text-xs text-slate-500 mb-2">

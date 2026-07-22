@@ -136,14 +136,30 @@ const list = asyncHandler(async (req, res) => {
 
 const get = asyncHandler(async (req, res) => {
   _flagGate(res);
-  // Populate createdBy so the frontend can display "Created by …" for
-  // manual incidents; falls back to no-op when the field is null
-  // (automatic incidents leave createdBy unset).
+  // Populate:
+  //   - createdBy so the frontend can display "Created by …" for
+  //     manual incidents; auto incidents leave createdBy null.
+  //   - employee so the panel can display Name / Employee ID /
+  //     Department / Designation without a second round-trip.  Nested
+  //     populate resolves the department name + designation title
+  //     (same shape the employee-directory endpoint returns).
   const row = await ComplianceIncident.findById(req.params.id)
     .populate('createdBy', 'name email')
+    .populate({
+      path: 'employee',
+      select: 'name employeeId department designation',
+      populate: [
+        { path: 'department',  select: 'name' },
+        { path: 'designation', select: 'title' },
+      ],
+    })
     .lean();
   if (!row) { res.status(404); throw new Error('Incident not found.'); }
-  if (!_isAdmin(req.user) && String(row.employee) !== String(req.user._id)) {
+  // `row.employee` is a populated object post-populate; fall through to
+  // its _id.  When populate misses (deleted user) it's still a plain
+  // ObjectId string, which String() also handles cleanly.
+  const employeeId = (row.employee && row.employee._id) || row.employee;
+  if (!_isAdmin(req.user) && String(employeeId) !== String(req.user._id)) {
     res.status(403); throw new Error('You may not view this incident.');
   }
   const [effects, waivers] = await Promise.all([

@@ -75,6 +75,7 @@ export default function IncidentDetailPanel({
 
   return (
     <div className="space-y-4">
+      <EmployeeIdentityCard incident={incident} />
       <SummaryCard incident={incident} isHR={isHR}
         onWaive={onWaive} onRecover={onRecover} onCancel={onCancel} busy={busy} onReload={onReload} />
       <WhyCard incident={incident} />
@@ -86,6 +87,50 @@ export default function IncidentDetailPanel({
         onDecideWaiver={onDecideWaiver} busy={busy} />
       <RuleSnapshotCard incident={incident} rule={rule} />
       {isHR && <HrDetailsCard incident={incident} />}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Section 0 -- Employee identity                                       */
+/*                                                                      */
+/* Renders whose incident this is.  The incident-detail endpoint now    */
+/* populates `employee` with { _id, name, employeeId, department.name,  */
+/* designation.title } so the panel doesn't need a second round-trip.   */
+/* When populate misses (deleted user account) we degrade to the raw id.*/
+/* ------------------------------------------------------------------ */
+function EmployeeIdentityCard({ incident }) {
+  const emp = incident && incident.employee;
+  const populated = emp && typeof emp === 'object';
+  const name = populated ? (emp.name || 'Employee') : null;
+  const empId = populated ? emp.employeeId : null;
+  const dept = populated && emp.department && emp.department.name;
+  const desig = populated && emp.designation && emp.designation.title;
+  const initials = (n = '?') =>
+    n.trim().split(/\s+/).slice(0, 2).map((w) => (w[0] || '')).join('').toUpperCase() || '?';
+  return (
+    <div className="border rounded-lg bg-white p-4 flex items-center gap-3 flex-wrap">
+      <div className="w-11 h-11 rounded-full bg-brand-50 text-brand-700 grid place-items-center font-semibold shrink-0">
+        {name ? initials(name) : '?'}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-[11px] uppercase text-slate-500 font-semibold">Employee</div>
+        <div className="text-base font-semibold text-slate-900 truncate">
+          {name || (
+            <span className="text-slate-500 italic">
+              Employee account no longer exists · <code className="text-[11px]">{String(emp || '').slice(-8)}</code>
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-slate-500 mt-0.5 flex flex-wrap gap-x-3">
+          {empId && <span>ID: <span className="font-medium text-slate-700">{empId}</span></span>}
+          {dept  && <span>Dept: <span className="text-slate-700">{dept}</span></span>}
+          {desig && <span>Designation: <span className="text-slate-700">{desig}</span></span>}
+          {!empId && !dept && !desig && populated && (
+            <span className="italic">No directory details on record.</span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
