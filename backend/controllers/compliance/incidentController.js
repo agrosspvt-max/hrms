@@ -22,6 +22,7 @@ const ComplianceRule     = require('../../models/ComplianceRule');
 const ComplianceActionEffect = require('../../models/ComplianceActionEffect');
 const ComplianceWaiver   = require('../../models/ComplianceWaiver');
 const { isEnabled } = require('../../config/featureFlags');
+const { logAudit } = require('../../utils/audit');
 
 const compliance = require('../../services/compliance');
 const waiverService = require('../../services/compliance/waiver/waiverService');
@@ -234,6 +235,75 @@ const cancel = asyncHandler(async (req, res) => {
 });
 
 // -----------------------------------------------------------
+// POST /api/compliance/incidents/:id/activate  (HR only)
+//
+// Manually promote a `candidate` incident to `active` immediately
+// and fire the action engine.  Bypasses the scheduler's
+// evaluationDelayDays gate so HR can apply consequences before the
+// natural effective date.  Idempotent: repeat calls on an already-
+// active incident return 409.
+// -----------------------------------------------------------
+const activate = asyncHandler(async (req, res) => {
+  _flagGate(res);
+  if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only.'); }
+  const inc = await ComplianceIncident.findOneAndUpdate(
+    { _id: req.params.id, status: 'candidate' },
+    { $set: { status: 'active' } },
+    { new: true },
+  );
+  if (!inc) { res.status(409); throw new Error('Incident is not in candidate state.'); }
+  // Fire the action engine so effect + ledger rows land.  The engine
+  // is idempotent on the (incident, ruleAction, effectiveDate) natural
+  // key, so any re-runs are safe.
+  const day = new Date();
+  try {
+    await compliance.actionEngine.apply({ incident: inc, day });
+  } catch (e) {
+    console.error('[compliance/incident/activate] apply failed:', e.message);
+  }
+  // Reuse the same event + audit that promoteToActive would have written.
+  await incidentService._emitEvent({
+    employee: inc.employee, incidentId: inc._id,
+    kind: 'incident_effective',
+    payload: {
+      ruleCode: inc.ruleCode,
+      effectiveDate: inc.effectiveDate,
+      manual: true,
+      reason: (req.body && req.body.reason) || undefined,
+    },
+    actor: req.user._id,
+  });
+  logAudit(req, {
+    action: 'compliance.incident.activate',
+    targetType: 'ComplianceIncident',
+    targetId: inc._id,
+    targetLabel: inc.ruleCode,
+    meta: { reason: (req.body && req.body.reason) || '', employee: String(inc.employee) },
+  });
+  res.json(inc.toObject ? inc.toObject() : inc);
+});
+
+// -----------------------------------------------------------
+// POST /api/compliance/incidents/:id/resolve  (HR only)
+//
+// Marks an incident resolved without reversing effects.  Suitable
+// when the underlying condition cleared but the recorded penalty
+// should stand.  For a resolution that ALSO refunds the ledger use
+// POST /:id/recover.
+// -----------------------------------------------------------
+const resolve = asyncHandler(async (req, res) => {
+  _flagGate(res);
+  if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only.'); }
+  const row = await incidentService.resolveIncident(req.params.id, {
+    reason: req.body && req.body.reason,
+    actor:  req.user._id,
+    req,
+  });
+  if (!row) { res.status(404); throw new Error('Incident not found.'); }
+  res.json(row);
+});
+
+// -----------------------------------------------------------
 // POST /api/compliance/incidents/:id/recover  (HR only)
 // -----------------------------------------------------------
 const recover = asyncHandler(async (req, res) => {
@@ -309,6 +379,6 @@ const waiveDecide = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  list, get, create, cancel, recover,
+  list, get, create, cancel, recover, activate, resolve,
   waiveDirect, waiveRequest, waiveDecide,
 };

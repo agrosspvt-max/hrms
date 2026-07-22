@@ -9,6 +9,7 @@ import RuleHistoryPanel from './RuleHistoryPanel.jsx';
 import CreateIncidentModal from './CreateIncidentModal.jsx';
 import IncidentDetailPanel from './IncidentDetailPanel.jsx';
 import EmployeeHistoryDrawer from './EmployeeHistoryDrawer.jsx';
+import LifecycleActionModal from './LifecycleActionModal.jsx';
 import DateRangeFilter, { rangeFromPreset } from '../../../components/compliance/DateRangeFilter.jsx';
 import { ruleTitle, statusTone, severityTone, fmtWhen } from '../../../utils/incidentPresenter.js';
 import useComplianceRegistry from '../../../hooks/useComplianceRegistry.js';
@@ -273,54 +274,27 @@ function IncidentsTab({ range, q, onEmployeeOpen }) {
     } catch (_) { /* silent; the row will still appear in the list */ }
   };
 
-  const cancel = async (inc) => {
-    const reason = window.prompt('Cancel reason?');
-    if (reason === null) return;
-    setBusy(true);
-    try {
-      await api.post(`/compliance/incidents/${inc._id}/cancel`, { reason });
-      toast.success('Incident cancelled.');
-      load();
-    } catch (e) { toast.error(errMsg(e)); }
-    finally { setBusy(false); }
+  // Every lifecycle action goes through the shared LifecycleActionModal
+  // so reason-required + preview + audit stay consistent with the
+  // timeline drawer's flow.
+  const [pending, setPending] = useState(null);   // { action, waiver? }
+  const openAction = (action, waiver) => setPending({ action, waiver });
+  const afterAction = () => {
+    setPending(null);
+    load();
+    if (openId && openId.incident) view(openId.incident);
   };
-
-  const waive = async (inc) => {
-    const reason = window.prompt('Waiver reason?');
-    if (reason === null) return;
-    setBusy(true);
-    try {
-      await api.post(`/compliance/incidents/${inc._id}/waive`, { scope: 'full', reason });
-      toast.success('Incident waived.');
-      load();
-    } catch (e) { toast.error(errMsg(e)); }
-    finally { setBusy(false); }
-  };
-
-  const recover = async (inc) => {
-    const mode = window.prompt('Recovery mode? (restore | information | neutral)', 'restore');
-    if (!mode) return;
-    const reason = window.prompt('Recovery reason?') || '';
-    setBusy(true);
-    try {
-      await api.post(`/compliance/incidents/${inc._id}/recover`, { mode, reason });
-      toast.success('Recovery applied.');
-      load();
-    } catch (e) { toast.error(errMsg(e)); }
-    finally { setBusy(false); }
-  };
-
-  const decideWaiver = async (wid, decision) => {
-    const note = decision === 'rejected' ? (window.prompt('Rejection note?') || '') : '';
-    setBusy(true);
-    try {
-      await api.post(`/compliance/incidents/${openId.incident._id}/waive/decide`, {
-        waiverId: wid, decision, note,
-      });
-      toast.success(`Waiver ${decision}.`);
-      view(openId.incident);
-    } catch (e) { toast.error(errMsg(e)); }
-    finally { setBusy(false); }
+  // Legacy per-button handlers now just open the shared modal.  The
+  // modal itself performs the API call and handles the reason input.
+  const cancel  = () => openAction('cancel');
+  const waive   = () => openAction('waive');
+  const recover = () => openAction('recover');
+  const resolve = () => openAction('resolve');
+  const activate = () => openAction('activate');
+  const decideWaiver = (waiverId, decision) => {
+    const waiver = (openId && openId.waivers || []).find((w) => String(w._id) === String(waiverId));
+    if (!waiver) return;
+    openAction(decision === 'approved' ? 'waive-approve' : 'waive-reject', waiver);
   };
 
   return (
@@ -367,13 +341,24 @@ function IncidentsTab({ range, q, onEmployeeOpen }) {
           data={openId}
           viewer="hr"
           busy={busy}
-          onWaive={() => waive(openId.incident)}
-          onRecover={() => recover(openId.incident)}
-          onCancel={() => cancel(openId.incident)}
+          onWaive={waive}
+          onRecover={recover}
+          onCancel={cancel}
           onReload={() => view(openId.incident)}
           onDecideWaiver={(waiverId, decision) => decideWaiver(waiverId, decision)}
         />
       </div>
+      {pending && openId && (
+        <LifecycleActionModal
+          open={true}
+          onClose={() => setPending(null)}
+          onDone={afterAction}
+          action={pending.action}
+          incident={openId.incident}
+          effects={openId.effects || []}
+          waiver={pending.waiver}
+        />
+      )}
     </div>
   );
 }

@@ -16,6 +16,8 @@ router.get('/incidents/:id',            c.get);
 router.post('/incidents',               c.create);
 router.post('/incidents/:id/cancel',    c.cancel);
 router.post('/incidents/:id/recover',   c.recover);
+router.post('/incidents/:id/activate',  c.activate);
+router.post('/incidents/:id/resolve',   c.resolve);
 router.post('/incidents/:id/waive',     c.waiveDirect);
 router.post('/incidents/:id/waive/request', c.waiveRequest);
 router.post('/incidents/:id/waive/decide',  c.waiveDecide);

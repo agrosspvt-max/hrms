@@ -3,6 +3,7 @@ import api from '../../../api/axios';
 import { Loader, EmptyState } from '../../../components/Loader.jsx';
 import ActionBadge from '../../../components/compliance/ActionBadge.jsx';
 import IncidentDetailPanel from './IncidentDetailPanel.jsx';
+import LifecycleActionModal, { validActionsFor } from './LifecycleActionModal.jsx';
 import { errMsg } from '../../../utils/helpers';
 import { ruleTitle, statusTone, severityTone, fmtWhen } from '../../../utils/incidentPresenter.js';
 
@@ -30,8 +31,11 @@ export default function EmployeeHistoryDrawer({ employeeId, employeeSeed, range,
   const [rows, setRows] = useState(null);
   const [rowsErr, setRowsErr] = useState(null);
   const [impact, setImpact] = useState(null);
+  const [impactRefreshTick, setImpactRefreshTick] = useState(0);
   const [expandedId, setExpandedId] = useState(null);
   const [expandedData, setExpandedData] = useState(null);
+  // Shared modal state -- one incident/action pair at a time.
+  const [pending, setPending] = useState(null);   // { action, incident, effects, waiver }
 
   // ---- filters local to the drawer ------------------------------
   const [fStatus, setFStatus] = useState('');
@@ -54,6 +58,8 @@ export default function EmployeeHistoryDrawer({ employeeId, employeeSeed, range,
   }, [employeeId, range && range.from, range && range.to]);
 
   // ---- current impact KPIs -- latest ledger balance across all 4 --
+  // impactRefreshTick lets us re-fetch after a successful lifecycle
+  // action changes the balances.
   useEffect(() => {
     if (!employeeId) return;
     let alive = true;
@@ -75,7 +81,7 @@ export default function EmployeeHistoryDrawer({ employeeId, employeeSeed, range,
       setImpact(out);
     });
     return () => { alive = false; };
-  }, [employeeId]);
+  }, [employeeId, impactRefreshTick]);
 
   const seedEmp = employeeSeed || (rows && rows[0] && typeof rows[0].employee === 'object' ? rows[0].employee : null);
 
@@ -116,6 +122,44 @@ export default function EmployeeHistoryDrawer({ employeeId, employeeSeed, range,
     } catch (e) { /* silent; timeline chip still shown */ }
   };
 
+  // ---- lifecycle action trigger --------------------------------
+  // Full incident+effects+waivers needed so the modal can render the
+  // preview list.  We fetch on demand rather than eagerly.
+  const openAction = async (inc, action, waiverId) => {
+    try {
+      const { data } = await api.get(`/compliance/incidents/${inc._id}`);
+      const waiver = waiverId
+        ? (data.waivers || []).find((w) => String(w._id) === String(waiverId))
+        : null;
+      setPending({
+        action,
+        incident: data.incident,
+        effects: data.effects || [],
+        waiver,
+      });
+    } catch (e) { /* silent -- toast surfaces from modal on submit */ }
+  };
+  // After a successful action refresh incidents + ledger balances so
+  // every dependent module in the drawer immediately reflects the
+  // change without needing the user to close & reopen.
+  const afterAction = () => {
+    setPending(null);
+    setImpactRefreshTick((n) => n + 1);
+    // reload incidents (matches the same params as the initial load)
+    const params = { employee: employeeId, includeEffects: 'true', limit: 200 };
+    if (range && range.from) params.from = range.from;
+    if (range && range.to)   params.to   = range.to;
+    api.get('/compliance/incidents', { params })
+      .then(({ data }) => setRows(data))
+      .catch(() => { /* silent */ });
+    // if the acted-on incident was expanded, refetch its detail
+    if (expandedId) {
+      api.get(`/compliance/incidents/${expandedId}`)
+        .then(({ data }) => setExpandedData(data))
+        .catch(() => {});
+    }
+  };
+
   return (
     <>
       <div className="fixed inset-0 z-40 bg-black/40" onClick={onClose} />
@@ -148,10 +192,23 @@ export default function EmployeeHistoryDrawer({ employeeId, employeeSeed, range,
               expandedId={expandedId}
               expandedData={expandedData}
               onExpand={expand}
+              onAction={openAction}
             />
           )}
         </div>
       </aside>
+      {pending && (
+        <LifecycleActionModal
+          open={true}
+          onClose={() => setPending(null)}
+          onDone={afterAction}
+          action={pending.action}
+          incident={pending.incident}
+          effects={pending.effects}
+          waiver={pending.waiver}
+          currentImpact={impact}
+        />
+      )}
     </>
   );
 }
@@ -252,7 +309,7 @@ function FilterBar({ rows, uniqueRuleCodes, fStatus, setFStatus, fRule, setFRule
 }
 
 /* ---------- Vertical timeline ------------------------------------ */
-function Timeline({ rows, expandedId, expandedData, onExpand }) {
+function Timeline({ rows, expandedId, expandedData, onExpand, onAction }) {
   return (
     <ol className="relative border-l-2 border-slate-200 ml-3 space-y-3">
       {rows.map((r) => {
@@ -260,7 +317,7 @@ function Timeline({ rows, expandedId, expandedData, onExpand }) {
         return (
           <li key={r._id} className="pl-4 -ml-[9px]">
             <span className="absolute -translate-x-1/2 mt-1 w-4 h-4 rounded-full bg-white border-2 border-brand-400" />
-            <TimelineCard row={r} isOpen={isOpen} onExpand={() => onExpand(r)} />
+            <TimelineCard row={r} isOpen={isOpen} onExpand={() => onExpand(r)} onAction={onAction} />
             {isOpen && (
               <div className="mt-2 border rounded-lg bg-white shadow-sm p-1">
                 {expandedData ? (
@@ -276,7 +333,13 @@ function Timeline({ rows, expandedId, expandedData, onExpand }) {
     </ol>
   );
 }
-function TimelineCard({ row, isOpen, onExpand }) {
+function TimelineCard({ row, isOpen, onExpand, onAction }) {
+  // Waiver info is not on the list payload; the modal will fetch full
+  // detail on demand.  For the dropdown we advertise waive-approve
+  // and waive-reject only when we already know there's a pending
+  // waiver (from expanded detail).  Otherwise the list actions cover
+  // the state-driven set.
+  const actions = validActionsFor(row, []);
   return (
     <div className="border rounded-lg bg-white p-3">
       <div className="flex items-start justify-between gap-2 flex-wrap">
@@ -306,14 +369,48 @@ function TimelineCard({ row, isOpen, onExpand }) {
           {row.effects.map((e) => <ActionBadge key={e._id} effect={e} />)}
         </div>
       )}
-      <div className="mt-2 flex items-center gap-2">
+      <div className="mt-2 flex items-center gap-2 flex-wrap">
         <button className="btn-secondary !py-1 !text-xs" onClick={onExpand}>
           {isOpen ? 'Hide details' : 'Quick view'}
         </button>
+        {actions.length > 0 && (
+          <ActionsMenu actions={actions} onPick={(a) => onAction(row, a.key, a.waiverId)} />
+        )}
         {row.ruleCode && (
-          <span className="text-[11px] text-slate-400"><code>{row.ruleCode}</code> · v{row.ruleVersion}</span>
+          <span className="text-[11px] text-slate-400 ml-auto"><code>{row.ruleCode}</code> · v{row.ruleVersion}</span>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * ActionsMenu -- tiny state-aware dropdown attached to every timeline
+ * card.  Only shows actions valid for the current incident state.
+ * Clicking outside closes it.
+ */
+function ActionsMenu({ actions, onPick }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button className="btn-secondary !py-1 !text-xs" onClick={() => setOpen((o) => !o)}>
+        Actions ▾
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute z-40 left-0 mt-1 w-56 bg-white border rounded-md shadow-lg overflow-hidden">
+            {actions.map((a) => (
+              <button key={a.key + (a.waiverId || '')}
+                onClick={() => { setOpen(false); onPick(a); }}
+                className={`w-full text-left text-xs px-3 py-2 hover:bg-slate-50 ${a.danger ? 'text-red-600' : 'text-slate-800'}`}
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }
