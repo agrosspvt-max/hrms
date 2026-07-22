@@ -80,9 +80,23 @@ const list = asyncHandler(async (req, res) => {
     if (req.query.to)   where.incidentDate.$lte = new Date(req.query.to);
   }
   const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 200));
+  // Populate `employee` so employee-centric list rendering doesn't
+  // need N+1 lookups.  Nested populate resolves department name +
+  // designation title (same shape the incident-detail endpoint uses).
+  // Mongoose dedupes the underlying User query, so populating
+  // hundreds of incidents from a small employee cohort costs one
+  // extra query, not one-per-row.
   const rows = await ComplianceIncident.find(where)
     .sort({ incidentDate: -1 })
     .limit(limit)
+    .populate({
+      path: 'employee',
+      select: 'name employeeId department designation',
+      populate: [
+        { path: 'department',  select: 'name' },
+        { path: 'designation', select: 'title' },
+      ],
+    })
     .lean();
 
   const wantEffects = _truthy(req.query.includeEffects);

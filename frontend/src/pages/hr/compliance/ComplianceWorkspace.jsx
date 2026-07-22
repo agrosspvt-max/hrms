@@ -8,6 +8,9 @@ import { useToast } from '../../../context/ToastContext.jsx';
 import RuleHistoryPanel from './RuleHistoryPanel.jsx';
 import CreateIncidentModal from './CreateIncidentModal.jsx';
 import IncidentDetailPanel from './IncidentDetailPanel.jsx';
+import EmployeeHistoryDrawer from './EmployeeHistoryDrawer.jsx';
+import DateRangeFilter, { rangeFromPreset } from '../../../components/compliance/DateRangeFilter.jsx';
+import { ruleTitle, statusTone, severityTone, fmtWhen } from '../../../utils/incidentPresenter.js';
 import useComplianceRegistry from '../../../hooks/useComplianceRegistry.js';
 
 /**
@@ -21,6 +24,16 @@ import useComplianceRegistry from '../../../hooks/useComplianceRegistry.js';
  */
 export default function ComplianceWorkspace() {
   const [tab, setTab] = useState('dashboard');
+  // Workspace-level global filters shared by Dashboard + Incidents.
+  // Rules tab ignores them (rule config isn't date-scoped).
+  const [range, setRange] = useState(rangeFromPreset('last30'));
+  const [q, setQ] = useState('');
+  // Employee drill-in.  When set, EmployeeHistoryDrawer overlays the
+  // workspace with the employee's full history.  Any surface in the
+  // workspace can trigger it (dashboard tile, incidents card, etc.).
+  const [employeeDrill, setEmployeeDrill] = useState(null);   // {employeeId, employeeSeed}
+  const openEmployee = (employeeId, employeeSeed) => setEmployeeDrill({ employeeId, employeeSeed });
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -31,6 +44,21 @@ export default function ComplianceWorkspace() {
           </p>
         </div>
       </div>
+
+      {/* Global toolbar -- search + date range apply across Dashboard
+          and Incidents tabs.  Rules tab ignores them (rule config is
+          not date-scoped and has its own search). */}
+      <div className="flex items-center gap-2 flex-wrap border rounded-md bg-white p-2">
+        <input
+          type="search"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search employee, ID, department, designation or rule…"
+          className="flex-1 min-w-[16rem] border rounded-md text-sm px-2 py-1.5"
+        />
+        <DateRangeFilter value={range} onChange={setRange} />
+      </div>
+
       <div className="flex items-center gap-2 border-b border-slate-200">
         {['dashboard', 'incidents', 'rules'].map((k) => (
           <button key={k}
@@ -41,9 +69,18 @@ export default function ComplianceWorkspace() {
           </button>
         ))}
       </div>
-      {tab === 'dashboard' && <DashboardTab />}
-      {tab === 'incidents' && <IncidentsTab />}
+      {tab === 'dashboard' && <DashboardTab range={range} onEmployeeOpen={openEmployee} />}
+      {tab === 'incidents' && <IncidentsTab range={range} q={q} onEmployeeOpen={openEmployee} />}
       {tab === 'rules'     && <RulesTab />}
+
+      {employeeDrill && (
+        <EmployeeHistoryDrawer
+          employeeId={employeeDrill.employeeId}
+          employeeSeed={employeeDrill.employeeSeed}
+          range={range}
+          onClose={() => setEmployeeDrill(null)}
+        />
+      )}
     </div>
   );
 }
@@ -51,22 +88,26 @@ export default function ComplianceWorkspace() {
 // -----------------------------------------------------------
 // Dashboard tab
 // -----------------------------------------------------------
-function DashboardTab() {
+function DashboardTab({ range, onEmployeeOpen }) {
   const [summary, setSummary] = useState(null);
   const [top, setTop]         = useState(null);
   const [common, setCommon]   = useState(null);
   const [waivers, setWaivers] = useState(null);
   const [err, setErr]         = useState(null);
   useEffect(() => {
+    // Reuse existing dashboard endpoints; from/to already supported.
+    const params = {};
+    if (range && range.from) params.from = range.from;
+    if (range && range.to)   params.to   = range.to;
     Promise.all([
-      api.get('/compliance/dashboard/summary'),
-      api.get('/compliance/dashboard/most-penalised'),
-      api.get('/compliance/dashboard/common-violations'),
-      api.get('/compliance/dashboard/pending-waivers'),
+      api.get('/compliance/dashboard/summary',           { params }),
+      api.get('/compliance/dashboard/most-penalised',    { params }),
+      api.get('/compliance/dashboard/common-violations', { params }),
+      api.get('/compliance/dashboard/pending-waivers'),      // not date-scoped
     ]).then(([s, t, c, w]) => {
       setSummary(s.data); setTop(t.data); setCommon(c.data); setWaivers(w.data);
     }).catch((e) => setErr(errMsg(e)));
-  }, []);
+  }, [range && range.from, range && range.to]);
 
   if (err) return <div className="text-sm text-red-600 border rounded-md p-3 bg-red-50">Dashboard load failed: {err}</div>;
   if (!summary) return <Loader />;
@@ -86,9 +127,20 @@ function DashboardTab() {
             ? <EmptyState title="No incidents in scope" />
             : <ol className="space-y-1">
                 {top.map((r, i) => (
-                  <li key={i} className="flex items-center justify-between text-sm">
-                    <span>{r.employee ? `${r.employee.name} (${r.employee.employeeId})` : '(deleted employee)'}</span>
-                    <span className="text-slate-500">{r.incidentCount}</span>
+                  <li key={i} className="flex items-center justify-between text-sm gap-2">
+                    {r.employee ? (
+                      <button
+                        className="text-left text-brand-700 hover:underline truncate"
+                        onClick={() => onEmployeeOpen(r.employee._id, r.employee)}
+                        title={`View ${r.employee.name}'s compliance history`}
+                      >
+                        {r.employee.name}
+                        {r.employee.employeeId && <span className="text-slate-500"> · {r.employee.employeeId}</span>}
+                      </button>
+                    ) : (
+                      <span className="text-slate-400 italic">(deleted employee)</span>
+                    )}
+                    <span className="text-slate-500 text-xs shrink-0">{r.incidentCount} incident(s)</span>
                   </li>
                 ))}
               </ol>}
@@ -157,7 +209,7 @@ function Panel({ title, span = 1, children }) {
 // -----------------------------------------------------------
 // Incidents tab
 // -----------------------------------------------------------
-function IncidentsTab() {
+function IncidentsTab({ range, q, onEmployeeOpen }) {
   const [rows, setRows]     = useState(null);
   const [err, setErr]       = useState(null);
   const [status, setStatus] = useState('active');
@@ -168,11 +220,36 @@ function IncidentsTab() {
 
   const load = () => {
     setRows(null); setErr(null);
-    api.get('/compliance/incidents', { params: { status, limit: 200 } })
+    // Batch-3 #18 -- includeEffects gives us the chips inline so the
+    // employee-centric list can render without an N+1.  Employee is
+    // populated on the list endpoint (new backend addition) so each
+    // card can lead with the employee name.
+    const params = { status, limit: 200, includeEffects: 'true' };
+    if (range && range.from) params.from = range.from;
+    if (range && range.to)   params.to   = range.to;
+    api.get('/compliance/incidents', { params })
       .then(({ data }) => setRows(data))
       .catch((e) => setErr(errMsg(e)));
   };
-  useEffect(load, [status]);
+  useEffect(load, [status, range && range.from, range && range.to]);
+
+  // Client-side search over the loaded page.  Matches employee name,
+  // employeeId, department, designation, rule title and rule code.
+  const shown = useMemo(() => {
+    if (!rows) return [];
+    const needle = String(q || '').trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((inc) => {
+      const emp = inc.employee || {};
+      const dept = emp.department && emp.department.name;
+      const desig = emp.designation && emp.designation.title;
+      const hay = [
+        emp.name, emp.employeeId, dept, desig,
+        inc.ruleCode, ruleTitle(inc.ruleCode),
+      ].filter(Boolean).join(' ').toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [rows, q]);
 
   const view = async (inc) => {
     try {
@@ -273,17 +350,16 @@ function IncidentsTab() {
         />
         {err   ? <div className="text-sm text-red-600">Failed: {err}</div>
          : !rows ? <Loader />
-         : rows.length === 0 ? <EmptyState title="No incidents" />
-         : rows.map((inc) => (
-            <button key={inc._id}
-              className={`w-full text-left border rounded-md p-3 hover:bg-slate-50 ${openId && openId.incident._id === inc._id ? 'ring-2 ring-brand-500' : ''}`}
-              onClick={() => view(inc)}
-            >
-              <div className="text-sm font-medium">{inc.ruleCode.replace(/_/g, ' ')}</div>
-              <div className="text-xs text-slate-500">
-                {fmtDate(inc.incidentDate)} · {inc.severity}
-              </div>
-            </button>
+         : rows.length === 0 ? <EmptyState title="No incidents in scope" subtitle="Try widening the date range or clearing the search box." />
+         : shown.length === 0 ? <EmptyState title="No matches" subtitle="Clear the search box to see all incidents in range." />
+         : shown.map((inc) => (
+            <IncidentListCard
+              key={inc._id}
+              inc={inc}
+              active={openId && openId.incident._id === inc._id}
+              onOpen={() => view(inc)}
+              onEmployeeOpen={() => inc.employee && inc.employee._id && onEmployeeOpen(inc.employee._id, inc.employee)}
+            />
           ))}
       </div>
       <div className="md:col-span-2">
@@ -298,6 +374,62 @@ function IncidentsTab() {
           onDecideWaiver={(waiverId, decision) => decideWaiver(waiverId, decision)}
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * IncidentListCard -- employee-centric incident row.  Leads with the
+ * employee name (largest), then the humanised rule, date, status,
+ * severity.  Clicking the row body opens the detail; the small
+ * "History" affordance opens the EmployeeHistoryDrawer instead.  We
+ * stop click propagation on the affordance so the row selection
+ * doesn't fire as a side effect.
+ */
+function IncidentListCard({ inc, active, onOpen, onEmployeeOpen }) {
+  const emp = inc.employee && typeof inc.employee === 'object' ? inc.employee : null;
+  const empName = emp ? emp.name : null;
+  const empId = emp ? emp.employeeId : null;
+  return (
+    <div className={`border rounded-md bg-white transition ${active ? 'ring-2 ring-brand-500' : ''}`}>
+      <button
+        type="button"
+        onClick={onOpen}
+        className="w-full text-left p-3 hover:bg-slate-50 rounded-md"
+      >
+        <div className="flex items-start justify-between gap-2 flex-wrap">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-semibold text-slate-900 truncate">
+              {empName || <span className="italic text-slate-500">(deleted employee)</span>}
+              {empId && <span className="text-[11px] font-normal text-slate-500 ml-1">· {empId}</span>}
+            </div>
+            <div className="text-xs text-slate-700 mt-0.5">{ruleTitle(inc.ruleCode)}</div>
+            <div className="text-[11px] text-slate-500 mt-0.5">{fmtWhen(inc.incidentDate, false)}</div>
+          </div>
+          <div className="flex flex-col items-end gap-1 shrink-0">
+            <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full capitalize ${statusTone(inc.status)}`}>
+              {inc.status}
+            </span>
+            {inc.severity && (
+              <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full capitalize ${severityTone(inc.severity)}`}>
+                {inc.severity}
+              </span>
+            )}
+          </div>
+        </div>
+      </button>
+      {emp && (
+        <div className="border-t border-slate-100 px-3 py-1.5 text-[11px] text-right">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onEmployeeOpen(); }}
+            className="text-brand-600 hover:underline"
+            title={`View ${empName}'s compliance history`}
+          >
+            View history →
+          </button>
+        </div>
+      )}
     </div>
   );
 }
