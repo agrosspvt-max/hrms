@@ -138,6 +138,9 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
           taskId: t._id,
           title: t.title,
           points: t.points,
+          // Snapshot the Critical Task flag so downstream compliance
+          // logic remains stable even if HR later toggles the template.
+          isCritical: t.isCritical === true,
           status: 'pending_submit',
         }))
       : [];

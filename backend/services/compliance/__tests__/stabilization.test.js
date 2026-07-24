@@ -216,10 +216,12 @@ const _seedIncident = async (rule, over = {}) => await ComplianceIncident.create
   console.log('  ok  C5: missedSubmissionDetector stamps departmentId + designationId');
 
   // Dependency detector critical flag.
-  // Batch-1 fix #2 (Option A) changed the source of truth for
-  // criticality from `DependencyTask.isCritical` to the Template's
-  // customFields via the source Submission.  Update the fixture to
-  // match.
+  //
+  // "Critical Task" standardisation: the flag is now per-task.  A
+  // DependencyTask is critical IFF its `sourceTaskId` points at a
+  // template task (or custom field) whose `isCritical === true`.  A
+  // dep without `sourceTaskId` (HR-created / legacy) is never
+  // critical -- fail-closed.
   _stub.reset();
   const critical = require('../critical');
   critical.clearCache();
@@ -230,28 +232,38 @@ const _seedIncident = async (rule, over = {}) => await ComplianceIncident.create
   });
   const emp2 = await User.create({ name: 'y', employeeId: 'Y1', email: 'y', password: 'x',
     role: 'employee', status: 'active', department: deptId });
+  // Snapshot the flag on the submission task so the detector picks it
+  // up without an extra template lookup (the primary path).
+  const critFieldId = _oid();
   const tplCritDep = _oid();
   await Template.create({
     _id: tplCritDep, title: 'CritDepTpl', templateType: 'custom',
-    customFields: [{ key: 'x', label: 'X', fieldType: 'text', isCritical: true }],
+    customFields: [{ _id: critFieldId, key: 'x', label: 'X', fieldType: 'text', isCritical: true }],
   });
+  const critTaskSnapshotId = _oid();
   const sourceSub = await Submission.create({
     employee: emp2._id, template: tplCritDep, templateType: 'custom',
     date: new Date('2026-07-12T00:00:00Z'), submitted: false,
     deleted: false, isTestData: false,
+    tasks: [{
+      _id: critTaskSnapshotId,
+      taskId: critFieldId, title: 'X', points: 0,
+      isCritical: true, status: 'pending',
+    }],
   });
   await DependencyTask.create({
     assignedTo: emp2._id, status: 'pending',
     assignedAt: new Date('2026-07-13T00:00:00Z'),
     sourceSubmissionId: sourceSub._id,
+    sourceTaskId: String(critFieldId),
   });
   const depCands = await dependencyDetector.detect({
     rule: depRule, employee: emp2, day: new Date('2026-07-17T00:00:00Z'),
   });
   assert.strictEqual(depCands.length, 1);
   assert.strictEqual(depCands[0].detectorMeta.criticalTask, true,
-    'dependencyDetector stamps criticalTask=true when source Template has isCritical field');
-  console.log('  ok  C6: dependencyDetector stamps criticalTask flag via Template lookup');
+    'dependencyDetector stamps criticalTask=true when the specific sourceTaskId is flagged');
+  console.log('  ok  C6: dependencyDetector stamps criticalTask flag via per-task snapshot');
 })
 
 // ---------------------------------------------------------------

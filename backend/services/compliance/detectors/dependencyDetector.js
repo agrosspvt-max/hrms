@@ -7,10 +7,15 @@
  * Detector is idempotent through the day-scoped naturalKey; recurring
  * daily behaviour is handled by Phase 5's action engine (each day's
  * effect gets its own row).
+ *
+ * Criticality (single source of truth): a candidate is marked
+ * `detectorMeta.criticalTask = true` IFF at least one of the overdue
+ * dependencies points at a specific task whose `isCritical === true`
+ * on the source submission's snapshot (or, as a fallback, on the live
+ * template).  No template-name / priority / heuristic inference.
  */
 
 const DependencyTask = require('../../../models/DependencyTask');
-const Submission = require('../../../models/Submission');
 const { startOfDay } = require('../../../utils/dateHelpers');
 const { dependencyPendingKey } = require('../naturalKey');
 const critical = require('../critical');
@@ -27,24 +32,29 @@ const detect = async ({ rule, employee, day }) => {
     assignedTo: employee._id,
     status: { $in: ['pending', 'assigned'] },
     assignedAt: { $lte: threshold },
-  }).select('_id sourceSubmissionId').lean();
+  })
+    .select('_id sourceSubmissionId sourceTaskId')
+    .lean();
 
   if (!overdue.length) return [];
 
-  // Batch-1 fix #2 (Option A) -- derive criticality via each source
-  // submission's Template.  A missing sourceSubmissionId means the
-  // dep was HR-created directly; we cannot infer template criticality
-  // and default to false.  Bounded lookup: unique template ids only.
-  const subIds = [...new Set(overdue.map((d) => d.sourceSubmissionId).filter(Boolean).map(String))];
+  // Per-dependency criticality.  We short-circuit on the first
+  // critical hit; per-tick caching in `critical` makes the loop cheap
+  // even with hundreds of dependencies.
   let anyCritical = false;
-  if (subIds.length) {
-    const subs = await Submission.find({ _id: { $in: subIds } }).select('template').lean();
-    for (const s of subs) {
-      if (await critical.resolveCriticalByTemplateId(s.template)) {
-        anyCritical = true; break;
-      }
+  const criticalDepIds = [];
+  for (const dep of overdue) {
+    // Only tasks pointing at a specific source task can be critical.
+    // Direct HR-created deps (no sourceSubmissionId / sourceTaskId)
+    // are treated as non-critical by contract.
+    // eslint-disable-next-line no-await-in-loop
+    const isCrit = await critical.resolveCriticalForDependency(dep);
+    if (isCrit) {
+      anyCritical = true;
+      criticalDepIds.push(dep._id);
     }
   }
+
   return [{
     naturalKey: dependencyPendingKey({
       ruleCode: rule.code,
@@ -64,6 +74,7 @@ const detect = async ({ rule, employee, day }) => {
       overdueCount: overdue.length,
       thresholdDays,
       criticalTask: anyCritical,
+      criticalDependencyIds: criticalDepIds,
     },
   }];
 };

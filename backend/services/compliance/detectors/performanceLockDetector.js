@@ -70,9 +70,12 @@ const _overduePendingTasks = async (employeeId, day) => {
           title: t.title,
           pendingSince: t.pendingSince,
           resolveBy: t.resolveBy,
-          // Batch-1 fix #2 (Option A) -- carry the submission's
-          // templateId so the detector can resolve criticality via
-          // Template.customFields.isCritical.
+          // Snapshot of Template.tasks[i].isCritical taken at
+          // submission-creation.  Single source of truth for this
+          // detector; the live template is consulted only as a
+          // fallback for legacy submissions that pre-date the flag.
+          isCritical: t.isCritical === true,
+          templateTaskId: t.taskId || null,
           templateId: s.template,
         });
       }
@@ -100,11 +103,19 @@ const detect = async ({ rule, employee, day, globalCtx = null, employeeLeaveMap 
     null,
   );
 
-  // Batch-1 fix #2 (Option A) -- lookup via Template per unique templateId.
-  const uniqTpl = [...new Set(overdue.map((o) => o.templateId).filter(Boolean).map(String))];
+  // Per-task criticality.  Prefer the snapshot carried on each
+  // submission task (Template.tasks[i].isCritical at creation).  For
+  // legacy submissions without a snapshot, fall back to a per-task
+  // lookup against the live template.  No template-wide inference,
+  // no name/priority heuristics.
   let anyCritical = false;
-  for (const tid of uniqTpl) {
-    if (await critical.resolveCriticalByTemplateId(tid)) { anyCritical = true; break; }
+  for (const o of overdue) {
+    if (o.isCritical === true) { anyCritical = true; break; }
+    // eslint-disable-next-line no-await-in-loop
+    if (o.templateId && o.templateTaskId
+        && await critical.resolveCriticalByTaskId(o.templateId, o.templateTaskId)) {
+      anyCritical = true; break;
+    }
   }
   return [{
     naturalKey: performanceLockKey({

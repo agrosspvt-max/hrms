@@ -146,7 +146,15 @@ const normalisePayload = (body) => {
     statusTracking: type !== 'task' && type !== 'custom' ? !!body.statusTracking : false,
   };
   if (type === 'task') {
-    out.tasks = Array.isArray(body.tasks) ? body.tasks : [];
+    // Explicit normalisation so the Critical Task flag is preserved
+    // across every write path (create / edit / clone / duplicate) and
+    // legacy payloads without the field default to false.
+    out.tasks = (Array.isArray(body.tasks) ? body.tasks : []).map((t) => ({
+      ...(t && t._id ? { _id: t._id } : {}),
+      title:  String((t && t.title) || '').trim(),
+      points: Math.max(0, Number(t && t.points) || 0),
+      isCritical: !!(t && t.isCritical),
+    })).filter((t) => t.title);
   } else if (type === 'excel') {
     out.excelColumns = (Array.isArray(body.excelColumns) ? body.excelColumns : []).map((c) => ({
       fieldName: String(c.fieldName || '').trim(),

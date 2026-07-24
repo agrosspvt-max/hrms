@@ -27,6 +27,14 @@ const taskItemSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true },
     points: { type: Number, default: 1, min: 0 },
+    /**
+     * Single source of truth for task criticality across the HRMS.
+     * Compliance detectors / executors, dashboards, escalations and
+     * penalty rules must ONLY consult this flag -- never template
+     * names, priorities, or heuristics.  Legacy documents that lack
+     * the field are treated as false.
+     */
+    isCritical: { type: Boolean, default: false },
   },
   { _id: true }
 );

@@ -1736,7 +1736,7 @@ function TaskTemplateForm({ modal, setModal, onSave }) {
   const form = modal.data;
   const set = (k, v) => setModal({ ...modal, data: { ...form, [k]: v } });
   const [pasteOpen, setPasteOpen] = useState(false);
-  const addTask = () => set('tasks', [...(form.tasks || []), { title: '', points: 1 }]);
+  const addTask = () => set('tasks', [...(form.tasks || []), { title: '', points: 1, isCritical: false }]);
   const updateTask = (i, patch) => {
     const arr = [...form.tasks];
     arr[i] = { ...arr[i], ...patch };
@@ -1766,6 +1766,22 @@ function TaskTemplateForm({ modal, setModal, onSave }) {
               <div key={i} className="flex gap-2 items-center">
                 <input className="input flex-1" placeholder="Task title" value={t.title} onChange={(e) => updateTask(i, { title: e.target.value })} />
                 <input className="input w-24" type="number" min="0" placeholder="0" value={t.points || ''} onChange={(e) => updateTask(i, { points: Number(e.target.value) })} />
+                {/*
+                  Critical Task -- single source of truth for compliance
+                  criticality.  Matches the Custom Template UX so both
+                  template types behave identically.
+                */}
+                <label
+                  className="flex items-center gap-1 text-xs text-slate-600 whitespace-nowrap select-none"
+                  title="If ticked, compliance rules (e.g. Dependency Pending) apply the Critical fine instead of the Normal fine."
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!t.isCritical}
+                    onChange={(e) => updateTask(i, { isCritical: e.target.checked })}
+                  />
+                  Critical Task
+                </label>
                 <button className="btn-ghost text-red-600" onClick={() => removeTask(i)}>✕</button>
               </div>
             ))}

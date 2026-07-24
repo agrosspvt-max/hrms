@@ -66,6 +66,14 @@ const submissionTaskSchema = new mongoose.Schema(
     // `points` directly.
     addedByEmployee: { type: Boolean, default: false },
     awardedMarks: { type: Number, default: 0 },
+    /**
+     * Snapshot of Template.tasks[i].isCritical taken when the
+     * submission was created.  Compliance detectors that operate on
+     * a specific task (e.g. Dependency Pending) prefer this snapshot
+     * over the live template so criticality is stable if HR later
+     * toggles the flag.
+     */
+    isCritical: { type: Boolean, default: false },
     /* -------- Phase 64 -- Pending task compliance (Part 3) -------- */
     /**
      * `resolveWithin` -- number of WORKING days the employee has to
