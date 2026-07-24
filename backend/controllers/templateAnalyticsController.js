@@ -388,25 +388,62 @@ const generate = asyncHandler(async (req, res) => {
 
   /* =================================================================
    * FIELD ANALYTICS (every numeric custom field gets a KPI block)
+   *
+   * When a numeric field has `enableOutOf: true`, the block is enriched
+   * with Completed / Target / Remaining / Completion % roll-ups derived
+   * automatically from Submission.customResponses[i].outOfValue.  HR
+   * does not have to configure formulas -- detection is by the flag on
+   * the template definition alone.
    * ================================================================= */
   const fields = [];
   const numericFields = (tpl.customFields || []).filter((f) => NUMERIC_TYPES.has(f.fieldType));
+
+  // Overview-level Out Of roll-up (sum across every enableOutOf field
+  // for the range).  Left as a no-op when no field opts in.
+  const overviewOutOf = {
+    hasOutOfFields:  false,
+    fieldCount:      0,
+    totalCompleted:  0,
+    totalTarget:     0,
+  };
+
   for (const f of numericFields) {
-    const values = [];                   // { empId, date, value }
-    const perEmp = new Map();            // empId -> { sum, count, min, max }
-    const perDay = new Map();            // YMD -> sum
+    const outOfEnabled = f.enableOutOf === true;
+    const values = [];                   // { empId, date, value, outOf }
+    const perEmp = new Map();            // empId -> { sum, count, min, max, completed, target }
+    const perDay = new Map();            // YMD -> { value, completed, target }
+    let outOfCount = 0;                  // rows that carried a real Out Of pair
+
     for (const s of subs) {
       const row = (s.customResponses || []).find((r) => r.key === f.key);
       if (!row) continue;
       const v = Number(row.value);
       if (!Number.isFinite(v)) continue;
       const k = String(s.employee);
-      if (!perEmp.has(k)) perEmp.set(k, { sum: 0, count: 0, min: v, max: v });
+      if (!perEmp.has(k)) perEmp.set(k, {
+        sum: 0, count: 0, min: v, max: v,
+        completed: 0, target: 0, outOfCount: 0,
+      });
       const pe = perEmp.get(k);
-      pe.sum += v; pe.count += 1; pe.min = Math.min(pe.min, v); pe.max = Math.max(pe.max, v);
-      values.push({ empId: k, date: s.date, value: v });
+      pe.sum += v; pe.count += 1;
+      pe.min = Math.min(pe.min, v); pe.max = Math.max(pe.max, v);
+      values.push({ empId: k, date: s.date, value: v, outOf: Number(row.outOfValue) || 0 });
       const dk = formatYMD(s.date);
-      perDay.set(dk, (perDay.get(dk) || 0) + v);
+      if (!perDay.has(dk)) perDay.set(dk, { value: 0, completed: 0, target: 0 });
+      const pd = perDay.get(dk);
+      pd.value += v;
+
+      if (outOfEnabled) {
+        const ov = Number(row.outOfValue);
+        if (Number.isFinite(ov)) {
+          pe.completed += v;
+          pe.target    += ov;
+          pe.outOfCount += 1;
+          pd.completed += v;
+          pd.target    += ov;
+          outOfCount   += 1;
+        }
+      }
     }
 
     let total = 0, count = 0, min = Infinity, max = -Infinity;
@@ -416,39 +453,163 @@ const generate = asyncHandler(async (req, res) => {
     const avg = count > 0 ? round2(total / count) : 0;
 
     // Per-employee leaderboard: by sum of the field across the range.
+    // When Out Of is enabled, each row carries completed / target /
+    // remaining / completionPct so the frontend can render the richer
+    // employee table without any additional lookup.
     const topEmployees = [...perEmp.entries()].map(([eid, m]) => {
       const e = empMap.get(eid);
-      return e ? {
+      if (!e) return null;
+      const base = {
         _id: eid, name: e.name, employeeId: e.employeeId,
         department: e.department?.name || 'Unassigned',
         total: round2(m.sum), avg: m.count > 0 ? round2(m.sum / m.count) : 0,
         min: round2(m.min), max: round2(m.max), submissions: m.count,
-      } : null;
+      };
+      if (outOfEnabled) {
+        const completed = round2(m.completed);
+        const target    = round2(m.target);
+        // Remaining is clamped at 0 -- overachievers cannot make the
+        // Remaining figure go negative.  Completion % may exceed 100%
+        // if HR's business rules allow overachievement.
+        const remaining     = Math.max(0, round2(target - completed));
+        const completionPct = safePct(completed, target);
+        base.completed = completed;
+        base.target    = target;
+        base.remaining = remaining;
+        base.completionPct = completionPct;
+      }
+      return base;
     }).filter(Boolean).sort((a, b) => b.total - a.total).slice(0, 10);
 
-    // Per-department roll-up.
+    // Per-department roll-up.  Sum completed / target across employees
+    // in each department so the department row can also render
+    // Completed / Target / Remaining / Completion %.
     const byDeptMap = new Map();
     for (const e of topEmployees) {
       const d = e.department || 'Unassigned';
-      if (!byDeptMap.has(d)) byDeptMap.set(d, { name: d, total: 0, employees: 0 });
-      const b = byDeptMap.get(d); b.total += e.total; b.employees += 1;
+      if (!byDeptMap.has(d)) byDeptMap.set(d, {
+        name: d, total: 0, employees: 0, completed: 0, target: 0,
+      });
+      const b = byDeptMap.get(d);
+      b.total += e.total; b.employees += 1;
+      if (outOfEnabled) {
+        b.completed += Number(e.completed) || 0;
+        b.target    += Number(e.target)    || 0;
+      }
     }
     const byDepartment = [...byDeptMap.values()]
-      .map((d) => ({ ...d, total: round2(d.total), avg: d.employees > 0 ? round2(d.total / d.employees) : 0 }))
+      .map((d) => {
+        const out = {
+          name: d.name, employees: d.employees,
+          total: round2(d.total),
+          avg: d.employees > 0 ? round2(d.total / d.employees) : 0,
+        };
+        if (outOfEnabled) {
+          const completed = round2(d.completed);
+          const target    = round2(d.target);
+          out.completed     = completed;
+          out.target        = target;
+          out.remaining     = Math.max(0, round2(target - completed));
+          out.completionPct = safePct(completed, target);
+        }
+        return out;
+      })
       .sort((a, b) => b.total - a.total);
 
+    // Daily trend.  Backward compat: `value` remains the raw per-day
+    // sum every consumer already reads.  Out Of fields ALSO expose
+    // completed / target / remaining per day so the chart can plot
+    // three series without any client-side math.
     const trend = [];
     for (let d = startOfDay(from); d < startOfDay(to); d = addDays(d, 1)) {
       const dk = formatYMD(d);
-      trend.push({ date: dk, value: round2(perDay.get(dk) || 0) });
+      const bucket = perDay.get(dk) || { value: 0, completed: 0, target: 0 };
+      const day = { date: dk, value: round2(bucket.value) };
+      if (outOfEnabled) {
+        day.completed = round2(bucket.completed);
+        day.target    = round2(bucket.target);
+        day.remaining = Math.max(0, round2(bucket.target - bucket.completed));
+      }
+      trend.push(day);
     }
 
-    fields.push({
+    const fieldOut = {
       key: f.key, label: f.label || f.key, fieldType: f.fieldType,
       total: round2(total), avg, min: round2(min), max: round2(max), count,
       topEmployees, byDepartment, trend,
-    });
+    };
+
+    if (outOfEnabled) {
+      // Aggregate completed / target from every submission that carried
+      // the pair.  These are the definitive per-field roll-ups.
+      let completedSum = 0, targetSum = 0;
+      let cMin = Infinity, cMax = -Infinity;
+      let tMin = Infinity, tMax = -Infinity;
+      for (const v of values) {
+        completedSum += v.value;
+        targetSum    += Number(v.outOf) || 0;
+        if (v.value < cMin) cMin = v.value;
+        if (v.value > cMax) cMax = v.value;
+        const ov = Number(v.outOf) || 0;
+        if (ov < tMin) tMin = ov;
+        if (ov > tMax) tMax = ov;
+      }
+      if (!Number.isFinite(cMin)) cMin = 0;
+      if (!Number.isFinite(cMax)) cMax = 0;
+      if (!Number.isFinite(tMin)) tMin = 0;
+      if (!Number.isFinite(tMax)) tMax = 0;
+
+      const completed = round2(completedSum);
+      const target    = round2(targetSum);
+      const remaining = Math.max(0, round2(target - completed));
+
+      fieldOut.enableOutOf = true;
+      fieldOut.outOfLabel  = f.outOfLabel || 'Out Of';
+      fieldOut.outOf = {
+        completed,
+        target,
+        remaining,
+        completionPct: safePct(completed, target),
+        pendingPct:    safePct(remaining, target),
+        rows: outOfCount,
+        // Summary strip: per-row averages + extremes for the Completed
+        // column.  Averages are population means over the response rows.
+        avgCompleted:     outOfCount > 0 ? round2(completedSum / outOfCount) : 0,
+        avgTarget:        outOfCount > 0 ? round2(targetSum    / outOfCount) : 0,
+        highestCompleted: round2(cMax),
+        lowestCompleted:  round2(cMin),
+        highestTarget:    round2(tMax),
+        lowestTarget:     round2(tMin),
+      };
+
+      overviewOutOf.hasOutOfFields = true;
+      overviewOutOf.fieldCount    += 1;
+      overviewOutOf.totalCompleted += completedSum;
+      overviewOutOf.totalTarget    += targetSum;
+    }
+
+    fields.push(fieldOut);
   }
+
+  // Finalise the overview Out Of block.  When no field has the flag
+  // the block stays `hasOutOfFields:false` and the frontend hides the
+  // extra cards -- backward compat for every existing template.
+  if (overviewOutOf.hasOutOfFields) {
+    const completed = round2(overviewOutOf.totalCompleted);
+    const target    = round2(overviewOutOf.totalTarget);
+    overviewOutOf.totalCompleted = completed;
+    overviewOutOf.totalTarget    = target;
+    overviewOutOf.totalRemaining = Math.max(0, round2(target - completed));
+    overviewOutOf.completionPct  = safePct(completed, target);
+    overviewOutOf.pendingPct     = safePct(overviewOutOf.totalRemaining, target);
+  } else {
+    overviewOutOf.totalCompleted = 0;
+    overviewOutOf.totalTarget    = 0;
+    overviewOutOf.totalRemaining = 0;
+    overviewOutOf.completionPct  = 0;
+    overviewOutOf.pendingPct     = 0;
+  }
+  overview.outOf = overviewOutOf;
 
   /* =================================================================
    * DROPDOWN ANALYTICS (Phase 15)

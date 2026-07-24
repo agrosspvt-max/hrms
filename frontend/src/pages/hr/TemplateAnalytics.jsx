@@ -502,8 +502,49 @@ function OverviewCards({ data, onDrill = () => {} }) {
   // status counts.  Custom templates never render these because they
   // have no per-task point values.
   const isTaskTpl = data.template?.templateType === 'task';
+  // Task Completion strip -- rendered only when at least one numeric
+  // field on this template has "Enable Out Of" turned on.  Templates
+  // without any Out Of field don't see the new cards, keeping the
+  // existing UI identical for backward compatibility.
+  const oOut = o.outOf || { hasOutOfFields: false };
   return (
     <div>
+      {oOut.hasOutOfFields && (
+        <div className="mb-3">
+          <div className="text-sm font-semibold text-slate-800 mb-2">
+            Task Completion
+            <span className="ml-2 text-[11px] font-normal text-slate-500">
+              across {oOut.fieldCount} Out-Of field{oOut.fieldCount === 1 ? '' : 's'}
+            </span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard
+              label="Completed"
+              value={fmtAvg(oOut.totalCompleted ?? 0)}
+              sub="Sum of submitted values"
+              accent="green"
+            />
+            <StatCard
+              label="Target"
+              value={fmtAvg(oOut.totalTarget ?? 0)}
+              sub="Sum of Out Of values"
+              accent="brand"
+            />
+            <StatCard
+              label="Remaining"
+              value={fmtAvg(oOut.totalRemaining ?? 0)}
+              sub={`${fmtPct(oOut.pendingPct ?? 0)} pending`}
+              accent={(oOut.totalRemaining ?? 0) > 0 ? 'amber' : 'green'}
+            />
+            <StatCard
+              label="Completion %"
+              value={fmtPct(oOut.completionPct ?? 0)}
+              sub="Completed / Target"
+              accent={(oOut.completionPct ?? 0) >= 80 ? 'green' : (oOut.completionPct ?? 0) >= 50 ? 'amber' : 'red'}
+            />
+          </div>
+        </div>
+      )}
       {isTaskTpl && (
         <div className="mb-3">
           <div className="text-sm font-semibold text-slate-800 mb-2">Point Summary</div>
@@ -603,39 +644,82 @@ function FieldCard({ field, onDrill = () => {} }) {
   // Breakdown modal filtered to this field key.  `agg` selects which
   // aggregate label the modal shows above the table.
   const fieldExtra = (agg) => ({ fieldKey: f.key, fieldLabel: f.label || f.key, fieldType: f.fieldType, agg });
+  // "Enable Out Of" enrichment: when the field has an Out Of pair,
+  // replace the generic Total/Avg/Min/Max strip with a Completed /
+  // Target / Remaining / Completion % strip and render a per-employee
+  // Completed/Target/Remaining/Completion % table instead of the
+  // one-column leaderboard.  Everything below stays identical for
+  // regular numeric fields.
+  const isOutOf = f.enableOutOf === true && f.outOf;
   return (
     <div className="card overflow-hidden">
       <div className="px-5 py-3 border-b border-slate-100 bg-slate-50">
         <div className="font-semibold text-slate-800">{f.label || f.key}</div>
-        <div className="text-[11px] text-slate-500">{f.fieldType} · {f.count} value(s) recorded</div>
+        <div className="text-[11px] text-slate-500">
+          {f.fieldType} · {f.count} value(s) recorded
+          {isOutOf && <span className="ml-2 text-emerald-700">· Out Of enabled ({f.outOfLabel || 'Out Of'})</span>}
+        </div>
       </div>
       <div className="p-5 space-y-4">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Total`, fieldExtra('total'))}>
-            <StatCard label="Total"   value={f.fieldType === 'currency' ? fmtCurrency(f.total) : f.fieldType === 'percentage' ? fmtPct(f.total) : fmtAvg(f.total)} accent="brand" />
-          </ClickableCard>
-          <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Average`, fieldExtra('avg'))}>
-            <StatCard label="Average" value={f.fieldType === 'currency' ? fmtCurrency(f.avg)   : f.fieldType === 'percentage' ? fmtPct(f.avg)   : fmtAvg(f.avg)}   accent="blue" />
-          </ClickableCard>
-          <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Lowest`,  fieldExtra('min'))}>
-            <StatCard label="Lowest"  value={f.fieldType === 'currency' ? fmtCurrency(f.min)   : f.fieldType === 'percentage' ? fmtPct(f.min)   : fmtAvg(f.min)}   accent="amber" />
-          </ClickableCard>
-          <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Highest`, fieldExtra('max'))}>
-            <StatCard label="Highest" value={f.fieldType === 'currency' ? fmtCurrency(f.max)   : f.fieldType === 'percentage' ? fmtPct(f.max)   : fmtAvg(f.max)}   accent="green" />
-          </ClickableCard>
-        </div>
-        <div className="grid md:grid-cols-2 gap-4">
-          <div>
-            <div className="text-xs font-semibold text-slate-700 uppercase mb-2">Top Employees</div>
-            <Leaderboard rows={f.topEmployees || []} valueKey="total"
-              onRowClick={(r) => onDrill('ta_field', `${f.label || f.key} — ${r.name}`, { ...fieldExtra('total'), employeeId: r._id })} />
+        {isOutOf ? (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Completed`, fieldExtra('total'))}>
+                <StatCard label="Completed" value={fmtAvg(f.outOf.completed)} sub="Sum of submitted values" accent="green" />
+              </ClickableCard>
+              <StatCard label="Target"    value={fmtAvg(f.outOf.target)}    sub="Sum of Out Of values" accent="brand" />
+              <StatCard label="Remaining" value={fmtAvg(f.outOf.remaining)} sub={`${fmtPct(f.outOf.pendingPct)} pending`} accent={f.outOf.remaining > 0 ? 'amber' : 'green'} />
+              <StatCard label="Completion" value={fmtPct(f.outOf.completionPct)} sub="Completed / Target"
+                accent={(f.outOf.completionPct ?? 0) >= 80 ? 'green' : (f.outOf.completionPct ?? 0) >= 50 ? 'amber' : 'red'} />
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard label="Average Completed" value={fmtAvg(f.outOf.avgCompleted)} accent="blue" />
+              <StatCard label="Average Target"    value={fmtAvg(f.outOf.avgTarget)}    accent="blue" />
+              <StatCard label="Highest Completed" value={fmtAvg(f.outOf.highestCompleted)} accent="green" />
+              <StatCard label="Lowest Completed"  value={fmtAvg(f.outOf.lowestCompleted)}  accent="amber" />
+            </div>
+          </>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Total`, fieldExtra('total'))}>
+              <StatCard label="Total"   value={f.fieldType === 'currency' ? fmtCurrency(f.total) : f.fieldType === 'percentage' ? fmtPct(f.total) : fmtAvg(f.total)} accent="brand" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Average`, fieldExtra('avg'))}>
+              <StatCard label="Average" value={f.fieldType === 'currency' ? fmtCurrency(f.avg)   : f.fieldType === 'percentage' ? fmtPct(f.avg)   : fmtAvg(f.avg)}   accent="blue" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Lowest`,  fieldExtra('min'))}>
+              <StatCard label="Lowest"  value={f.fieldType === 'currency' ? fmtCurrency(f.min)   : f.fieldType === 'percentage' ? fmtPct(f.min)   : fmtAvg(f.min)}   accent="amber" />
+            </ClickableCard>
+            <ClickableCard onClick={() => onDrill('ta_field', `${f.label || f.key} — Highest`, fieldExtra('max'))}>
+              <StatCard label="Highest" value={f.fieldType === 'currency' ? fmtCurrency(f.max)   : f.fieldType === 'percentage' ? fmtPct(f.max)   : fmtAvg(f.max)}   accent="green" />
+            </ClickableCard>
           </div>
-          <div>
-            <div className="text-xs font-semibold text-slate-700 uppercase mb-2">By Department</div>
-            <Leaderboard rows={(f.byDepartment || []).map((d) => ({ name: d.name, employeeId: '', total: d.total }))} valueKey="total"
-              onRowClick={(r) => onDrill('ta_field', `${f.label || f.key} — ${r.name}`, { ...fieldExtra('total'), department: r.name })} />
+        )}
+        {isOutOf ? (
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <div className="text-xs font-semibold text-slate-700 uppercase mb-2">Employees</div>
+              <OutOfEmployeeTable rows={f.topEmployees || []} onRowClick={(r) => onDrill('ta_field', `${f.label || f.key} — ${r.name}`, { ...fieldExtra('total'), employeeId: r._id })} />
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-slate-700 uppercase mb-2">By Department</div>
+              <OutOfDepartmentTable rows={f.byDepartment || []} onRowClick={(r) => onDrill('ta_field', `${f.label || f.key} — ${r.name}`, { ...fieldExtra('total'), department: r.name })} />
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="grid md:grid-cols-2 gap-4">
+            <div>
+              <div className="text-xs font-semibold text-slate-700 uppercase mb-2">Top Employees</div>
+              <Leaderboard rows={f.topEmployees || []} valueKey="total"
+                onRowClick={(r) => onDrill('ta_field', `${f.label || f.key} — ${r.name}`, { ...fieldExtra('total'), employeeId: r._id })} />
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-slate-700 uppercase mb-2">By Department</div>
+              <Leaderboard rows={(f.byDepartment || []).map((d) => ({ name: d.name, employeeId: '', total: d.total }))} valueKey="total"
+                onRowClick={(r) => onDrill('ta_field', `${f.label || f.key} — ${r.name}`, { ...fieldExtra('total'), department: r.name })} />
+            </div>
+          </div>
+        )}
         {f.trend && f.trend.length > 0 && (
           <div>
             <div className="text-xs font-semibold text-slate-700 uppercase mb-2">Daily Trend</div>
@@ -644,11 +728,98 @@ function FieldCard({ field, onDrill = () => {} }) {
               <XAxis dataKey="date" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} />
               <Tooltip />
-              <Area type="monotone" dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} />
+              {isOutOf ? (
+                <>
+                  <Area type="monotone" dataKey="target"    stroke="#94a3b8" fill="#94a3b8" fillOpacity={0.15} name="Target" />
+                  <Area type="monotone" dataKey="completed" stroke="#16a34a" fill="#16a34a" fillOpacity={0.25} name="Completed" />
+                  <Area type="monotone" dataKey="remaining" stroke="#f59e0b" fill="#f59e0b" fillOpacity={0.15} name="Remaining" />
+                </>
+              ) : (
+                <Area type="monotone" dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.2} />
+              )}
             </AreaChart>
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/* Rich per-employee table shown for "Enable Out Of" numeric fields. */
+function OutOfEmployeeTable({ rows, onRowClick }) {
+  if (!rows || rows.length === 0) {
+    return <div className="text-xs text-slate-500 italic px-1 py-2">No responses in range.</div>;
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-xs">
+        <thead className="text-[10px] uppercase text-slate-500">
+          <tr>
+            <th className="text-left py-1">Employee</th>
+            <th className="text-right">Completed</th>
+            <th className="text-right">Target</th>
+            <th className="text-right">Remaining</th>
+            <th className="text-right">Completion %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r._id} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+              onClick={() => onRowClick && onRowClick(r)}>
+              <td className="py-1">
+                <div className="font-medium text-slate-800">{r.name}</div>
+                {r.employeeId && <div className="text-[10px] text-slate-500">{r.employeeId} · {r.department}</div>}
+              </td>
+              <td className="py-1 text-right">{fmtAvg(r.completed ?? r.total)}</td>
+              <td className="py-1 text-right">{fmtAvg(r.target ?? 0)}</td>
+              <td className="py-1 text-right">{fmtAvg(r.remaining ?? 0)}</td>
+              <td className="py-1 text-right font-medium"
+                style={{ color: (r.completionPct ?? 0) >= 80 ? '#059669' : (r.completionPct ?? 0) >= 50 ? '#b45309' : '#b91c1c' }}>
+                {fmtPct(r.completionPct ?? 0)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* Rich per-department table shown for "Enable Out Of" numeric fields. */
+function OutOfDepartmentTable({ rows, onRowClick }) {
+  if (!rows || rows.length === 0) {
+    return <div className="text-xs text-slate-500 italic px-1 py-2">No department data in range.</div>;
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="min-w-full text-xs">
+        <thead className="text-[10px] uppercase text-slate-500">
+          <tr>
+            <th className="text-left py-1">Department</th>
+            <th className="text-right">Completed</th>
+            <th className="text-right">Target</th>
+            <th className="text-right">Remaining</th>
+            <th className="text-right">Completion %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.name} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer"
+              onClick={() => onRowClick && onRowClick(r)}>
+              <td className="py-1 font-medium text-slate-800">{r.name}
+                <span className="ml-1 text-[10px] text-slate-500">({r.employees})</span>
+              </td>
+              <td className="py-1 text-right">{fmtAvg(r.completed ?? r.total)}</td>
+              <td className="py-1 text-right">{fmtAvg(r.target ?? 0)}</td>
+              <td className="py-1 text-right">{fmtAvg(r.remaining ?? 0)}</td>
+              <td className="py-1 text-right font-medium"
+                style={{ color: (r.completionPct ?? 0) >= 80 ? '#059669' : (r.completionPct ?? 0) >= 50 ? '#b45309' : '#b91c1c' }}>
+                {fmtPct(r.completionPct ?? 0)}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }
