@@ -946,19 +946,52 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
             return;
           }
         }
-        // Phase 21 (Issue 2): Agri-Advisor DR / Calling Report rule --
-        // totalCallsCompleted must never exceed assignedCalls.  Pre-submit
-        // client-side guard mirrors what HR enforces during review.  Run
-        // customCompute against the live employee inputs so the formula
-        // field (totalCallsCompleted = yesterday + today) reflects what's
-        // actually about to be persisted.  Autosave / Save Draft / formula
-        // logic untouched -- this only runs at submit time.
+        // Calling Report validation.
+        //
+        // Business rule (corrected): the employee's total workload for
+        // the day is the sum of yesterday's carry-forward + today's
+        // freshly assigned calls.  Completed work is legitimate as long
+        // as it doesn't exceed that combined workload.  A separate
+        // sub-check clamps yesterday's completed to yesterday's pending
+        // so an employee can't "complete" more carry-forward calls than
+        // actually existed.
+        //
+        //   available   = yesterdayPending + assignedCalls
+        //   completed   = yesterdayCallsCompleted + todayCallsCompleted
+        //   VALID iff   completed <= available
+        //               AND yesterdayCallsCompleted <= yesterdayPending
+        //
+        // Previously this checked `totalCallsCompleted > assignedCalls`,
+        // which incorrectly ignored the carry-forward bucket and blocked
+        // employees who legitimately cleared yesterday's backlog on top
+        // of today's fresh work.
+        //
+        // Runs against customCompute output so the auto field
+        // `totalCallsCompleted = yesterdayCallsCompleted + todayCallsCompleted`
+        // reflects the values about to be persisted.  Autosave / draft /
+        // formula pipelines are untouched -- this only fires at submit.
         if (sub.template?.customKind === 'calling') {
           const computedView = customCompute(sub.template?.customFields || [], raw);
-          const assigned = Number(computedView.assignedCalls) || 0;
-          const totalDone = Number(computedView.totalCallsCompleted) || 0;
-          if (totalDone > assigned) {
-            toast.error(`Total Calls Completed (${totalDone}) cannot exceed Assigned Calls (${assigned}).`);
+          const yesterdayPending = Number(computedView.yesterdayPending)        || 0;
+          const assigned         = Number(computedView.assignedCalls)           || 0;
+          const yestDone         = Number(computedView.yesterdayCallsCompleted) || 0;
+          const todayDone        = Number(computedView.todayCallsCompleted)     || 0;
+          const totalDone        = yestDone + todayDone;
+          const available        = yesterdayPending + assigned;
+
+          if (yestDone > yesterdayPending) {
+            toast.error(
+              `Yesterday Calls Completed (${yestDone}) cannot exceed Yesterday Pending (${yesterdayPending}). `
+              + `You can only close as many carry-forward calls as were pending.`
+            );
+            setBusy(false);
+            return;
+          }
+          if (totalDone > available) {
+            toast.error(
+              `Total Calls Completed (${totalDone}) cannot exceed available workload (${available} = `
+              + `${yesterdayPending} yesterday pending + ${assigned} assigned today).`
+            );
             setBusy(false);
             return;
           }
