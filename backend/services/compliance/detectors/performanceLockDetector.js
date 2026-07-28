@@ -9,12 +9,12 @@
  * Active" card the current dashboard shows.
  */
 
-const Submission = require('../../../models/Submission');
 const { startOfDay } = require('../../../utils/dateHelpers');
 const { performanceLockKey } = require('../naturalKey');
 const critical = require('../critical');
 const workingDayContext = require('../workingDayContext');
 const { isWorkingDay } = require('../../../utils/workingDays');
+const pendingState = require('../../pendingStateService');
 
 /**
  * Batch-2 fix #11 (rework) -- working-day context is now supplied by
@@ -52,36 +52,12 @@ const _isWorkingDayForEmployee = async ({ employee, day, workingDaysOnly, global
 };
 
 const _overduePendingTasks = async (employeeId, day) => {
-  const target = startOfDay(day);
-  const subs = await Submission.find({
-    employee: employeeId,
-    'tasks.status': 'pending',
-    deleted: { $ne: true },
-  }).select('_id date template tasks').lean();
-  const out = [];
-  for (const s of subs) {
-    for (const t of (s.tasks || [])) {
-      if (t.status !== 'pending') continue;
-      if (!t.resolveBy) continue;
-      if (new Date(t.resolveBy) < target) {
-        out.push({
-          submissionId: s._id,
-          taskId: t._id,
-          title: t.title,
-          pendingSince: t.pendingSince,
-          resolveBy: t.resolveBy,
-          // Snapshot of Template.tasks[i].isCritical taken at
-          // submission-creation.  Single source of truth for this
-          // detector; the live template is consulted only as a
-          // fallback for legacy submissions that pre-date the flag.
-          isCritical: t.isCritical === true,
-          templateTaskId: t.taskId || null,
-          templateId: s.template,
-        });
-      }
-    }
-  }
-  return out;
+  // Delegates to PendingStateService so every consumer shares the
+  // same "status === 'pending' AND !completedAt AND resolveBy < day"
+  // predicate.  Returns the same shape the detector already
+  // expected (submissionId, taskId, title, pendingSince, resolveBy,
+  // isCritical, templateTaskId, templateId).
+  return pendingState.overduePendingTasksForEmployee(employeeId, day);
 };
 
 const detect = async ({ rule, employee, day, globalCtx = null, employeeLeaveMap = null }) => {

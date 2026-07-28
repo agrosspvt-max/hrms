@@ -179,22 +179,17 @@ const hrPerformance = asyncHandler(async (req, res) => {
     freqAgg[fr].submissions += 1;
   }
 
-  // Overdue recurring tasks: still-pending tasks grouped by the submission's
-  // recurrence type (regardless of date, mirroring backlog semantics).
-  const overdueByFreq = await Submission.aggregate([
-    { $match: liveSubmissionFilter({}) },
-    { $unwind: '$tasks' },
-    {
-      $match: {
-        'tasks.status': 'pending',
-        $or: [{ 'tasks.completedAt': { $exists: false } }, { 'tasks.completedAt': null }],
-      },
-    },
-    { $group: { _id: '$frequency', count: { $sum: 1 } } },
-  ]);
-  for (const o of overdueByFreq) {
-    const fr = FREQS.includes(o._id) ? o._id : 'daily';
-    freqAgg[fr].overdue += o.count;
+  // Overdue recurring tasks: still-pending tasks grouped by the
+  // submission's recurrence type.  Delegates to PendingStateService
+  // so this reader shares the canonical predicate with Dashboard,
+  // Global Pendency, and every Compliance detector.  Range and
+  // submitted filters are explicit at the UI layer; this aggregate
+  // spans the full backlog (mirrors getBacklog semantics).
+  const pendingState = require('../services/pendingStateService');
+  const overdueRows = await pendingState.listPendingTasks({});
+  for (const r of overdueRows) {
+    const fr = FREQS.includes(r.frequency) ? r.frequency : 'daily';
+    freqAgg[fr].overdue += 1;
   }
 
   const byFrequency = FREQS.map((fr) => ({

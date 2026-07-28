@@ -370,15 +370,13 @@ const resolveAbsentSubmissionOnSubmit = async ({ submissionId }) => {
 
 /**
  * List dependency tasks that have been pending for 3+ consecutive
- * days.  Uses DependencyTask.assignedAt as the clock.
+ * days.  Delegates to PendingStateService so the schema field pair
+ * (`currentStatus` / `waitingSince`) is used instead of the broken
+ * legacy `status` / `assignedAt` pair.
  */
 const _overdueDependencies = async (employeeId, asOf) => {
-  const threshold = new Date(startOfDay(asOf).getTime() - 3 * DAY_MS);
-  return DependencyTask.find({
-    assignedTo: employeeId,
-    status: { $in: ['pending', 'assigned'] },  // any open state
-    assignedAt: { $lte: threshold },
-  }).lean();
+  const pendingState = require('./pendingStateService');
+  return pendingState.listOpenDependencies({ employeeId, thresholdDays: 3, asOf, overdueOnly: true });
 };
 
 /**
@@ -430,11 +428,9 @@ const enforceDependencyPending = async ({ employeeId, day }) => {
  * resolved when the last overdue task closes.
  */
 const onDependencyResolved = async ({ employeeId, dependencyId }) => {
-  const stillOpen = await DependencyTask.countDocuments({
-    assignedTo: employeeId,
-    status: { $in: ['pending', 'assigned'] },
-  });
-  if (stillOpen > 0) return;
+  const pendingState = require('./pendingStateService');
+  const stillOpenList = await pendingState.listOpenDependencies({ employeeId });
+  if (stillOpenList.length > 0) return;
   await Penalty.updateMany(
     { employee: employeeId, category: 'dependency_pending', status: 'active' },
     { $set: { status: 'resolved', resolvedAt: new Date() } }
@@ -464,32 +460,13 @@ const onDependencyResolved = async ({ employeeId, dependencyId }) => {
 
 /**
  * Find every overdue pending task for `employeeId` as-of `day`.
- * Returns an array of { submissionId, taskId, title, pendingSince, resolveBy }.
+ * Delegates to PendingStateService.overduePendingTasksForEmployee so
+ * every reader shares the canonical predicate (status === 'pending'
+ * AND !completedAt AND resolveBy < asOf).
  */
 const _overduePendingTasks = async (employeeId, day) => {
-  const target = startOfDay(day);
-  const subs = await Submission.find({
-    employee: employeeId,
-    'tasks.status': 'pending',
-    deleted: { $ne: true },
-  }).select('_id date tasks').lean();
-  const out = [];
-  for (const s of subs) {
-    for (const t of (s.tasks || [])) {
-      if (t.status !== 'pending') continue;
-      if (!t.resolveBy) continue;
-      if (new Date(t.resolveBy) < target) {
-        out.push({
-          submissionId: s._id,
-          taskId: t._id,
-          title: t.title,
-          pendingSince: t.pendingSince,
-          resolveBy: t.resolveBy,
-        });
-      }
-    }
-  }
-  return out;
+  const pendingState = require('./pendingStateService');
+  return pendingState.overduePendingTasksForEmployee(employeeId, day);
 };
 
 /**
@@ -607,14 +584,19 @@ const onPendingTaskResolved = async ({ employeeId, day = new Date() }) => {
  */
 const sweepProbableDependencyPending = async ({ employeeId, day }) => {
   const target = startOfDay(day);
-  // Pending for 2 days but not yet 3.
+  // Pending for 2 days but not yet 3.  Delegates to PendingStateService
+  // for the canonical open-dependency query (schema fields, not the
+  // legacy status/assignedAt pair).
+  const pendingState = require('./pendingStateService');
+  const openAll = await pendingState.listOpenDependencies({ employeeId, asOf: target });
   const upper = new Date(target.getTime() - 2 * DAY_MS);
   const lower = new Date(target.getTime() - 3 * DAY_MS + 1);
-  const nearOverdue = await DependencyTask.find({
-    assignedTo: employeeId,
-    status: { $in: ['pending', 'assigned'] },
-    assignedAt: { $gte: lower, $lte: upper },
-  }).lean();
+  const nearOverdue = openAll.filter((d) => {
+    const started = pendingState.dependencyStartedAt(d);
+    if (!started) return false;
+    const st = new Date(started).getTime();
+    return st >= lower.getTime() && st <= upper.getTime();
+  });
   if (!nearOverdue.length) return null;
   const p = await _upsertProbable({
     employee: employeeId,

@@ -82,10 +82,15 @@ const createDependencyTask = async ({
  * dependencyStatus to 'resolved' so the source report reflects closure.
  */
 const resolveDependencyTask = async (depTask, byUser, note = '') => {
+  // Canonical schema fields.  Also clear the legacy `status` field
+  // if the row happened to have it (production imports / test
+  // fixtures) so readers going through PendingStateService's OR
+  // fallback don't see a stale open marker.
   depTask.currentStatus = 'resolved';
   depTask.resolvedAt = new Date();
-  depTask.resolvedBy = byUser._id;
+  depTask.resolvedBy = (byUser && byUser._id) || null;
   depTask.resolutionNote = note || '';
+  if (depTask.status && depTask.status !== 'resolved') depTask.status = 'resolved';
   await depTask.save();
 
   // Reflect closure on the source submission row (best-effort).

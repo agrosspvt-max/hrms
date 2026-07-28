@@ -306,38 +306,40 @@ const ensureDailySubmissions = async (employee, day = new Date()) => {
  * Returns an array of { submissionId, taskId, title, pendingReason, pendingSince, daysPending }.
  */
 const getBacklog = async (employeeId, asOf = new Date()) => {
+  // Canonical predicate lives in PendingStateService -- Dashboard,
+  // Performance, Global Pendency, and the Compliance detectors all
+  // share the same "is this pending?" definition.  Any template
+  // lookup (title) is done in one $in batch below to avoid the
+  // populate+lean split the previous implementation suffered from.
   const today = startOfDay(asOf);
-  // BUG-FIX: backlog widget must match the analytics view -- exclude
-  // soft-deleted / test-marked submissions so the employee's "you
-  // have N pending tasks" pill doesn't include rows HR has already
-  // cleaned out of the live dataset.
-  const subs = await Submission.find({
-    employee: employeeId,
-    'tasks.status': 'pending',
-    ...liveSubmissionFilter({}),
-  }).populate('template', 'title');
+  const pendingState = require('./pendingStateService');
+  const rows = await pendingState.listPendingTasks({ employeeId, asOf });
+  if (!rows.length) return [];
 
-  const out = [];
-  for (const s of subs) {
-    for (const t of s.tasks) {
-      if (t.status !== 'pending' || t.completedAt) continue;
-      const since = t.pendingSince || s.date;
-      const days = Math.max(0, Math.floor((today - startOfDay(since)) / (1000 * 60 * 60 * 24)));
-      out.push({
-        submissionId: s._id,
-        taskId: t._id,
-        templateId: s.template?._id,
-        templateTitle: s.template?.title,
-        frequency: s.frequency || 'daily',
-        scheduleLabel: s.scheduleLabel || '',
-        title: t.title,
-        points: t.points,
-        pendingReason: t.pendingReason,
-        pendingSince: since,
-        daysPending: days,
-      });
-    }
-  }
+  // Batch-fetch template titles once.
+  const tplIds = [...new Set(rows.map((r) => String(r.template)).filter(Boolean))];
+  const tpls = tplIds.length
+    ? await require('../models/Template').find({ _id: { $in: tplIds } }).select('title').lean()
+    : [];
+  const titleById = new Map(tpls.map((t) => [String(t._id), t.title]));
+
+  const out = rows.map((r) => {
+    const since = r.pendingSince || r.submissionDate;
+    const days = Math.max(0, Math.floor((today - startOfDay(since)) / (1000 * 60 * 60 * 24)));
+    return {
+      submissionId: r.submissionId,
+      taskId: r.taskId,
+      templateId: r.template,
+      templateTitle: titleById.get(String(r.template)) || '',
+      frequency: r.frequency,
+      scheduleLabel: r.scheduleLabel,
+      title: r.title,
+      points: r.points,
+      pendingReason: undefined,   // not projected by lister; not needed by widget
+      pendingSince: since,
+      daysPending: days,
+    };
+  });
   out.sort((a, b) => new Date(a.pendingSince) - new Date(b.pendingSince));
   return out;
 };

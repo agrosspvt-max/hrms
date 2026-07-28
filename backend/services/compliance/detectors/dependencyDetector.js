@@ -15,26 +15,24 @@
  * template).  No template-name / priority / heuristic inference.
  */
 
-const DependencyTask = require('../../../models/DependencyTask');
 const { startOfDay } = require('../../../utils/dateHelpers');
 const { dependencyPendingKey } = require('../naturalKey');
 const critical = require('../critical');
-
-const DAY_MS = 24 * 60 * 60 * 1000;
+const pendingState = require('../../pendingStateService');
 
 const detect = async ({ rule, employee, day }) => {
   if (!rule || !employee) return [];
   const target = startOfDay(day);
   const thresholdDays = Math.max(0, Number(rule.trigger && rule.trigger.thresholdDays) || 0);
-  const threshold = new Date(target.getTime() - thresholdDays * DAY_MS);
 
-  const overdue = await DependencyTask.find({
-    assignedTo: employee._id,
-    status: { $in: ['pending', 'assigned'] },
-    assignedAt: { $lte: threshold },
-  })
-    .select('_id sourceSubmissionId sourceTaskId')
-    .lean();
+  // PendingStateService owns the canonical open-dependency query
+  // (schema fields, not the legacy `status`/`assignedAt` pair).
+  const overdue = await pendingState.listOpenDependencies({
+    employeeId: employee._id,
+    thresholdDays,
+    asOf: target,
+    overdueOnly: true,
+  });
 
   if (!overdue.length) return [];
 

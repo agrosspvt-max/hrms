@@ -1120,6 +1120,30 @@ const submitOne = asyncHandler(async (req, res) => {
 
   await sub.save();
 
+  // ---- Auto-resolve carry-forward backlog ----
+  // When today's report closes a task (Done / Ongoing), older
+  // still-pending Submission.tasks[] rows on the same template are
+  // closed automatically so employees don't have to click
+  // "Complete backlog" for every yesterday-pending row that today's
+  // submission already covered.  Never touches unrelated templates,
+  // future-dated submissions, or ad-hoc employee-added rows that
+  // don't share a title.  Failure never rolls back the submit.
+  try {
+    if (sub.templateType === 'task' || !sub.templateType) {
+      const pendingState = require('../services/pendingStateService');
+      await pendingState.autoResolveBacklog({
+        employee:     sub.employee,
+        template:     sub.template,
+        submissionId: sub._id,
+        incomingTasks: (sub.tasks || []).map((t) => ({
+          taskId: t.taskId,
+          title:  t.title,
+          status: t.status,
+        })),
+      });
+    }
+  } catch (e) { console.error('[submit] auto-resolve backlog:', e.message); }
+
   // ---- Create linked dependency follow-up tasks (after persistence) ----
   // Each dependent unit spawns a DependencyTask + notification, then we
   // write the created task id + chain id back onto the source unit.

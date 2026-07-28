@@ -74,6 +74,12 @@ const resolveRange = (q = {}) => {
  * Returns { done, pending, pendingAges:[days] }.  Excludes
  * work_not_available, pending_submit, and any row without a real status.
  */
+// Predicate is shared with the Dashboard backlog widget, HR
+// Performance overdue counter, and every Compliance detector via
+// PendingStateService.isTaskPending.  Row-level Pending status for
+// excel/sheet templates has no separate `completedAt` field yet
+// (Phase 14 legacy), so those branches remain unchanged.
+const _pendingState = require('../services/pendingStateService');
 const countUnits = (s, asOf) => {
   let done = 0, ongoing = 0, pending = 0;
   const pendingAges = [];
@@ -96,7 +102,9 @@ const countUnits = (s, asOf) => {
     for (const t of s.tasks || []) {
       if (t.status === 'done')         done += 1;
       else if (t.status === 'ongoing') ongoing += 1;
-      else if (t.status === 'pending') { pending += 1; pendingAges.push(ageOf(t.pendingSince)); }
+      else if (_pendingState.isTaskPending(t)) {
+        pending += 1; pendingAges.push(ageOf(t.pendingSince));
+      }
     }
   }
   return { done: done + ongoing, doneCount: done, ongoing, pending, pendingAges };
