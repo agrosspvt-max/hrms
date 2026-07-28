@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Component } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import Modal from '../../components/Modal.jsx';
@@ -18,6 +18,55 @@ import CreateIncidentModal from './compliance/CreateIncidentModal.jsx';
 import useComplianceConfig, { isFeatureEnabled } from '../../hooks/useComplianceConfig.js';
 
 const initials = (name = '') => name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase() || '?';
+
+/**
+ * TabErrorBoundary
+ *
+ * Isolates a single tab's render errors so one crashing tab (e.g.
+ * Pending Management fails to load, an API returns an unexpected
+ * shape, or a downstream component throws a ReferenceError) cannot
+ * blank the entire Employee Profile page.  Resets automatically
+ * when the user switches tabs (keyed on `tabKey`).
+ *
+ * Regression context: the initial Pending Management wiring
+ * referenced an out-of-scope `user` variable (auth is destructured
+ * as `currentUser` in this file), which threw at render time and
+ * left the page blank.  A boundary makes future issues local.
+ */
+class TabErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('[EmployeeDetail tab crash]', this.props.tabKey, error, info);
+  }
+  componentDidUpdate(prev) {
+    if (prev.tabKey !== this.props.tabKey && this.state.error) {
+      this.setState({ error: null });
+    }
+  }
+  render() {
+    if (this.state.error) {
+      const msg = this.state.error && (this.state.error.message || String(this.state.error));
+      return (
+        <div className="card card-body">
+          <div className="text-sm font-semibold text-red-700 mb-1">This tab failed to load</div>
+          <div className="text-xs text-slate-600 mb-3">
+            The rest of this employee's profile is unaffected. Switch to another tab or reload the page to try again.
+          </div>
+          <div className="rounded bg-red-50 border border-red-100 text-red-800 text-[11px] font-mono p-2 whitespace-pre-wrap break-words">
+            {msg || 'Unknown error'}
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 /** CTC salary breakdown from a salary structure (mirrors the editor preview). */
 function salaryBreakdown(u) {
@@ -239,7 +288,10 @@ export default function EmployeeDetail() {
       {/* Tabs.  "Pending Management" is HR / Super-Admin only -- an
           investigation tool for the case where Dashboard / Performance /
           Global Pendency / Compliance disagree on an employee's pending
-          state.  Employees never see this tab. */}
+          state.  Employees never see this tab.
+          NOTE: auth is destructured as `currentUser` above; referencing
+          the wrong name here previously threw ReferenceError and
+          blanked the whole profile page. */}
       {(() => {
         const baseTabs = [
           ['overview', 'Overview'],
@@ -249,7 +301,7 @@ export default function EmployeeDetail() {
           ['attendance', 'Attendance'],
           ['leaves', 'Leaves'],
         ];
-        const canManagePending = user && (user.role === 'super_admin' || user.role === 'hr');
+        const canManagePending = !!currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'hr');
         const tabs = canManagePending
           ? [...baseTabs, ['pending', 'Pending Management']]
           : baseTabs;
@@ -268,13 +320,20 @@ export default function EmployeeDetail() {
         );
       })()}
 
-      {tab === 'templates' && <EmployeeTemplates employee={emp} />}
-      {tab === 'analytics' && <EmployeePendency employee={emp} />}
-      {tab === 'work' && <EmployeeWorkHistory employee={emp} />}
-      {tab === 'attendance' && <EmployeeAttendanceTab employee={emp} />}
-      {tab === 'leaves' && <EmployeeLeaves employee={emp} />}
-      {tab === 'pending' && (user && (user.role === 'super_admin' || user.role === 'hr'))
-        && <EmployeePendingManagement employee={emp} />}
+      {/* Tab bodies are wrapped in a TabErrorBoundary so a runtime
+          crash in ONE tab (e.g. Pending Management fails to load or
+          hits an unexpected response shape) can no longer blank the
+          whole Employee profile.  The offending tab shows a
+          recoverable error message; every other tab keeps working. */}
+      <TabErrorBoundary tabKey={tab}>
+        {tab === 'templates' && <EmployeeTemplates employee={emp} />}
+        {tab === 'analytics' && <EmployeePendency employee={emp} />}
+        {tab === 'work' && <EmployeeWorkHistory employee={emp} />}
+        {tab === 'attendance' && <EmployeeAttendanceTab employee={emp} />}
+        {tab === 'leaves' && <EmployeeLeaves employee={emp} />}
+        {tab === 'pending' && !!currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'hr')
+          && <EmployeePendingManagement employee={emp} />}
+      </TabErrorBoundary>
 
       {tab === 'overview' && <>
       {/* Phase 62 -- Probation Status card for HR / Super Admin. */}

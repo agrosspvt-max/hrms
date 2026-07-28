@@ -23,23 +23,29 @@ import { fmtDate, errMsg } from '../../utils/helpers';
  * canonical predicate every other surface uses.
  */
 export default function EmployeePendingManagement({ employee }) {
-  const { user } = useAuth();
+  const auth = useAuth() || {};
+  const currentUser = auth.user || null;
   const toast = useToast();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null);
   const [pickedRow, setPickedRow] = useState(null);
-  const canView = user && (user.role === 'super_admin' || user.role === 'hr');
+  const canView = !!currentUser && (currentUser.role === 'super_admin' || currentUser.role === 'hr');
 
   const load = useCallback(async () => {
-    if (!employee?._id || !canView) return;
+    if (!employee || !employee._id || !canView) { setLoading(false); return; }
     setLoading(true);
+    setLoadError(null);
     try {
       const { data: d } = await api.get(`/pending-management/${employee._id}`);
-      setData(d);
+      setData(d || null);
     } catch (e) {
-      toast.error(errMsg(e) || 'Failed to load pending management data.');
+      const msg = errMsg(e) || 'Failed to load pending management data.';
+      setLoadError(msg);
+      // Never crash the outer page; only toast so HR sees the failure.
+      try { toast.error(msg); } catch (_) { /* silent */ }
     } finally { setLoading(false); }
-  }, [employee?._id, canView, toast]);
+  }, [employee, canView, toast]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -51,10 +57,22 @@ export default function EmployeePendingManagement({ employee }) {
     );
   }
   if (loading) return <Loader />;
+  if (loadError) {
+    return (
+      <div className="card card-body">
+        <div className="text-sm font-semibold text-red-700 mb-1">Pending Management failed to load</div>
+        <div className="text-xs text-slate-600 mb-2">The rest of the employee profile is unaffected.</div>
+        <div className="text-[11px] font-mono text-red-800 bg-red-50 border border-red-100 rounded p-2 whitespace-pre-wrap break-words">{loadError}</div>
+        <div className="mt-3">
+          <button className="btn-secondary !py-1 !text-xs" onClick={load}>Retry</button>
+        </div>
+      </div>
+    );
+  }
   if (!data) return <div className="card card-body"><EmptyState title="No data" /></div>;
 
-  const d = data.diagnostics || {};
-  const rows = data.pending || [];
+  const d = (data && data.diagnostics) || {};
+  const rows = Array.isArray(data && data.pending) ? data.pending : [];
 
   return (
     <div className="space-y-4">
@@ -120,41 +138,46 @@ export default function EmployeePendingManagement({ employee }) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => (
-                  <tr key={`${r.kind}-${r.submissionId || r.dependencyId}-${r.taskId || ''}`}
-                      className={`border-t border-slate-100 hover:bg-slate-50 ${r.overdue ? 'bg-red-50/40' : ''}`}>
-                    <td className="py-2 px-3">
-                      <div className="font-medium text-slate-800">{r.template?.title || '—'}</div>
-                      {r.template?.customKind && <div className="text-[10px] text-slate-500">{r.template.customKind}</div>}
-                    </td>
-                    <td className="px-3">
-                      <span>{r.taskName || '—'}</span>
-                      {r.isCritical && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-red-100 text-red-700">CRITICAL</span>}
-                    </td>
-                    <td className="px-3">
-                      <span className="text-[10px] px-1 py-0.5 rounded bg-slate-100 text-slate-700">{r.source}</span>
-                    </td>
-                    <td className="px-3 text-slate-600">{r.submissionDate ? fmtDate(r.submissionDate) : '—'}</td>
-                    <td className="px-3 text-slate-600">{r.pendingSince ? fmtDate(r.pendingSince) : '—'}</td>
-                    <td className="px-3 text-slate-600">{r.resolveBy ? fmtDate(r.resolveBy) : '—'}</td>
-                    <td className="px-3 text-right font-medium" style={{ color: r.overdue ? '#b91c1c' : '#334155' }}>{r.daysPending ?? 0}</td>
-                    <td className="px-3 text-slate-600">{r.status || 'pending'}</td>
-                    <td className="px-3 text-[11px] text-slate-500">
-                      {r.kind === 'dependency' && r.sourceEmployee && (
-                        <div>
-                          <div>Blocked By: <span className="text-slate-700">{r.blockedBy}</span></div>
-                          <div>Waiting For: <span className="text-slate-700">{r.waitingFor}</span></div>
-                        </div>
-                      )}
-                      {r.kind === 'submission' && r.submissionId && (
-                        <div title={String(r.submissionId)} className="truncate max-w-[160px]">Sub: {String(r.submissionId).slice(-6)}</div>
-                      )}
-                    </td>
-                    <td className="px-3 text-right">
-                      <button className="btn-secondary !py-1 !text-xs" onClick={() => setPickedRow(r)}>Resolve</button>
-                    </td>
-                  </tr>
-                ))}
+                {rows.map((r, idx) => {
+                  if (!r) return null;
+                  const tpl = r.template || {};
+                  const key = `${r.kind || 'row'}-${r.submissionId || r.dependencyId || idx}-${r.taskId || idx}`;
+                  return (
+                    <tr key={key}
+                        className={`border-t border-slate-100 hover:bg-slate-50 ${r.overdue ? 'bg-red-50/40' : ''}`}>
+                      <td className="py-2 px-3">
+                        <div className="font-medium text-slate-800">{tpl.title || '—'}</div>
+                        {tpl.customKind && <div className="text-[10px] text-slate-500">{tpl.customKind}</div>}
+                      </td>
+                      <td className="px-3">
+                        <span>{r.taskName || '—'}</span>
+                        {r.isCritical && <span className="ml-1 text-[10px] px-1 py-0.5 rounded bg-red-100 text-red-700">CRITICAL</span>}
+                      </td>
+                      <td className="px-3">
+                        <span className="text-[10px] px-1 py-0.5 rounded bg-slate-100 text-slate-700">{r.source || '—'}</span>
+                      </td>
+                      <td className="px-3 text-slate-600">{r.submissionDate ? fmtDate(r.submissionDate) : '—'}</td>
+                      <td className="px-3 text-slate-600">{r.pendingSince ? fmtDate(r.pendingSince) : '—'}</td>
+                      <td className="px-3 text-slate-600">{r.resolveBy ? fmtDate(r.resolveBy) : '—'}</td>
+                      <td className="px-3 text-right font-medium" style={{ color: r.overdue ? '#b91c1c' : '#334155' }}>{Number.isFinite(r.daysPending) ? r.daysPending : 0}</td>
+                      <td className="px-3 text-slate-600">{r.status || 'pending'}</td>
+                      <td className="px-3 text-[11px] text-slate-500">
+                        {r.kind === 'dependency' && r.sourceEmployee && (
+                          <div>
+                            <div>Blocked By: <span className="text-slate-700">{r.blockedBy || '—'}</span></div>
+                            <div>Waiting For: <span className="text-slate-700">{r.waitingFor || '—'}</span></div>
+                          </div>
+                        )}
+                        {r.kind === 'submission' && r.submissionId && (
+                          <div title={String(r.submissionId)} className="truncate max-w-[160px]">Sub: {String(r.submissionId).slice(-6)}</div>
+                        )}
+                      </td>
+                      <td className="px-3 text-right">
+                        <button className="btn-secondary !py-1 !text-xs" onClick={() => setPickedRow(r)}>Resolve</button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -179,6 +202,11 @@ function ResolveModal({ row, employee, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   const validReason = reason.trim().length >= 5;
 
+  // Null-safe: if the caller opened the modal with a malformed row,
+  // don't render anything (a return null keeps the parent stable and
+  // avoids throwing during render).
+  if (!row || !employee || !employee._id) return null;
+
   const submit = async () => {
     if (!validReason) return;
     setBusy(true);
@@ -193,19 +221,21 @@ function ResolveModal({ row, employee, onClose, onDone }) {
         body.dependencyId = row.dependencyId;
       }
       const { data } = await api.post(`/pending-management/${employee._id}/resolve`, body);
-      if (data?.outcome?.changed === false) {
-        toast.info(data?.outcome?.message || 'Already resolved.');
+      const changed = data && data.outcome && data.outcome.changed;
+      if (changed === false) {
+        try { toast.info((data && data.outcome && data.outcome.message) || 'Already resolved.'); } catch (_) { /* silent */ }
       } else {
-        toast.success('Pending item resolved.');
+        try { toast.success('Pending item resolved.'); } catch (_) { /* silent */ }
       }
       onDone && onDone();
     } catch (e) {
-      toast.error(errMsg(e) || 'Failed to resolve.');
+      try { toast.error(errMsg(e) || 'Failed to resolve.'); } catch (_) { /* silent */ }
     } finally { setBusy(false); }
   };
 
   const isDep = row.kind === 'dependency';
   const title = isDep ? 'Resolve Pending Dependency' : 'Resolve Pending Task';
+  const tpl = row.template || {};
 
   return (
     <Modal
@@ -220,11 +250,11 @@ function ResolveModal({ row, employee, onClose, onDone }) {
       <div className="space-y-3 text-sm">
         <div className="rounded border border-slate-200 p-3 bg-slate-50">
           <div className="text-[11px] uppercase text-slate-500 mb-1">Target</div>
-          <div><strong>Template:</strong> {row.template?.title || '—'}</div>
+          <div><strong>Template:</strong> {tpl.title || '—'}</div>
           <div><strong>Task:</strong> {row.taskName || '—'}</div>
           {row.pendingSince && <div><strong>Pending Since:</strong> {fmtDate(row.pendingSince)}</div>}
-          <div><strong>Source:</strong> {row.source}</div>
-          {isDep && row.sourceEmployee && <div><strong>From:</strong> {row.blockedBy}</div>}
+          <div><strong>Source:</strong> {row.source || '—'}</div>
+          {isDep && row.sourceEmployee && <div><strong>From:</strong> {row.blockedBy || '—'}</div>}
         </div>
         <div className="rounded border border-emerald-100 p-3 bg-emerald-50 text-emerald-900">
           <div className="font-semibold mb-1">Resolving this pending will:</div>
