@@ -53,6 +53,11 @@ app.use('/api/daily-review', require('./routes/dailyReviewRoutes'));
 // data model, no impact on the daily-review workflow.
 app.use('/api/self-review', require('./routes/dailySelfReviewRoutes'));
 app.use('/api/template-analytics', require('./routes/templateAnalyticsRoutes'));
+// HR / Super-Admin Pending Management investigation tool.  Reads +
+// resolves the underlying business data (Submission.tasks / DependencyTask)
+// through PendingStateService so Dashboard, Performance, Global
+// Pendency, and the Compliance detectors always agree.
+app.use('/api/pending-management', require('./routes/pendingManagementRoutes'));
 // Phase 50 — per-employee, per-day notes on the Attendance calendar.
 // Independent of Tasks / Assignments / Submissions / Notifications so
 // nothing else in the app is affected.

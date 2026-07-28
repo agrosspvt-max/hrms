@@ -13,6 +13,7 @@ import EmployeePendency from './EmployeePendency.jsx';
 import EmployeeWorkHistory from './EmployeeWorkHistory.jsx';
 import EmployeeAttendanceTab from './EmployeeAttendanceTab.jsx';
 import EmployeeLeaves from './EmployeeLeaves.jsx';
+import EmployeePendingManagement from './EmployeePendingManagement.jsx';
 import CreateIncidentModal from './compliance/CreateIncidentModal.jsx';
 import useComplianceConfig, { isFeatureEnabled } from '../../hooks/useComplianceConfig.js';
 
@@ -235,24 +236,45 @@ export default function EmployeeDetail() {
         </div>
       </div>
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-slate-200">
-        {[['overview', 'Overview'], ['templates', 'Templates'], ['analytics', 'Pendency Analytics'], ['work', 'Work History'], ['attendance', 'Attendance'], ['leaves', 'Leaves']].map(([key, label]) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 transition ${tab === key ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {/* Tabs.  "Pending Management" is HR / Super-Admin only -- an
+          investigation tool for the case where Dashboard / Performance /
+          Global Pendency / Compliance disagree on an employee's pending
+          state.  Employees never see this tab. */}
+      {(() => {
+        const baseTabs = [
+          ['overview', 'Overview'],
+          ['templates', 'Templates'],
+          ['analytics', 'Pendency Analytics'],
+          ['work', 'Work History'],
+          ['attendance', 'Attendance'],
+          ['leaves', 'Leaves'],
+        ];
+        const canManagePending = user && (user.role === 'super_admin' || user.role === 'hr');
+        const tabs = canManagePending
+          ? [...baseTabs, ['pending', 'Pending Management']]
+          : baseTabs;
+        return (
+          <div className="flex gap-1 border-b border-slate-200">
+            {tabs.map(([key, label]) => (
+              <button
+                key={key}
+                onClick={() => setTab(key)}
+                className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 transition ${tab === key ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        );
+      })()}
 
       {tab === 'templates' && <EmployeeTemplates employee={emp} />}
       {tab === 'analytics' && <EmployeePendency employee={emp} />}
       {tab === 'work' && <EmployeeWorkHistory employee={emp} />}
       {tab === 'attendance' && <EmployeeAttendanceTab employee={emp} />}
       {tab === 'leaves' && <EmployeeLeaves employee={emp} />}
+      {tab === 'pending' && (user && (user.role === 'super_admin' || user.role === 'hr'))
+        && <EmployeePendingManagement employee={emp} />}
 
       {tab === 'overview' && <>
       {/* Phase 62 -- Probation Status card for HR / Super Admin. */}
