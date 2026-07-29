@@ -43,6 +43,11 @@ router.get('/', gate, c.listAll);
 router.get('/calendar', gate, c.calendar);
 router.patch('/:id/decision', gate, c.decide);
 router.post('/:id/revoke',    gate, c.revoke);
+// Phase 76 -- proper leave edit endpoint.  Preserves the original
+// document, records old + new values in AuditLog, triggers ONE
+// businessStateSync fan-out, and honours a force / forceReason
+// escape hatch for the Half->Full conflict flow.
+router.put('/:id',            gate, c.edit);
 router.put('/balance/:id', gate, c.setBalance);
 
 module.exports = router;

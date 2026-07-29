@@ -92,6 +92,22 @@ const REGISTRY = Object.freeze({
     owner: 'leaveController.decide',
     notification: true,  timeline: true,  reminder: false, realtime: true,
   },
+  // Phase 76 -- fired by every leave transition (approve, revoke,
+  // edit) so subscribers can bring dependent state (attendance,
+  // submissions, compliance, realtime) back to consistency through
+  // businessStateSync.  The publisher is fire-and-forget; the
+  // orchestrator is idempotent so late/duplicate deliveries are safe.
+  'leave.status.changed': {
+    owner: 'leaveController.decide | .revoke | .edit',
+    notification: false, timeline: false, reminder: false, realtime: true,
+  },
+  // Emitted by businessStateSync at the end of every successful
+  // syncEmployeeDay so downstream consumers (analytics warm-up,
+  // compliance re-tick, dashboards) can react.
+  'working_day.synced': {
+    owner: 'businessStateSync.syncEmployeeDay',
+    notification: false, timeline: false, reminder: false, realtime: true,
+  },
 
   // ---- Salary ------------------------------------------------------
   'salary_slip.generated': {

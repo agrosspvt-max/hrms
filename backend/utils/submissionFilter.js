@@ -22,10 +22,16 @@
 
 const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
 
-const liveSubmissionFilter = ({ includeTest = false, includeDeleted = false, onlyReviewed = false } = {}) => {
+const liveSubmissionFilter = ({ includeTest = false, includeDeleted = false, onlyReviewed = false, includeHidden = false } = {}) => {
   const out = {};
   if (!includeDeleted) out.deleted = { $ne: true };
   if (!includeTest)    out.isTestData = { $ne: true };
+  // Business-state suppression: rows the businessStateSync
+  // orchestrator hid because a full-day leave now covers the day.
+  // Preserved for audit; excluded from analytics / dashboards /
+  // compliance detectors by default so a suppressed row can't
+  // resurface a "pending" incident tomorrow.
+  if (!includeHidden)  out.hidden = { $ne: true };
   // Phase 15: analytics endpoints AND-in reviewStatus='reviewed' so a
   // pending or rejected submission can't poison KPIs, leaderboards, or
   // trends.  Pendency / carry-forward / Submission Control intentionally

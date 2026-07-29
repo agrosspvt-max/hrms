@@ -576,6 +576,16 @@ const submissionSchema = new mongoose.Schema(
     testDataMarkedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     testDataMarkedAt:    { type: Date },
 
+    /* Business-state suppression -- set by businessStateSync when a
+       full-day leave now covers this day.  Preserves the document
+       for audit while hiding it from the employee dashboard.
+       Automatically unset when the leave is later revoked or shrunk
+       so the same submission comes back into view. */
+    hidden:         { type: Boolean, default: false, index: true },
+    hiddenReason:   { type: String, default: '' },
+    hiddenBy:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    hiddenAt:       { type: Date, default: null },
+
     /* HR/SA inline edit audit -- captures who touched what + when.
        Replaces nothing existing; runs in parallel to reviewHistory. */
     editHistory: {
