@@ -116,16 +116,58 @@ export default function MyLeaves() {
                         )}
                       </td>
                       <td>{fmtDate(lv.createdAt)}</td>
-                      <td className="capitalize">{lv.leaveType}</td>
-                      <td>{fmtDate(lv.fromDate)}</td>
-                      <td>{fmtDate(lv.toDate)}</td>
+                      <td className="capitalize">
+                        {lv.leaveType}
+                        {/* Phase 77 -- surface the ORIGINAL leave type
+                            alongside the approved value when HR
+                            modified it, so the employee always sees
+                            what they actually asked for. */}
+                        {lv.modifiedOnApproval && lv.originalRequest?.leaveType
+                          && lv.originalRequest.leaveType !== lv.leaveType && (
+                          <div className="text-[10px] text-amber-700">
+                            Requested: <span className="capitalize">{lv.originalRequest.leaveType}</span>
+                          </div>
+                        )}
+                      </td>
+                      <td>
+                        {fmtDate(lv.fromDate)}
+                        {lv.modifiedOnApproval && lv.originalRequest?.fromDate
+                          && String(lv.originalRequest.fromDate).slice(0,10) !== String(lv.fromDate).slice(0,10) && (
+                          <div className="text-[10px] text-amber-700">Requested: {fmtDate(lv.originalRequest.fromDate)}</div>
+                        )}
+                      </td>
+                      <td>
+                        {fmtDate(lv.toDate)}
+                        {lv.modifiedOnApproval && lv.originalRequest?.toDate
+                          && String(lv.originalRequest.toDate).slice(0,10) !== String(lv.toDate).slice(0,10) && (
+                          <div className="text-[10px] text-amber-700">Requested: {fmtDate(lv.originalRequest.toDate)}</div>
+                        )}
+                      </td>
                       <td>
                         {lv.days}
                         {lv.dayType === 'half' && <span className="ml-1 badge-amber">Half Day</span>}
+                        {/* Phase 78 -- surface the ORIGINAL day count
+                            when the approved duration differs from
+                            what was requested. */}
+                        {lv.modifiedOnApproval && lv.originalRequest
+                          && Number(lv.originalRequest.days) !== Number(lv.days) && (
+                          <div className="text-[10px] text-amber-700">
+                            Requested: {lv.originalRequest.days} day(s)
+                          </div>
+                        )}
                       </td>
                       <td>
                         {lv.status === 'pending' && <span className="badge-amber">Pending</span>}
-                        {lv.status === 'approved' && <span className={lv.paid ? 'badge-green' : 'badge-amber'}>{lv.paid ? 'Approved' : 'Approved (Unpaid)'}</span>}
+                        {/* Yellow badge for Approved-with-modifications so
+                            the employee immediately notices the delta. */}
+                        {lv.status === 'approved' && lv.modifiedOnApproval && (
+                          <span className="badge-amber" title="HR modified your request before approval. See the details below.">
+                            Approved (Modified)
+                          </span>
+                        )}
+                        {lv.status === 'approved' && !lv.modifiedOnApproval && (
+                          <span className={lv.paid ? 'badge-green' : 'badge-amber'}>{lv.paid ? 'Approved' : 'Approved (Unpaid)'}</span>
+                        )}
                         {lv.status === 'rejected' && <span className="badge-red">Rejected</span>}
                       </td>
                       <td className="text-slate-500">{lv.hrNote || lv.reason}</td>

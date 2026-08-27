@@ -39,6 +39,34 @@ const leaveSchema = new mongoose.Schema(
 
     // If approved but employee has no balance left, mark as unpaid.
     paid: { type: Boolean, default: true },
+
+    /* ----------------------------------------------------------------
+     * Phase 77 -- HR-controlled approval changes.
+     *
+     * HR may modify leaveType / fromDate / toDate BEFORE approving a
+     * pending request.  When any of those three fields differ from
+     * what the employee submitted, the original values are snapshotted
+     * into `originalRequest` and `modifiedOnApproval:true` is stamped
+     * so the audit trail and the employee-facing "Modified by HR"
+     * chip can never be lost.  `originalRequest` is written EXACTLY
+     * ONCE (on the first approval that mutates the request) and is
+     * treated as immutable thereafter.  Subsequent post-approval
+     * edits (proper Leave Edit flow) update the top-level fields but
+     * leave `originalRequest` intact so the employee always sees the
+     * initial request.
+     * ---------------------------------------------------------------- */
+    originalRequest: {
+      leaveType:  { type: String, default: null },
+      fromDate:   { type: Date, default: null },
+      toDate:     { type: Date, default: null },
+      dayType:    { type: String, default: null },
+      days:       { type: Number, default: null },
+      capturedAt: { type: Date, default: null },
+    },
+    modifiedOnApproval: { type: Boolean, default: false, index: true },
+    modifiedBy:         { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    modifiedAt:         { type: Date, default: null },
+    modificationNote:   { type: String, default: '' },
   },
   { timestamps: true }
 );

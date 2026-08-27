@@ -275,7 +275,22 @@ const listAll = asyncHandler(async (req, res) => {
  * current leave balance.
  */
 const decide = asyncHandler(async (req, res) => {
-  const { decision, hrNote } = req.body;
+  const {
+    decision, hrNote,
+    // Phase 77 -- HR-controlled approval changes.  When any of these
+    // are provided AND differ from the pending request's values, the
+    // original values are snapshotted into `originalRequest` and the
+    // approval is stamped modifiedOnApproval:true.  Ignored on reject.
+    leaveType: newLeaveType,
+    fromDate: newFromDate,
+    toDate: newToDate,
+    // Phase 79 -- dayType toggle at approval time.  Full <-> Half
+    // becomes a first-class edit so HR doesn't need to shrink /
+    // widen the range to switch.  Recomputes Days automatically
+    // via the shared effectiveLeaveDays helper.
+    dayType: newDayType,
+    modificationNote,
+  } = req.body || {};
   if (!['approved', 'rejected'].includes(decision)) {
     res.status(400);
     throw new Error('decision must be approved or rejected');
@@ -286,7 +301,7 @@ const decide = asyncHandler(async (req, res) => {
 
   // Role-aware routing: HR leaves can only be decided by a Super Admin.
   // HR cannot approve their own leave or another HR's leave.
-  const requester = await User.findById(lv.employee).select('role');
+  const requester = await User.findById(lv.employee).select('role name');
   if (requester?.role === 'hr' && req.user.role !== 'super_admin') {
     res.status(403);
     throw new Error('Only a Super Admin can approve HR leave requests.');
@@ -294,6 +309,113 @@ const decide = asyncHandler(async (req, res) => {
   if (String(lv.employee) === String(req.user._id)) {
     res.status(403);
     throw new Error('You cannot decide on your own leave request.');
+  }
+
+  /* ------------------------------------------------------------
+   * Phase 77 -- apply HR overrides BEFORE balance math + sync.
+   * ------------------------------------------------------------ */
+  const ALLOWED_TYPES = ['casual', 'sick', 'paid', 'unpaid', 'other'];
+  const original = {
+    leaveType: lv.leaveType, fromDate: lv.fromDate, toDate: lv.toDate,
+    dayType:   lv.dayType,   days:     lv.days,
+  };
+  let modifiedOnApproval = false;
+  const modifications = [];
+
+  if (decision === 'approved') {
+    // Leave type override.
+    if (newLeaveType && newLeaveType !== lv.leaveType) {
+      if (!ALLOWED_TYPES.includes(newLeaveType)) {
+        res.status(400); throw new Error(`leaveType must be one of: ${ALLOWED_TYPES.join(', ')}`);
+      }
+      modifications.push({ field: 'leaveType', from: lv.leaveType, to: newLeaveType });
+      lv.leaveType = newLeaveType;
+      modifiedOnApproval = true;
+    }
+    // Date-range override.  Both bounds accepted independently but
+    // must yield a valid ordered range.
+    const nextFrom = newFromDate !== undefined && newFromDate !== null && newFromDate !== ''
+      ? startOfDay(new Date(newFromDate))
+      : lv.fromDate;
+    const nextTo   = newToDate   !== undefined && newToDate   !== null && newToDate   !== ''
+      ? startOfDay(new Date(newToDate))
+      : lv.toDate;
+    if (Number.isNaN(new Date(nextFrom).getTime()) || Number.isNaN(new Date(nextTo).getTime())) {
+      res.status(400); throw new Error('Invalid fromDate / toDate');
+    }
+    if (new Date(nextFrom).getTime() > new Date(nextTo).getTime()) {
+      res.status(400); throw new Error('End Date cannot be before Start Date.');
+    }
+    const fromChanged = startOfDay(nextFrom).getTime() !== startOfDay(lv.fromDate).getTime();
+    const toChanged   = startOfDay(nextTo).getTime()   !== startOfDay(lv.toDate).getTime();
+    if (fromChanged) {
+      modifications.push({ field: 'fromDate', from: lv.fromDate, to: nextFrom });
+      lv.fromDate = nextFrom;
+      modifiedOnApproval = true;
+    }
+    if (toChanged) {
+      modifications.push({ field: 'toDate', from: lv.toDate, to: nextTo });
+      lv.toDate = nextTo;
+      modifiedOnApproval = true;
+    }
+    // Phase 79 -- Explicit dayType toggle.  Validated against the
+    // (potentially edited) date window: 'half' requires a single-day
+    // request.  Applied BEFORE the recompute below so the derived
+    // Days value reflects the final dayType.
+    const singleDayNow = startOfDay(lv.fromDate).getTime() === startOfDay(lv.toDate).getTime();
+    if (newDayType && ['full', 'half'].includes(newDayType) && newDayType !== lv.dayType) {
+      if (newDayType === 'half' && !singleDayNow) {
+        res.status(400); throw new Error('Half-day leave is only allowed on a single-day request.');
+      }
+      modifications.push({ field: 'dayType', from: lv.dayType, to: newDayType });
+      lv.dayType = newDayType;
+      modifiedOnApproval = true;
+    }
+    if (fromChanged || toChanged || (newDayType && newDayType !== original.dayType)) {
+      // Half-day is only valid on a single-day request.  If HR
+      // widened / narrowed the range past 1 day, the day-type
+      // reverts to 'full' automatically (unless HR just explicitly
+      // set it -- respect the explicit intent + reject earlier).
+      const single = startOfDay(lv.fromDate).getTime() === startOfDay(lv.toDate).getTime();
+      if (!single && lv.dayType === 'half') {
+        modifications.push({ field: 'dayType', from: 'half', to: 'full' });
+        lv.dayType = 'full';
+      }
+      // Phase 78 -- Days must be a DERIVED field.  Reuse the same
+      // effectiveLeaveDays helper the apply handler uses so the Leave
+      // Apply and Leave Approval pages ALWAYS produce identical day
+      // counts (excludes weekly-offs + company holidays for the
+      // employee).  Never recompute Days inline again -- one algorithm.
+      const requesterCfg = await User.findById(lv.employee).select('weeklyOff');
+      const { holidayDaySet } = require('../services/eventOccurrences');
+      const holidaySet = await holidayDaySet(lv.fromDate, lv.toDate);
+      const priorDays = lv.days;
+      lv.days = effectiveLeaveDays({
+        from: lv.fromDate, to: lv.toDate,
+        weeklyOff: requesterCfg?.weeklyOff || [0],
+        dayType: lv.dayType,
+        holidaySet,
+      });
+      if (priorDays !== lv.days) {
+        modifications.push({ field: 'days', from: priorDays, to: lv.days });
+      }
+    }
+    if (modifiedOnApproval && !lv.originalRequest?.capturedAt) {
+      // Snapshot the ORIGINAL request exactly once so future edits
+      // never overwrite what the employee actually asked for.
+      lv.originalRequest = {
+        leaveType:  original.leaveType,
+        fromDate:   original.fromDate,
+        toDate:     original.toDate,
+        dayType:    original.dayType,
+        days:       original.days,
+        capturedAt: new Date(),
+      };
+      lv.modifiedOnApproval = true;
+      lv.modifiedBy = req.user._id;
+      lv.modifiedAt = new Date();
+      lv.modificationNote = String(modificationNote || '').trim();
+    }
   }
 
   if (decision === 'approved') {
@@ -338,9 +460,16 @@ const decide = asyncHandler(async (req, res) => {
     }
     try {
       const businessStateSync = require('../services/businessStateSync');
+      // Pass the ORIGINAL date range as `previous` so the ranged
+      // sync walks the UNION of the requested + approved windows.
+      // Days trimmed at approval get their leave-linked attendance
+      // and any suppressed submissions cleaned up automatically.
       syncSummary = await businessStateSync.syncForLeave(lv, {
         trigger: 'leave_changed', actor: req.user._id,
         reason: `leave approved (${lv.dayType})`,
+        previous: modifiedOnApproval ? {
+          fromDate: original.fromDate, toDate: original.toDate,
+        } : null,
       });
     } catch (e) {
       console.error(`[leave→sync] approved ${lv._id}: ${e.message}`);
@@ -352,11 +481,72 @@ const decide = asyncHandler(async (req, res) => {
     targetType: 'Leave',
     targetId: lv._id,
     targetLabel: `${requester?.role || 'user'} ${lv.fromDate.toISOString().slice(0, 10)} → ${lv.toDate.toISOString().slice(0, 10)}`,
-    meta: { decision, paid: lv.paid, hrNote: hrNote || '' },
+    meta: {
+      decision, paid: lv.paid, hrNote: hrNote || '',
+      // Phase 77 -- always record the modification diff so the audit
+      // log shows exactly what HR changed at approval time.
+      modifiedOnApproval,
+      modifications: modifiedOnApproval ? modifications.map((m) => ({
+        field: m.field,
+        from: m.from instanceof Date ? m.from.toISOString().slice(0, 10) : m.from,
+        to:   m.to   instanceof Date ? m.to.toISOString().slice(0, 10)   : m.to,
+      })) : [],
+      originalRequest: modifiedOnApproval ? {
+        leaveType: original.leaveType,
+        fromDate:  original.fromDate,
+        toDate:    original.toDate,
+        dayType:   original.dayType,
+        days:      original.days,
+      } : null,
+    },
   });
 
-  // Notify the leave owner of the HR decision.
-  notify.notifyLeaveDecision({ leave: lv, decidedBy: req.user, decision });
+  // Notify the leave owner.  When HR modified the request, the
+  // notification body carries the human-readable diff so the
+  // employee sees WHAT changed, not just "approved".  Falls back to
+  // the standard notifier when nothing changed.
+  if (modifiedOnApproval) {
+    try {
+      const _emitModified = require('../services/notifyEvents').notifyLeaveDecisionModified
+        || null;
+      if (_emitModified) {
+        await _emitModified({ leave: lv, decidedBy: req.user, modifications, originalRequest: original });
+      } else {
+        // Compose a message inline via the same Notification model +
+        // realtime channel the existing notifier uses -- avoids a
+        // second require and keeps the code path uniform.
+        const Notification = require('../models/Notification');
+        const rt = require('../services/realtime');
+        // Human-readable label per field so the notification reads
+        // "Days: 4 -> 3" instead of the raw JSON key.
+        const _labels = {
+          leaveType: 'Leave Type',
+          fromDate:  'Start Date',
+          toDate:    'End Date',
+          dayType:   'Day Type',
+          days:      'Days',
+        };
+        const parts = modifications.map((m) => {
+          const from = m.from instanceof Date ? m.from.toISOString().slice(0, 10) : m.from;
+          const to   = m.to   instanceof Date ? m.to.toISOString().slice(0, 10)   : m.to;
+          return `${_labels[m.field] || m.field}: ${from} → ${to}`;
+        });
+        await Notification.create({
+          recipient: lv.employee,
+          sender:    req.user._id,
+          type:      'leave_decision',
+          title:     'Leave approved with modifications',
+          message:   `Your leave was approved with modifications by ${req.user.name || 'HR'}. Changes: ${parts.join(' | ')}.`,
+        });
+        try {
+          rt.publish(lv.employee, 'notification:new', { priority: 'normal' });
+          rt.publish(lv.employee, 'leave:decision', { leaveId: lv._id, decision: 'approved', modified: true });
+        } catch (_) { /* silent */ }
+      }
+    } catch (e) { console.error('[notify] modified-approval:', e.message); }
+  } else {
+    notify.notifyLeaveDecision({ leave: lv, decidedBy: req.user, decision });
+  }
 
   // Emit the domain event for future subscribers (compliance re-tick,
   // analytics warm, etc.).  Existing subscribers already fan out via
