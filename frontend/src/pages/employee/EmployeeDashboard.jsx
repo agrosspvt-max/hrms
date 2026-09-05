@@ -1629,6 +1629,31 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
               employee has multiple assignments.  Stored at
               /api/daily-reflection keyed by (employee, date). */}
           <DailyReflectionCard />
+          {/* Returned-submission fix: any submission surfaced today
+              whose OWN date is in the past (HR returned it for
+              resubmission) needs its Self Evaluation stored under the
+              submission's date -- not today -- because submitOne
+              validates DailyReflection(employee, submission.date).
+              Render ONE card per distinct returned date so multiple
+              returned submissions on the same day share the single
+              { employee, date } reflection (one-per-day rule intact). */}
+          {(() => {
+            const todayKey = new Date().toISOString().slice(0, 10);
+            const pastDates = [...new Set(
+              (data.submissions || [])
+                .filter((s) => s && !s.submitted && s.date
+                  && new Date(s.date).toISOString().slice(0, 10) !== todayKey)
+                .map((s) => new Date(s.date).toISOString().slice(0, 10)),
+            )].sort();
+            return pastDates.map((iso) => (
+              <DailyReflectionCard
+                key={`refl-${iso}`}
+                date={iso}
+                returned
+                label={`Self Evaluation — Returned Submission (${iso})`}
+              />
+            ));
+          })()}
           {data.submissions.length === 0 && (
             <EmptyState title="No tasks assigned for today" subtitle="HR has not assigned any templates to you yet." />
           )}
@@ -2755,8 +2780,29 @@ function AttendanceConfirmationCard() {
 /* of how many assignments the employee has.  Upserts to               */
 /* /api/daily-reflection.                                              */
 /* ------------------------------------------------------------------ */
-function DailyReflectionCard() {
-  const todayIso = new Date().toISOString().slice(0, 10);
+/**
+ * DailyReflectionCard
+ *
+ * Self Evaluation (rating + note + idea) for ONE (employee, date).
+ * The reflection is uniquely keyed by { employee, date } in the DB,
+ * so this card is date-scoped:
+ *
+ *   - Today's work  -> `date` prop omitted => defaults to today
+ *                      (unchanged behaviour for the normal path).
+ *   - A RETURNED past-day submission -> the dashboard renders one
+ *     card per distinct returned date with `date={sub.date}` so the
+ *     Self Evaluation loads/saves under the SUBMISSION's date, which
+ *     is exactly what submitOne validates against.
+ *
+ * Multiple submissions sharing the same calendar day share ONE
+ * reflection because the dashboard renders a single card per date
+ * (dedup) and the endpoint upserts on { employee, date }.  The
+ * one-per-employee-per-day rule + unique index are untouched.
+ */
+function DailyReflectionCard({ date = null, label = null, returned = false }) {
+  // `date` is an ISO yyyy-mm-dd string when the card targets a
+  // specific (returned) submission day; otherwise today.
+  const targetIso = date || new Date().toISOString().slice(0, 10);
   const [rating, setRating] = useState('');
   const [note, setNote]     = useState('');
   const [ideaTxt, setIdea]  = useState('');
@@ -2764,14 +2810,17 @@ function DailyReflectionCard() {
   const [savedAt, setSavedAt] = useState(null);
   const toast = useToast();
 
-  // Hydrate the card from the employee's OWN saved reflection so a
-  // page refresh restores what was already filed today.  Uses the
-  // dedicated `/daily-review/my-reflection` endpoint (req.user._id,
-  // no employeeId param, no HR / HOD gate).  Returns null when the
-  // employee hasn't filed yet -- the card simply stays empty.
+  // Hydrate the card from the employee's OWN saved reflection FOR THE
+  // TARGET DATE.  A returned submission from 5 Sept loads
+  // { employee, 5 Sept } -- never today's row masquerading as the
+  // returned day's reflection.  Returns null when nothing is filed
+  // for that date yet.
   useEffect(() => {
     let cancelled = false;
-    api.get('/daily-review/my-reflection', { params: { date: todayIso } })
+    // Reset fields when the target date changes so a stale value from
+    // a previously-rendered date can't leak across cards.
+    setRating(''); setNote(''); setIdea(''); setSavedAt(null);
+    api.get('/daily-review/my-reflection', { params: { date: targetIso } })
       .then(({ data }) => {
         if (cancelled || !data) return;
         if (data.selfRating !== undefined && data.selfRating !== null) {
@@ -2779,15 +2828,12 @@ function DailyReflectionCard() {
         }
         if (typeof data.selfNote === 'string') setNote(data.selfNote);
         if (typeof data.idea === 'string')     setIdea(data.idea);
-        // Prefer the persistence timestamp so the pill reads
-        // "Saved HH:MM" after a page refresh -- falls back to
-        // createdAt when a very old row predates the field.
         const ts = data.updatedAt || data.createdAt;
         if (ts) setSavedAt(new Date(ts));
       })
       .catch(() => { /* card starts empty on any error */ });
     return () => { cancelled = true; };
-  }, [todayIso]);
+  }, [targetIso]);
 
   // Phase 69 -- Self Rating is required.  Validation runs both here
   // (helpful inline feedback) AND server-side (single source of truth).
@@ -2805,25 +2851,26 @@ function DailyReflectionCard() {
     setBusy(true);
     try {
       await api.post('/daily-review/reflection', {
-        date: todayIso,
+        date: targetIso,                    // date-aware: returned days save under their own date
         selfRating: Number(rating),
         selfNote: note,
         idea: ideaTxt,
       });
       setSavedAt(new Date());
-      toast.success('Daily reflection saved');
+      toast.success(returned ? 'Self Evaluation saved for the returned day' : 'Daily reflection saved');
     } catch (err) { toast.error(errMsg(err)); }
     finally { setBusy(false); }
   };
 
   return (
-    <div className="card card-body bg-slate-50 border-slate-200 space-y-3">
+    <div className={`card card-body space-y-3 ${returned ? 'bg-amber-50 border-amber-200' : 'bg-slate-50 border-slate-200'}`}>
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <div className="text-sm font-semibold text-slate-800">Daily Reflection</div>
+          <div className="text-sm font-semibold text-slate-800">{label || 'Daily Reflection'}</div>
           <div className="text-[11px] text-slate-500">
-            Self Rating is required today. Note + Business Idea are optional.
-            HR / HOD sees this once on the review screen.
+            {returned
+              ? `Self Evaluation for the returned submission dated ${targetIso}. Required before you can resubmit.`
+              : 'Self Rating is required today. Note + Business Idea are optional. HR / HOD sees this once on the review screen.'}
           </div>
         </div>
         {savedAt && <span className="text-[11px] text-slate-500">Saved {savedAt.toLocaleTimeString()}</span>}
