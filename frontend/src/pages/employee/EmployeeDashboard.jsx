@@ -788,7 +788,15 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     const u2 = subscribe('leave:decision',          load);
     const u3 = subscribe('salary:slip:generated',   load);
     const u4 = subscribe('attendance:changed',      load);
-    return () => { u1(); u2(); u3(); u4(); };
+    // businessStateSync fires 'working_day:changed' to this employee
+    // whenever a leave change re-materialises OR suppresses today's
+    // Submission (leave revoked today -> work appears; leave approved
+    // today -> work disappears).  Reloading here makes the dashboard
+    // reflect the new working state immediately, without a manual
+    // refresh.  This is the single realtime signal for the whole
+    // leave <-> submission sync -- no second sync path.
+    const u5 = subscribe('working_day:changed',     load);
+    return () => { u1(); u2(); u3(); u4(); u5(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

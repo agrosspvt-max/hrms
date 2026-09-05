@@ -201,9 +201,14 @@ const getToday = asyncHandler(async (req, res) => {
     }).select('submission').lean();
     reopenedIds = approvedReopens.map((p) => p.submission).filter(Boolean);
   } catch (e) { console.error('[getToday] reopen lookup:', e.message); }
+  // Business-state suppression: a submission hidden by businessStateSync
+  // (e.g. a full-day leave was approved for today AFTER the submission
+  // was generated) must NOT be surfaced to the employee.  The row is
+  // preserved for audit but excluded from the working view.  Reopened
+  // rows are HR-driven and never hidden, so the guard is safe there too.
   const subWhere = reopenedIds.length > 0
-    ? { employee: employee._id, $or: [{ date: today }, { _id: { $in: reopenedIds }, submitted: false }] }
-    : { employee: employee._id, date: today };
+    ? { employee: employee._id, hidden: { $ne: true }, $or: [{ date: today }, { _id: { $in: reopenedIds }, submitted: false }] }
+    : { employee: employee._id, date: today, hidden: { $ne: true } };
   const submissions = await Submission.find(subWhere)
     .populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired');
 

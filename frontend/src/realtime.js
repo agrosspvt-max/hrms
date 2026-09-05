@@ -60,6 +60,12 @@ const _wire = (source) => {
     'salary:slip:generated',
     'submission:submitted',
     'attendance:changed',
+    // businessStateSync fires this to the affected employee whenever a
+    // leave change (approve / revoke / edit) re-materialises or
+    // suppresses today's Submission.  Without it in this allowlist the
+    // SSE event is silently dropped and the dashboard only updates on a
+    // manual refresh.
+    'working_day:changed',
   ];
   for (const name of TYPED) {
     source.addEventListener(name, (ev) => {
