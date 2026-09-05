@@ -243,6 +243,7 @@ const syncEmployeeDay = async ({
         if (!dryRun && !sub.hidden) {
           sub.hidden = true;
           sub.hiddenReason = `Suppressed by ${trigger}: ${reason || 'full-day leave now covers this day'}`.slice(0, 500);
+          sub.hiddenSource = 'leave';
           if (actor) sub.hiddenBy = actor;
           sub.hiddenAt = new Date();
           try { await sub.save(); } catch (_) { /* schema may not carry hiddenReason -- non-fatal */ }
@@ -256,6 +257,7 @@ const syncEmployeeDay = async ({
         if (!dryRun && !sub.hidden) {
           sub.hidden = true;
           sub.hiddenReason = `Force-suppressed by ${trigger}: ${reason || 'HR override'}`.slice(0, 500);
+          sub.hiddenSource = 'leave';
           if (actor) sub.hiddenBy = actor;
           sub.hiddenAt = new Date();
           try { await sub.save(); } catch (_) { /* non-fatal */ }
@@ -320,14 +322,18 @@ const syncEmployeeDay = async ({
       }
     }
 
-    // Un-hide any hidden Submissions on this day whose hidden reason
-    // was a leave suppression -- the leave no longer applies, work
-    // should resume.
+    // Un-hide Submissions that were suppressed BY LEAVE -- the leave no
+    // longer applies, so work should resume.  Rows hidden for a
+    // different reason (e.g. their ASSIGNMENT was revoked) must stay
+    // hidden: a leave change must not resurrect work whose assignment
+    // is gone.  Legacy rows with no `hiddenSource` are treated as
+    // leave-origin (that was the only suppressor before this change).
     if (!dryRun) {
       for (const sub of existingSubs) {
-        if (sub.hidden) {
+        if (sub.hidden && (!sub.hiddenSource || sub.hiddenSource === 'leave')) {
           sub.hidden = false;
-          sub.hiddenReason = null;
+          sub.hiddenReason = '';
+          sub.hiddenSource = '';
           sub.hiddenBy = null;
           sub.hiddenAt = null;
           try { await sub.save(); result.changed = true; }
@@ -446,10 +452,118 @@ const syncForLeave = async (leave, { trigger = 'leave_changed', actor = null, fo
   });
 };
 
+/* --------------------------------------------------------------- */
+/*  syncForAssignment -- Assignment-lifecycle helper                 */
+/* --------------------------------------------------------------- */
+
+/**
+ * Called when HR creates / edits / reactivates an assignment so it
+ * becomes effective today.  Materialises today's Submission(s) for
+ * every covered employee via the SAME syncEmployeeDay path used by
+ * the leave flow -- which runs ensureDailySubmissions (respecting
+ * approved leave + working-day rules), is idempotent on
+ * (employee, template, date), and publishes 'working_day:changed'.
+ *
+ * @param {Object} opts
+ * @param {ObjectId[]} opts.employeeIds  covered employees
+ * @param {Date}   [opts.date]           defaults to today
+ * @param {string} [opts.trigger]        default 'assignment_changed'
+ * @param {ObjectId}[opts.actor]
+ * @returns { days: [...perEmployee syncEmployeeDay results] }
+ */
+const syncForAssignment = async ({ employeeIds = [], date = new Date(), trigger = 'assignment_changed', actor = null } = {}) => {
+  const day = startOfDay(date);
+  const days = [];
+  for (const empId of employeeIds) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await syncEmployeeDay({ employeeId: empId, date: day, trigger, actor });
+    days.push(r);
+  }
+  return { days };
+};
+
+/**
+ * Non-destructive suppression of the submissions belonging to an
+ * assignment that is being revoked / disabled.  Mirrors the leave
+ * full-day suppression semantics:
+ *
+ *   - UNSUBMITTED + no employee work  -> hidden (source 'assignment').
+ *   - UNSUBMITTED + employee started  -> conflict (kept visible) unless
+ *                                        `force`, in which case hidden.
+ *   - SUBMITTED                        -> never touched (immutable history).
+ *
+ * Never hard-deletes.  Publishes 'working_day:changed' to each affected
+ * employee.  Returns { hidden:[], conflicts:[] }.
+ *
+ * @param {Object} opts
+ * @param {ObjectId} opts.assignmentId
+ * @param {Date}   [opts.fromDate]  only suppress submissions on/after
+ *                                  this date (defaults to today, so
+ *                                  past history is left as-is); pass
+ *                                  null to cover all dates.
+ * @param {boolean}[opts.force]
+ * @param {ObjectId}[opts.actor]
+ * @param {string} [opts.reason]
+ */
+const suppressAssignmentSubmissions = async ({ assignmentId, fromDate = new Date(), force = false, actor = null, reason = '' } = {}) => {
+  const out = { hidden: [], conflicts: [] };
+  if (!assignmentId) return out;
+  // `submitted: {$ne:true}` (not `submitted:false`) so a legacy row
+  // that never had the flag written is still treated as unsubmitted.
+  const q = { assignment: assignmentId, submitted: { $ne: true }, hidden: { $ne: true }, deleted: { $ne: true } };
+  if (fromDate) q.date = { $gte: startOfDay(fromDate) };
+  const subs = await Submission.find(q);
+  const touchedEmployees = new Set();
+
+  for (const sub of subs) {
+    const hasWork = _hasEmployeeWork(sub);
+    if (hasWork && !force) {
+      out.conflicts.push({
+        code: 'submission_has_work',
+        submissionId: sub._id,
+        employee: sub.employee,
+        date: formatYMD(sub.date),
+        message: 'Employee has already started work on this submission. Revoke suppression requires HR force + reason.',
+      });
+      continue;
+    }
+    sub.hidden = true;
+    sub.hiddenReason = `Suppressed by assignment_revoked: ${reason || (hasWork ? 'HR force override' : 'assignment revoked')}`.slice(0, 500);
+    sub.hiddenSource = 'assignment';
+    if (actor) sub.hiddenBy = actor;
+    sub.hiddenAt = new Date();
+    try {
+      await sub.save();
+      out.hidden.push({ submissionId: sub._id, employee: sub.employee, date: formatYMD(sub.date), forced: hasWork });
+      touchedEmployees.add(String(sub.employee));
+      // Compliance: retire any incident scoped to this submission.
+      try {
+        const incidentService = require('./compliance/incidents/incidentService');
+        await incidentService.resolveIncidentsBySubmission({
+          submissionId: sub._id,
+          reason: 'auto: assignment revoked, submission suppressed',
+          actor,
+        });
+      } catch (_) { /* best-effort */ }
+    } catch (e) { console.error('[businessStateSync] suppressAssignment save:', e.message); }
+  }
+
+  // Realtime nudge per affected employee so the dashboard drops the
+  // suppressed work without a manual refresh.
+  for (const empId of touchedEmployees) {
+    try {
+      require('./realtime').publish(empId, 'working_day:changed', { trigger: 'assignment_changed' });
+    } catch (_) { /* best-effort */ }
+  }
+  return out;
+};
+
 module.exports = {
   syncEmployeeDay,
   syncEmployeeRange,
   syncForLeave,
+  syncForAssignment,
+  suppressAssignmentSubmissions,
   // Test helpers
   _hasEmployeeWork,
 };

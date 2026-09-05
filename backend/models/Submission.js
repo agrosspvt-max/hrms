@@ -585,6 +585,11 @@ const submissionSchema = new mongoose.Schema(
     hiddenReason:   { type: String, default: '' },
     hiddenBy:       { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     hiddenAt:       { type: Date, default: null },
+    // Why the row was suppressed, so the un-hide logic only reverses
+    // the hide it is responsible for: a leave that no longer applies
+    // must NOT un-hide a submission whose ASSIGNMENT was revoked, and
+    // vice-versa.  'leave' | 'assignment' | '' (legacy/none).
+    hiddenSource:   { type: String, default: '' },
 
     /* HR/SA inline edit audit -- captures who touched what + when.
        Replaces nothing existing; runs in parallel to reviewHistory. */

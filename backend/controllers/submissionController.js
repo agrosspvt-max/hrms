@@ -210,7 +210,10 @@ const getToday = asyncHandler(async (req, res) => {
     ? { employee: employee._id, hidden: { $ne: true }, $or: [{ date: today }, { _id: { $in: reopenedIds }, submitted: false }] }
     : { employee: employee._id, date: today, hidden: { $ne: true } };
   const submissions = await Submission.find(subWhere)
-    .populate('template', 'title customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired');
+    // `tasks` added to the populate so the task-template sync below can
+    // detect newly-added Template.tasks[] that aren't yet in the
+    // submission snapshot.
+    .populate('template', 'title tasks customFields customKind customSections privateRemarkEnabled privateRemarkLabel privateRemarkRequired');
 
   // Defensive log: surface what the employee form will actually receive,
   // so a missing populate field shows up the moment we serve a request.
@@ -266,6 +269,77 @@ const getToday = asyncHandler(async (req, res) => {
       // Non-fatal: even if the write fails, the client still sees the
       // spliced rows for this request.
       console.error('[getToday] template-sync splice failed:', e.message);
+    }
+  }
+
+  /* ------------------------------------------------------------------
+   * Task-template synchronization (mirrors the Phase 58 custom-field
+   * splice above, for `task` templates).  When HR adds a task to a
+   * Template AFTER the daily engine seeded today's submission, the
+   * seeded `Submission.tasks[]` snapshot won't contain the new task,
+   * so the employee can't complete it and HR can't grade it.
+   *
+   * Rule (unchanged from the custom path): only UNSUBMITTED
+   * submissions are eligible.  Submitted / finalized submissions are
+   * immutable historical records and are NEVER touched.  The splice
+   * is:
+   *   - additive only  -> never overwrites or removes existing rows,
+   *                       so an edited or removed template task leaves
+   *                       the employee's snapshot intact (edge cases
+   *                       7 & 8).
+   *   - idempotent     -> keyed on the template task `_id`, so
+   *                       re-running never duplicates a row.
+   *   - snapshot-faithful -> carries points + isCritical from the
+   *                       template so scoring + compliance read the
+   *                       same values the daily engine would have.
+   * ------------------------------------------------------------------ */
+  for (const s of submissions) {
+    if ((s.templateType || 'task') !== 'task' || s.submitted) continue;
+    const tplTasks = s.template?.tasks || [];
+    if (tplTasks.length === 0) continue;
+    // Existing snapshot rows are keyed by the ORIGINAL template task id
+    // (`taskId`).  Employee-added rows have no taskId and are ignored
+    // by this membership test (they can never collide with a template
+    // task id).
+    const have = new Set(
+      (s.tasks || [])
+        .map((t) => (t.taskId ? String(t.taskId) : null))
+        .filter(Boolean),
+    );
+    const missing = tplTasks.filter((t) => t && t._id && !have.has(String(t._id)));
+    if (missing.length === 0) continue;
+    const added = missing.map((t) => ({
+      taskId: t._id,
+      title: t.title,
+      points: t.points,
+      isCritical: t.isCritical === true,
+      status: 'pending_submit',
+    }));
+    s.tasks = [...(s.tasks || []), ...added];
+    try {
+      await Submission.updateOne({ _id: s._id }, { $set: { tasks: s.tasks } });
+      // Explicit, auditable synchronization (spec requirement).  Only
+      // written when rows were genuinely added.  Actor = system.
+      try {
+        const { logAudit } = require('../utils/audit');
+        logAudit(req, {
+          action: 'submission.task.synced',
+          targetType: 'Submission',
+          targetId: s._id,
+          targetLabel: `${added.length} task(s) synced from template`,
+          meta: {
+            employee: String(s.employee),
+            template: String(s.template?._id || s.template || ''),
+            date: s.date,
+            addedTaskIds: added.map((a) => String(a.taskId)),
+            addedTitles: added.map((a) => a.title),
+            source: 'template_task_sync',
+          },
+        });
+      } catch (_) { /* audit is best-effort */ }
+    } catch (e) {
+      // Non-fatal: the client still sees the spliced rows this request.
+      console.error('[getToday] task-template splice failed:', e.message);
     }
   }
 

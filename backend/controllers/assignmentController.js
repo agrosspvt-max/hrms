@@ -124,14 +124,24 @@ const create = asyncHandler(async (req, res) => {
   });
   const populated = await a.populate('template', 'title templateType tasks');
 
-  // Fire-and-forget: notify every covered employee about the new assignment.
-  _expandTargetToEmployees({ targetType, targetRef }).then((ids) =>
-    notify.notifyWorkAssigned({
-      employeeIds: ids,
-      assignment: { title: populated.template?.title || 'New work', frequency: populated.frequency },
-      assignedBy: req.user,
-    }),
-  );
+  // Notification + business-state synchronization.  Notification alone
+  // does NOT materialise the employee's work -- we must also run the
+  // daily engine for TODAY so a same-day assignment surfaces
+  // immediately (respecting approved leave + working-day rules) and
+  // fires 'working_day:changed' so the dashboard refreshes live.
+  const coveredIds = await _expandTargetToEmployees({ targetType, targetRef });
+  notify.notifyWorkAssigned({
+    employeeIds: coveredIds,
+    assignment: { title: populated.template?.title || 'New work', frequency: populated.frequency },
+    assignedBy: req.user,
+  });
+  try {
+    const businessStateSync = require('../services/businessStateSync');
+    await businessStateSync.syncForAssignment({
+      employeeIds: coveredIds, date: new Date(),
+      trigger: 'assignment_changed', actor: req.user._id,
+    });
+  } catch (e) { console.error('[assignment.create sync]', e.message); }
 
   res.status(201).json(populated);
 });
@@ -176,6 +186,27 @@ const update = asyncHandler(async (req, res) => {
 
   const a = await Assignment.findByIdAndUpdate(req.params.id, update, { new: true })
     .populate('template', 'title templateType tasks');
+
+  // Business-state synchronization for TODAY.  An edit that makes the
+  // assignment effective today (e.g. startDate moved to today, or it
+  // was re-activated) must immediately materialise the employee's work.
+  // Runs over the UNION of the previous + new target audiences so a
+  // re-targeted assignment both adds the new audience and (via the
+  // idempotent engine) leaves the old one consistent.  syncEmployeeDay
+  // is idempotent + leave-aware + publishes 'working_day:changed'.
+  try {
+    const businessStateSync = require('../services/businessStateSync');
+    const beforeIds = await _expandTargetToEmployees({ targetType: existing.targetType, targetRef: existing.targetRef });
+    const afterIds  = await _expandTargetToEmployees({ targetType: a.targetType, targetRef: a.targetRef });
+    const union = [...new Set([...beforeIds, ...afterIds].map(String))];
+    if (a.active) {
+      await businessStateSync.syncForAssignment({
+        employeeIds: union, date: new Date(),
+        trigger: 'assignment_changed', actor: req.user._id,
+      });
+    }
+  } catch (e) { console.error('[assignment.update sync]', e.message); }
+
   res.json(a);
 });
 
@@ -212,13 +243,33 @@ const revoke = asyncHandler(async (req, res) => {
   }
 
   const reason = (req.body?.reason || '').trim();
+  const force = req.body?.force === true;
 
-  // Snapshot how many un-submitted rows we're about to delete so the
-  // audit log captures the impact.  Submitted submissions are kept.
-  const unsubmittedDeleted = await Submission.deleteMany({
-    assignment: a._id,
-    submitted: false,
+  // Non-destructive suppression (business-state architecture): instead
+  // of hard-deleting unsubmitted work, hide it via businessStateSync.
+  //   - work-free rows        -> hidden (source 'assignment')
+  //   - rows the employee started -> conflict (kept) unless `force`
+  //   - submitted history     -> never touched
+  // A leave change can never un-hide these (hiddenSource='assignment').
+  const businessStateSync = require('../services/businessStateSync');
+  const suppression = await businessStateSync.suppressAssignmentSubmissions({
+    assignmentId: a._id,
+    fromDate: null,             // cover all unsubmitted rows for this assignment
+    force,
+    actor: req.user._id,
+    reason: reason || 'assignment revoked',
   });
+  // If the employee already started work and HR didn't force, surface a
+  // 409 conflict so HR can decide (re-call with force:true + reason).
+  if (suppression.conflicts.length > 0 && !force) {
+    res.status(409).json({
+      conflict: true,
+      code: 'submission_has_work',
+      message: 'One or more employees have already started work on this assignment. Re-send with force:true to suppress anyway (work is preserved, only hidden).',
+      conflicts: suppression.conflicts,
+    });
+    return;
+  }
 
   a.active = false;
   a.revokedAt = new Date();
@@ -240,7 +291,9 @@ const revoke = asyncHandler(async (req, res) => {
     targetLabel: `${a.template?.title || '(template gone)'} → ${a.targetType}:${a.targetRef}`,
     meta: {
       reason,
-      unsubmittedDeleted: unsubmittedDeleted?.deletedCount || 0,
+      // Non-destructive: rows are HIDDEN (preserved), not deleted.
+      unsubmittedHidden: suppression.hidden.length,
+      forcedOverStartedWork: force,
       frequency: a.frequency,
     },
   });
@@ -255,7 +308,9 @@ const revoke = asyncHandler(async (req, res) => {
   res.json({
     message: 'Assignment revoked',
     assignment: a,
-    unsubmittedDeleted: unsubmittedDeleted?.deletedCount || 0,
+    // Non-destructive suppression counts (no hard deletes).
+    unsubmittedHidden: suppression.hidden.length,
+    conflicts: suppression.conflicts,
   });
 });
 
