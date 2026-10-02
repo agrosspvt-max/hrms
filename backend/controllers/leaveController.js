@@ -23,6 +23,54 @@ const _dayEq = (a, b) => {
   return x.getTime() === y.getTime();
 };
 
+/* ================================================================
+ *  F1 -- Overlapping-leave guard (P1 data-integrity fix).
+ *
+ *  An employee's calendar can hold at most one ACTIVE leave per day.
+ *  "Active" = status in { pending, approved }.  rejected / revoked
+ *  leaves have released their dates and never block a re-request.
+ *
+ *  Overlap is raw requested-date-range intersection at day
+ *  granularity -- the SAME idiom calendar() already uses
+ *  (fromDate < otherTo+1day AND toDate >= otherFrom).  We do NOT
+ *  introduce a second leave-day calculator: effectiveLeaveDays stays
+ *  the single source of truth for *balance*; this helper only decides
+ *  *occupancy*.  dayType is deliberately ignored -- the system has no
+ *  mechanism to combine two half-days into one full day, so any shared
+ *  calendar day is a conflict regardless of full/half.
+ *
+ *  Returns the conflicting leave rows (lean) so the caller can build a
+ *  409 `leave_overlap` payload.  `excludeId` skips the row being
+ *  mutated (decide/edit act on an existing document).
+ * ================================================================ */
+const findOverlappingLeaves = async (employeeId, from, to, excludeId = null, statuses = ['pending', 'approved']) => {
+  const lo = startOfDay(new Date(from));
+  const hi = startOfDay(new Date(to));
+  const q = {
+    employee: employeeId,
+    status: { $in: statuses },
+    // Range intersection: existing.from <= new.to AND existing.to >= new.from.
+    fromDate: { $lte: hi },
+    toDate:   { $gte: lo },
+  };
+  if (excludeId) q._id = { $ne: excludeId };
+  return Leave.find(q)
+    .select('_id fromDate toDate status dayType leaveType days')
+    .lean();
+};
+
+/** Shape the 409 conflict body from a set of overlapping leave rows. */
+const _overlapConflictPayload = (conflicts) => ({
+  error: 'leave_overlap',
+  message: 'This leave overlaps with an existing active (pending or approved) leave for this employee.',
+  conflicts: (conflicts || []).map((c) => ({
+    leaveId: String(c._id),
+    fromDate: c.fromDate,
+    toDate: c.toDate,
+    status: c.status,
+  })),
+});
+
 /**
  * Phase 54 -- attach metadata for a batch of leaves.  Returns a Map
  * keyed by leave._id (as String) so callers can splice attachments
@@ -160,6 +208,15 @@ const apply = asyncHandler(async (req, res) => {
     }
   }
 
+  // F1 -- overlap guard.  Reject before any document is created so a
+  // duplicate/overlapping request never enters Leave History.  Checked
+  // against the employee's OWN active (pending/approved) leaves.
+  const overlaps = await findOverlappingLeaves(req.user._id, from, to);
+  if (overlaps.length > 0) {
+    res.status(409).json(_overlapConflictPayload(overlaps));
+    return;
+  }
+
   const lv = await Leave.create({
     employee: req.user._id,
     fromDate: from,
@@ -168,6 +225,9 @@ const apply = asyncHandler(async (req, res) => {
     reason,
     days,
     dayType,
+    // Explicit (matches the schema default) so the overlap guard's
+    // status filter never depends on a default being applied.
+    status: 'pending',
     // Lock paid flag at apply-time based on the requested type so the
     // decide() flow respects the employee's explicit choice instead of
     // silently flipping paid → unpaid on no-balance approvals.
@@ -415,6 +475,26 @@ const decide = asyncHandler(async (req, res) => {
       lv.modifiedBy = req.user._id;
       lv.modifiedAt = new Date();
       lv.modificationNote = String(modificationNote || '').trim();
+    }
+  }
+
+  // F1 -- overlap guard at APPROVAL.  Runs AFTER any HR date/type
+  // overrides are applied to `lv` (so we validate the FINAL approved
+  // window) but BEFORE balance math, save, attendance, and sync.  A
+  // conflict here throws 409 and leaves the pending leave, the balance,
+  // attendance, and all downstream state completely unchanged.  Skipped
+  // on reject (a rejected leave never occupies dates).
+  //
+  // We check ONLY against already-APPROVED leaves (the real date
+  // occupancy).  Other *pending* leaves are deliberately ignored here:
+  // two overlapping pendings can legitimately coexist, and blocking on a
+  // pending would make BOTH un-approvable.  Approving one turns it into
+  // the approved occupancy that then blocks the other's approval.
+  if (decision === 'approved') {
+    const approveOverlaps = await findOverlappingLeaves(lv.employee, lv.fromDate, lv.toDate, lv._id, ['approved']);
+    if (approveOverlaps.length > 0) {
+      res.status(409).json(_overlapConflictPayload(approveOverlaps));
+      return;
     }
   }
 
@@ -791,12 +871,36 @@ const edit = asyncHandler(async (req, res) => {
     res.status(400); throw new Error('fromDate must be <= toDate.');
   }
 
+  // F1 -- overlap guard on post-approval edit.  Validate the NEW window
+  // against the employee's OTHER active leaves (excluding this one)
+  // BEFORE mutating the document, balance, attendance, or firing sync.
+  // A conflict throws 409 and the leave keeps its current dates/state.
+  // Checked against other APPROVED leaves (the actual date occupancy);
+  // this edit path only runs on already-approved leaves.
+  const editOverlaps = await findOverlappingLeaves(lv.employee, next.fromDate, next.toDate, lv._id, ['approved']);
+  if (editOverlaps.length > 0) {
+    res.status(409).json(_overlapConflictPayload(editOverlaps));
+    return;
+  }
+
   // Days delta = new units - old units.  Balance is only touched on
   // paid leaves.  Unpaid <-> paid transitions credit / debit the full
   // new day count.
-  const nextDays = next.dayType === 'half'
-    ? 0.5
-    : (Math.max(1, Math.round((new Date(next.toDate).getTime() - new Date(next.fromDate).getTime()) / 86400000) + 1));
+  //
+  // Issue #2 fix: use the SAME canonical calculator apply() and
+  // decide() use -- effectiveLeaveDays -- so weekly-offs and
+  // company/event holidays inside the range are excluded.  The
+  // previous raw `(to-from)/DAY + 1` formula counted them, producing
+  // a larger day count (and wrong balance delta) than the other paths.
+  const _editWeeklyOff = (await User.findById(lv.employee).select('weeklyOff'))?.weeklyOff || [0];
+  const _editHolidaySet = await require('../services/eventOccurrences').holidayDaySet(next.fromDate, next.toDate);
+  const nextDays = effectiveLeaveDays({
+    from: next.fromDate,
+    to: next.toDate,
+    weeklyOff: _editWeeklyOff,
+    dayType: next.dayType,
+    holidaySet: _editHolidaySet,
+  });
 
   // Conflict pre-check (before mutating anything): if the NEW state
   // is a full-day leave, dry-run the sync to see whether any day now

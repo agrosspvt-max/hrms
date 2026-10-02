@@ -225,6 +225,23 @@ const install = (Model, { name, uniqueBy = [] } = {}) => {
     }
     return null;
   };
+  Model.findByIdAndUpdate = async (id, patch = {}, opts = {}) => {
+    const idx = store.rows.findIndex((r) => String(r._id) === String(id));
+    if (idx < 0) return null;
+    // Mongoose treats a plain object as an implicit $set; honour both
+    // an explicit $set and top-level (non-operator) keys.
+    const set = patch.$set || Object.fromEntries(
+      Object.entries(patch).filter(([k]) => !k.startsWith('$')),
+    );
+    Object.assign(store.rows[idx], set);
+    return opts.new ? { ...store.rows[idx] } : store.rows[idx];
+  };
+  Model.findByIdAndDelete = async (id) => {
+    const idx = store.rows.findIndex((r) => String(r._id) === String(id));
+    if (idx < 0) return null;
+    const [removed] = store.rows.splice(idx, 1);
+    return removed;
+  };
   Model.create = async (docs) => {
     const list = Array.isArray(docs) ? docs : [docs];
     const created = [];

@@ -29,6 +29,11 @@ export default function HRLeaves() {
   // HR note + revoke reason are all rendered in full here so long
   // remarks aren't lost behind a CSS truncate).
   const [viewing, setViewing] = useState(null);
+  // Issue #2: company holidays fed into the pending-edit Days PREVIEW
+  // so the in-table estimate matches the backend's holiday-aware
+  // effectiveLeaveDays (the server remains the source of truth; a
+  // non-edited row always displays the stored lv.days).
+  const [holidaySet, setHolidaySet] = useState(() => new Set());
   const toast = useToast();
 
   const load = async () => {
@@ -37,8 +42,12 @@ export default function HRLeaves() {
     if (filter) params.status = filter;
     // Only forward audience if it's not 'all' so the backend returns everything.
     if (isSuperAdmin && audience && audience !== 'all') params.audience = audience;
-    const { data } = await api.get('/leaves', { params });
+    const [{ data }, holidays] = await Promise.all([
+      api.get('/leaves', { params }),
+      api.get('/holidays').then((r) => r.data).catch(() => []),
+    ]);
     setItems(data);
+    setHolidaySet(new Set((holidays || []).map((h) => String(h.date).slice(0, 10))));
     setLoading(false);
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter, audience]);
@@ -74,18 +83,20 @@ export default function HRLeaves() {
   // are still authoritative on the server: the confirm modal shows
   // the naive delta; the DB stores the server-computed final value.
   const _iso = (d) => (d ? String(d).slice(0, 10) : '');
+  const _isoOf = (dt) => dt.toISOString().slice(0, 10);
   const _daysBetween = (fromIso, toIso, weeklyOff = [0], dayType = 'full') => {
     if (!fromIso || !toIso) return 0;
     const f = new Date(fromIso + 'T00:00:00Z');
     const t = new Date(toIso   + 'T00:00:00Z');
     if (Number.isNaN(f.getTime()) || Number.isNaN(t.getTime()) || t < f) return 0;
     const offs = Array.isArray(weeklyOff) && weeklyOff.length ? weeklyOff : [0];
+    const nonWorking = (d) => offs.includes(d.getUTCDay()) || holidaySet.has(_isoOf(d));
     if (dayType === 'half') {
-      return f.getTime() === t.getTime() && !offs.includes(f.getUTCDay()) ? 0.5 : 0;
+      return f.getTime() === t.getTime() && !nonWorking(f) ? 0.5 : 0;
     }
     let count = 0;
     for (let d = new Date(f.getTime()); d.getTime() <= t.getTime(); d.setUTCDate(d.getUTCDate() + 1)) {
-      if (!offs.includes(d.getUTCDay())) count += 1;
+      if (!nonWorking(d)) count += 1;
     }
     return count;
   };

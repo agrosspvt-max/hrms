@@ -43,10 +43,20 @@ const create = asyncHandler(async (req, res) => {
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+  // Issue #2 (Part 8): a newly-declared holiday inside an approved
+  // leave's range must shrink that leave's day count + refund balance.
+  try {
+    await require('../services/leaveHolidaySync').recalcApprovedLeavesForDates({
+      dates: [day], actor: req.user._id, reason: `holiday created ${day.toISOString().slice(0, 10)}`, source: 'holiday',
+    });
+  } catch (e) { console.error('[holiday.create leaveSync]', e.message); }
   res.status(201).json(h);
 });
 
 const update = asyncHandler(async (req, res) => {
+  // Capture the pre-image date so a moved holiday re-syncs BOTH the
+  // day it left and the day it moved to.
+  const before = await Holiday.findById(req.params.id).select('date').lean();
   const patch = {};
   if (req.body.name !== undefined) patch.name = req.body.name.trim();
   if (req.body.description !== undefined) patch.description = req.body.description;
@@ -54,12 +64,28 @@ const update = asyncHandler(async (req, res) => {
   if (req.body.date !== undefined) patch.date = startOfDay(new Date(req.body.date));
   const h = await Holiday.findByIdAndUpdate(req.params.id, patch, { new: true });
   if (!h) { res.status(404); throw new Error('Holiday not found'); }
+  // Issue #2: recompute approved leaves over the old + new holiday date.
+  try {
+    const dates = [];
+    if (before?.date) dates.push(before.date);
+    if (h?.date) dates.push(h.date);
+    await require('../services/leaveHolidaySync').recalcApprovedLeavesForDates({
+      dates, actor: req.user._id, reason: `holiday updated ${req.params.id}`, source: 'holiday',
+    });
+  } catch (e) { console.error('[holiday.update leaveSync]', e.message); }
   res.json(h);
 });
 
 const remove = asyncHandler(async (req, res) => {
   const h = await Holiday.findByIdAndDelete(req.params.id);
   if (!h) { res.status(404); throw new Error('Holiday not found'); }
+  // Issue #2 (Part 9): removing a holiday inside an approved leave's
+  // range restores that leave's day count + deducts the balance.
+  try {
+    await require('../services/leaveHolidaySync').recalcApprovedLeavesForDates({
+      dates: [h.date], actor: req.user._id, reason: `holiday deleted ${String(h.date).slice(0, 10)}`, source: 'holiday',
+    });
+  } catch (e) { console.error('[holiday.remove leaveSync]', e.message); }
   res.json({ message: 'Holiday deleted' });
 });
 

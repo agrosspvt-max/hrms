@@ -71,24 +71,92 @@ const normalizeBody = (body) => {
   };
 };
 
+/**
+ * Issue #2 (Part 10): event-based holidays are folded into
+ * `holidayDaySet`, so an event that IS (or was) a holiday and lands
+ * inside an approved leave's range must trigger the same leave-day
+ * recompute as a Holiday-collection change.  We pass the event's
+ * start (+ end span) dates.  Best-effort for near-term leaves;
+ * apply/decide/edit always recompute live from holidayDaySet anyway.
+ */
+const _eventHolidayDates = (ev) => {
+  if (!ev || !ev.isHoliday) return [];
+  const dates = [];
+  if (ev.startDate) dates.push(ev.startDate);
+  if (ev.endDate) dates.push(ev.endDate);
+  return dates;
+};
+const _recalcLeavesForEvent = async (dates, req, reason) => {
+  const clean = (dates || []).filter(Boolean);
+  if (clean.length === 0) return;
+  try {
+    await require('../services/leaveHolidaySync').recalcApprovedLeavesForDates({
+      dates: clean, actor: req.user._id, reason, source: 'event',
+    });
+  } catch (e) { console.error('[event leaveSync]', e.message); }
+};
+
 const create = asyncHandler(async (req, res) => {
   const payload = normalizeBody(req.body);
   if (!payload.title) { res.status(400); throw new Error('Title is required'); }
   payload.createdBy = req.user._id;
   const e = await Event.create(payload);
+  await _recalcLeavesForEvent(_eventHolidayDates(e), req, `event holiday created ${e._id}`);
   res.status(201).json(e);
 });
 
 const update = asyncHandler(async (req, res) => {
-  const payload = normalizeBody(req.body);
-  const e = await Event.findByIdAndUpdate(req.params.id, payload, { new: true });
-  if (!e) { res.status(404); throw new Error('Event not found'); }
+  // Merge-safe update.  `normalizeBody` rebuilds a full document with
+  // defaults, so feeding it a PARTIAL edit body would reset unspecified
+  // fields (type -> 'custom', audience -> 'everyone', startDate ->
+  // Invalid Date, etc.).  We first load the existing document and layer
+  // only the keys the caller actually sent on top of it, then normalise
+  // the MERGED object.  This preserves every field the edit didn't
+  // touch while keeping the existing validation + coercion.
+  const existing = await Event.findById(req.params.id);
+  if (!existing) { res.status(404); throw new Error('Event not found'); }
+
+  const has = (k) => Object.prototype.hasOwnProperty.call(req.body, k);
+  const pick = (k, fallback) => (has(k) ? req.body[k] : fallback);
+
+  const merged = {
+    type:               pick('type', existing.type),
+    title:              pick('title', existing.title),
+    description:        pick('description', existing.description),
+    // parseDay() accepts Date instances, so passing the stored Date
+    // through is safe when the caller omits the field.
+    startDate:          pick('startDate', existing.startDate),
+    endDate:            pick('endDate', existing.endDate),
+    repeatYearly:       pick('repeatYearly', existing.repeatYearly),
+    isHoliday:          pick('isHoliday', existing.isHoliday),
+    notify:             pick('notify', existing.notify),
+    notifyOffsets:      pick('notifyOffsets', existing.notifyOffsets),
+    audience:           pick('audience', existing.audience),
+    audienceDepartment: pick('audienceDepartment', existing.audienceDepartment),
+    audienceDesignation: pick('audienceDesignation', existing.audienceDesignation),
+    audienceEmployees:  pick('audienceEmployees', existing.audienceEmployees),
+    linkedEmployee:     pick('linkedEmployee', existing.linkedEmployee),
+  };
+
+  const payload = normalizeBody(merged);
+  // Title guard mirrors create() so a merge can never blank the title.
+  if (!payload.title) { res.status(400); throw new Error('Title is required'); }
+
+  const e = await Event.findByIdAndUpdate(req.params.id, payload, { new: true, runValidators: true });
+  // Recompute leaves over the union of the previous + new holiday dates
+  // (covers holiday->normal, date moved, or normal->holiday).
+  await _recalcLeavesForEvent(
+    [..._eventHolidayDates(existing), ..._eventHolidayDates(e)],
+    req, `event holiday updated ${e._id}`,
+  );
   res.json(e);
 });
 
 const remove = asyncHandler(async (req, res) => {
   const e = await Event.findByIdAndDelete(req.params.id);
   if (!e) { res.status(404); throw new Error('Event not found'); }
+  // Deleting a holiday event restores affected approved leaves.
+  await _recalcLeavesForEvent(_eventHolidayDates(e), req, `event holiday deleted ${e._id}`);
   res.json({ message: 'Event deleted' });
 });
 

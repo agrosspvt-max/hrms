@@ -73,20 +73,36 @@ const syncAttendanceForLeave = async (lv) => {
 
     // Atomic upsert -- if there's already a record for this day:
     //   - leave-driven from THIS or another approved leave -> leave alone
-    //   - manual override -> respect HR's intent, leave alone
+    //   - manual override -> respect HR's intent, leave alone, EXCEPT a
+    //     stale manual 'absent': an approved leave supersedes it (Issue
+    //     #3).  'absent' is the negative/default state and is the value
+    //     an attendance-review or a pre-approval HR mark leaves behind;
+    //     a subsequently-approved leave for the same day should win.
+    //     Every OTHER manual status (present, half_paid/half_unpaid,
+    //     full_paid/full_unpaid, weekly_off) is a deliberate positive
+    //     override and is preserved untouched.
     //   - auto half-day from a submission -> upgrade to leave-linked so
     //     revocation can clean up
     const existing = await Attendance.findOne({ employee: lv.employee, date: d });
     if (existing) {
-      if (existing.source === 'manual') { kept += 1; continue; }
+      const isStaleManualAbsent = existing.source === 'manual' && existing.status === 'absent';
+      if (existing.source === 'manual' && !isStaleManualAbsent) { kept += 1; continue; }
       if (existing.source === 'leave' && String(existing.leaveId) === String(lv._id)) { kept += 1; continue; }
       if (existing.source === 'leave' && existing.leaveId) { kept += 1; continue; }
-      // 'auto' record (submission-driven half-day): take it over.
+      // 'auto' record (submission-driven half-day) OR a stale manual
+      // 'absent': take it over to the leave status.  `statusForLeave`
+      // respects dayType, so a half-day leave becomes half_paid/
+      // half_unpaid -- never a full-day status.  The record is UPDATED
+      // (not deleted), preserving its history + audit note; leaveDelta
+      // is set so ledger/paid-day accounting is correct, and on revoke
+      // clearAttendanceForLeave removes exactly this leave-linked row.
       existing.status = status;
       existing.source = 'leave';
       existing.leaveId = lv._id;
       existing.leaveDelta = leaveDelta;
-      existing.note = existing.note || `Approved leave (${formatYMD(lv.fromDate)} → ${formatYMD(lv.toDate)})`;
+      existing.note = isStaleManualAbsent
+        ? `Approved leave superseded a prior Absent mark (${formatYMD(lv.fromDate)} → ${formatYMD(lv.toDate)})`
+        : (existing.note || `Approved leave (${formatYMD(lv.fromDate)} → ${formatYMD(lv.toDate)})`);
       await existing.save();
       created += 1;
       continue;

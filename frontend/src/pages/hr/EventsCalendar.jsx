@@ -119,12 +119,21 @@ export default function EventsCalendar() {
 
   const saveEvent = async (form) => {
     try {
-      if (modal.mode === 'create') await api.post('/events', form);
-      else await api.put(`/events/${modal.data._id}`, form);
+      if (modal.mode === 'create') {
+        await api.post('/events', form);
+      } else {
+        // Guard: never send an undefined/namespaced id to the API.
+        const id = modal?.data?._id;
+        if (!id) { toast.error('Could not resolve the event to update.'); return; }
+        await api.put(`/events/${id}`, form);
+      }
       toast.success('Saved'); setModal(null); load();
     } catch (err) { toast.error(errMsg(err)); }
   };
   const delEvent = async (id) => {
+    // Guard: a resolver occurrence has no `_id`; require the real
+    // underlying Event ObjectId (raw._id) resolved by the caller.
+    if (!id) { toast.error('Could not resolve the event to delete.'); return; }
     if (!confirm('Delete this event?')) return;
     try { await api.delete(`/events/${id}`); toast.success('Deleted'); setDrawer(null); load(); }
     catch (err) { toast.error(errMsg(err)); }
@@ -216,7 +225,7 @@ export default function EventsCalendar() {
                       {list.slice(0, 3).map((ev) => {
                         const m = TYPE_META[ev.type] || TYPE_META.custom;
                         return (
-                          <button key={`${ev._id}-${k}`} onClick={() => setDrawer(ev)}
+                          <button key={`${ev.id}-${k}`} onClick={() => setDrawer(ev)}
                             className={`block w-full truncate text-[10px] px-1.5 py-0.5 rounded text-left ${m.cls}`}>
                             <span className="mr-1">{m.icon}</span>{ev.title}
                           </button>
@@ -238,7 +247,7 @@ export default function EventsCalendar() {
                 {upcoming.map((ev) => {
                   const m = TYPE_META[ev.type] || TYPE_META.custom;
                   return (
-                    <button key={`${ev._id}-up`} onClick={() => setDrawer(ev)}
+                    <button key={`${ev.id}-up`} onClick={() => setDrawer(ev)}
                       className="w-full text-left rounded-lg border border-slate-200 hover:border-brand-300 p-2 flex items-start gap-2">
                       <span className="text-lg leading-none">{m.icon}</span>
                       <div className="flex-1 min-w-0">
@@ -258,24 +267,46 @@ export default function EventsCalendar() {
       {drawer && (
         <EventDrawer ev={drawer} onClose={() => setDrawer(null)} canManage={canManage}
           onEdit={() => {
-            // Phase 23.1: birthdays are auto-derived from User.dateOfBirth
-            // so "edit" routes to a dedicated BirthdayEditModal that
-            // patches the linked user, NOT the Event collection.  Holidays
-            // remain managed by the legacy /holidays page (kept silent).
-            if (String(drawer._id).startsWith('holiday:')) return;
-            if (String(drawer._id).startsWith('birthday:')) {
+            // The unified /events resolver returns occurrences keyed by a
+            // namespaced `id` (event:… / holiday:… / birthday:…) with a
+            // `source` discriminator and a `raw` underlying document.
+            // Route by `source`, NOT `_id` (occurrences have no `_id`):
+            //   holiday   -> managed on the dedicated Holidays page.
+            //   user_dob  -> auto-birthday (no Event doc): BirthdayEditModal
+            //                patches the linked user's dateOfBirth.
+            //   event     -> a real Event document: edit via /events/:id
+            //                using the underlying raw._id.
+            if (drawer.source === 'holiday') {
+              toast.info('Holidays are managed on the Holidays page.');
+              return;
+            }
+            if (drawer.source === 'user_dob') {
               setModal({ mode: 'edit-birthday', data: { ...drawer } });
               setDrawer(null);
               return;
             }
-            setModal({ mode: 'edit', data: { ...drawer, startDate: ymd(drawer.occStart), endDate: drawer.occEnd ? ymd(drawer.occEnd) : '' } });
+            setModal({
+              mode: 'edit',
+              data: {
+                ...drawer,
+                _id: drawer.raw?._id,   // the REAL Event ObjectId for PUT /events/:id
+                startDate: ymd(drawer.occStart),
+                endDate: drawer.occEnd ? ymd(drawer.occEnd) : '',
+              },
+            });
             setDrawer(null);
           }}
-          // Phase 23.9: birthdays route to delBirthday (clears the linked
-          // user's dateOfBirth); all other events use the Event delete API.
-          onDelete={() => String(drawer._id).startsWith('birthday:')
-            ? delBirthday(drawer)
-            : delEvent(drawer._id)} />
+          // Auto-birthdays clear the linked user's dateOfBirth; holidays are
+          // never routed through Event CRUD; real events delete via
+          // /events/<raw._id>.
+          onDelete={() => {
+            if (drawer.source === 'user_dob') return delBirthday(drawer);
+            if (drawer.source === 'holiday') {
+              toast.info('Holidays are managed on the Holidays page.');
+              return undefined;
+            }
+            return delEvent(drawer.raw?._id);
+          }} />
       )}
       {modal && modal.mode === 'edit-birthday' && (
         <BirthdayEditModal modal={modal} onCancel={() => setModal(null)}
