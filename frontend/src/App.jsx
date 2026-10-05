@@ -39,6 +39,7 @@ import Performance from './pages/hr/Performance.jsx';
 import HRLeaves from './pages/hr/HRLeaves.jsx';
 import EmployeeAttendance from './pages/hr/EmployeeAttendance.jsx';
 import SentAlerts from './pages/hr/SentAlerts.jsx';
+import Disclosures from './pages/hr/Disclosures.jsx';
 // Phase 61 -- Fines & Penalties module.
 import FinesPenalties from './pages/hr/FinesPenalties.jsx';
 import HRHolidays from './pages/hr/Holidays.jsx';
@@ -132,6 +133,7 @@ export default function App() {
         <Route path="/template-analytics"      element={<PerformanceGate feature="templateAnalytics"><TemplateAnalytics /></PerformanceGate>} />
         <Route path="/template-analytics/:templateId" element={<PerformanceGate feature="templateAnalytics"><TemplateAnalytics /></PerformanceGate>} />
         <Route path="/sent-alerts" element={<ProtectedRoute role="hr" feature="sendAlerts"><SentAlerts /></ProtectedRoute>} />
+        <Route path="/disclosures" element={<ProtectedRoute role="hr"><Disclosures /></ProtectedRoute>} />
         <Route path="/reset-requests" element={<ProtectedRoute role="hr"><ResetRequests /></ProtectedRoute>} />
 
         {/* Super Admin only */}

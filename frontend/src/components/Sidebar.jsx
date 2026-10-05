@@ -149,6 +149,7 @@ function buildNav(user) {
     {
       type: 'group', id: 'utilities', label: 'Utilities', icon: I.tools, items: [
         { to: '/sent-alerts', label: 'Send Alerts', icon: I.send },
+        { to: '/disclosures', label: 'Disclosure', icon: I.doc },
         { to: '/reset-requests', label: 'Reset Requests', icon: I.reset, badgeKey: 'resetRequests' },
         { to: '/events', label: 'Events & Holidays', icon: I.calendar },
         // Employee Interactions redesign: single workspace entry.

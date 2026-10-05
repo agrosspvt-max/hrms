@@ -16,6 +16,7 @@ import { delayBadgeClass, delayLabel, errMsg, fmtDate } from '../../utils/helper
 import { subscribe } from '../../realtime';
 // Phase 50 -- shared notes modal + dashboard Today's / Upcoming panels.
 import AttendanceNotesModal from '../../components/AttendanceNotesModal.jsx';
+import DisclosureCard from '../../components/DisclosureCard.jsx';
 import ComplianceCard from '../../components/compliance/ComplianceCard.jsx';
 import useComplianceConfig, { isFeatureEnabled } from '../../hooks/useComplianceConfig.js';
 
@@ -1637,6 +1638,8 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
               employee has multiple assignments.  Stored at
               /api/daily-reflection keyed by (employee, date). */}
           <DailyReflectionCard />
+          {/* Disclosure: day-level (one per employee per date), saved via /api/disclosures. */}
+          <DisclosureCard />
           {/* Returned-submission fix: any submission surfaced today
               whose OWN date is in the past (HR returned it for
               resubmission) needs its Self Evaluation stored under the
