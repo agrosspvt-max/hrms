@@ -31,11 +31,24 @@ const complianceWaiverSchema = new mongoose.Schema(
     decidedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     decidedAt:    { type: Date, default: null },
     decisionNote: { type: String, default: '', trim: true },
+
+    /** incident|scope|sorted effectIds.  Backs the partial unique index
+     *  below so two identical *pending* requests cannot coexist (double
+     *  click / retry).  Not unique across decided rows. */
+    requestKey: { type: String, default: null },
   },
   { timestamps: true },
 );
 
 complianceWaiverSchema.index({ status: 1, requestedAt: -1 });
+complianceWaiverSchema.index(
+  { requestKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: 'pending', requestKey: { $type: 'string' } },
+    name: 'compliance_waiver_pending_request_key',
+  },
+);
 
 module.exports = mongoose.models.ComplianceWaiver
   || mongoose.model('ComplianceWaiver', complianceWaiverSchema);

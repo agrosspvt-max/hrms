@@ -225,11 +225,14 @@ const create = asyncHandler(async (req, res) => {
 const cancel = asyncHandler(async (req, res) => {
   _flagGate(res);
   if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only.'); }
-  const row = await incidentService.cancelIncident(req.params.id, {
-    reason: req.body && req.body.reason,
-    actor:  req.user._id,
-    req,
-  });
+  let row;
+  try {
+    row = await incidentService.cancelIncident(req.params.id, {
+      reason: req.body && req.body.reason,
+      actor:  req.user._id,
+      req,
+    });
+  } catch (e) { res.status(e.httpStatus || 400); throw e; }
   if (!row) { res.status(404); throw new Error('Incident not found.'); }
   res.json(row);
 });
@@ -294,11 +297,15 @@ const activate = asyncHandler(async (req, res) => {
 const resolve = asyncHandler(async (req, res) => {
   _flagGate(res);
   if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only.'); }
-  const row = await incidentService.resolveIncident(req.params.id, {
-    reason: req.body && req.body.reason,
-    actor:  req.user._id,
-    req,
-  });
+  let row;
+  try {
+    row = await incidentService.resolveIncident(req.params.id, {
+      reason: req.body && req.body.reason,
+      actor:  req.user._id,
+      req,
+      strict: true,   // a cancelled / waived incident is an error, not a silent success
+    });
+  } catch (e) { res.status(e.httpStatus || 400); throw e; }
   if (!row) { res.status(404); throw new Error('Incident not found.'); }
   res.json(row);
 });
@@ -319,7 +326,7 @@ const recover = asyncHandler(async (req, res) => {
     });
     res.json(doc);
   } catch (e) {
-    res.status(400); throw e;
+    res.status(e.httpStatus || 400); throw e;
   }
 });
 
@@ -332,16 +339,18 @@ const waiveDirect = asyncHandler(async (req, res) => {
   _flagGate(res);
   if (!_isAdmin(req.user)) { res.status(403); throw new Error('HR / Super Admin only.'); }
   const { scope = 'full', effectIds = [], reason = '' } = req.body || {};
-  const waiver = await waiverService.request({
-    incidentId: req.params.id, scope, effectIds, reason,
-    requestedBy: req.user._id, req,
-  });
-  const decided = await waiverService.decide({
-    waiverId: waiver._id, decision: 'auto_approved',
-    note: reason,
-    decidedBy: req.user._id, req,
-  });
-  res.json(decided);
+  try {
+    const waiver = await waiverService.request({
+      incidentId: req.params.id, scope, effectIds, reason,
+      requestedBy: req.user._id, req,
+    });
+    const decided = await waiverService.decide({
+      waiverId: waiver._id, decision: 'auto_approved',
+      note: reason,
+      decidedBy: req.user._id, req,
+    });
+    res.json(decided);
+  } catch (e) { res.status(e.httpStatus || 400); throw e; }
 });
 
 const waiveRequest = asyncHandler(async (req, res) => {
@@ -361,7 +370,7 @@ const waiveRequest = asyncHandler(async (req, res) => {
       requestedBy: req.user._id, req,
     });
     res.status(201).json(waiver);
-  } catch (e) { res.status(400); throw e; }
+  } catch (e) { res.status(e.httpStatus || 400); throw e; }
 });
 
 const waiveDecide = asyncHandler(async (req, res) => {
@@ -375,7 +384,7 @@ const waiveDecide = asyncHandler(async (req, res) => {
       decidedBy: req.user._id, req,
     });
     res.json(waiver);
-  } catch (e) { res.status(400); throw e; }
+  } catch (e) { res.status(e.httpStatus || 400); throw e; }
 });
 
 module.exports = {

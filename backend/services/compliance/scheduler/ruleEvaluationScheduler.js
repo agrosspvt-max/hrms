@@ -225,10 +225,13 @@ const _runRecurring = async (day) => {
   for (const rule of activeRules) {
     if (!actionEngine.hasRecurring(rule)) continue;
     rulesTouched += 1;
+    // Newest first: if no incident has produced today's effect yet (e.g. the
+    // detector emitted nothing today), the newest one owns it; actionEngine
+    // skips every other automatic incident of the same employee/rule.
     const activeIncidents = await ComplianceIncident.find({
       ruleId: rule._id,
       status: 'active',
-    }).lean();
+    }).sort({ incidentDate: -1, createdAt: -1 }).lean();
     for (const inc of activeIncidents) {
       // Stabilization patch (C1): recurring-only so one-shot actions
       // don't re-fire on subsequent daily ticks.

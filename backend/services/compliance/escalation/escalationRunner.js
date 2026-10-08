@@ -91,12 +91,30 @@ const run = async ({ day = new Date() } = {}) => {
         continue;   // skip step; DO NOT add to `already`
       }
 
+      // Effects this step already produced today (idempotent cross-tick).
+      // Decided from plain reads BEFORE the transaction: a duplicate key
+      // inside a replica-set transaction aborts it, and handling it there
+      // (a follow-up read on the dead session) made the driver retry the
+      // callback until its ~120 s ceiling.
+      const alreadyApplied = new Set();
+      for (const action of actionsToApply) {
+        // eslint-disable-next-line no-await-in-loop
+        const hit = await ComplianceActionEffect.findOne({
+          incidentId: inc._id,
+          ruleActionId: action._id || step._id,
+          effectiveDate: stepEffectiveDate,
+        }).select('_id').lean();
+        if (hit) alreadyApplied.add(String(action._id || step._id));
+      }
+
       let stepFullySucceeded = false;
       let firedThisStep = 0;
       let stepErrors = 0;
       try {
         await withComplianceTransaction(async (session) => {
           for (const action of actionsToApply) {
+            // Already applied earlier today: the ledger row was written then.
+            if (alreadyApplied.has(String(action._id || step._id))) continue;
             const executor = actionExecutorRegistry.get(action.type);
             const out = await executor({
               rule, actionConfig: action, incident: inc.toObject(),
@@ -104,47 +122,27 @@ const run = async ({ day = new Date() } = {}) => {
             });
             if (!out || !out.effectDoc) continue;
 
-            let effect;
-            try {
-              const created = session
-                ? await ComplianceActionEffect.create([{
-                    ...out.effectDoc,
-                    incidentId: inc._id,
-                    ruleId: rule._id,
-                    ruleActionId: action._id || step._id,
-                    employee: inc.employee,
-                    effectiveDate: stepEffectiveDate,
-                  }], { session })
-                : [await ComplianceActionEffect.create({
-                    ...out.effectDoc,
-                    incidentId: inc._id,
-                    ruleId: rule._id,
-                    ruleActionId: action._id || step._id,
-                    employee: inc.employee,
-                    effectiveDate: stepEffectiveDate,
-                  })];
-              effect = Array.isArray(created) ? created[0] : created;
-            } catch (e) {
-              // Duplicate on the natural key means the same step's
-              // action already landed on this day (idempotent
-              // cross-tick).  Look it up so ledger appends can
-              // reference the pre-existing effect id.
-              if (e && e.code === 11000) {
-                const q = ComplianceActionEffect.findOne({
+            // A duplicate that still slips through (true race) is thrown OUT of
+            // the transaction: the step is not memoised and is retried next
+            // tick, where the pre-check above recognises the winner.
+            const created = session
+              ? await ComplianceActionEffect.create([{
+                  ...out.effectDoc,
                   incidentId: inc._id,
+                  ruleId: rule._id,
                   ruleActionId: action._id || step._id,
+                  employee: inc.employee,
                   effectiveDate: stepEffectiveDate,
-                });
-                if (session) q.session(session);
-                effect = await q;
-                if (!effect) continue;   // shouldn't happen; defensive
-                // Duplicate path: the ledger row was already written
-                // on the first successful application.  Do NOT
-                // re-append -- treat as already-applied.
-                continue;
-              }
-              throw e;
-            }
+                }], { session })
+              : [await ComplianceActionEffect.create({
+                  ...out.effectDoc,
+                  incidentId: inc._id,
+                  ruleId: rule._id,
+                  ruleActionId: action._id || step._id,
+                  employee: inc.employee,
+                  effectiveDate: stepEffectiveDate,
+                })];
+            const effect = Array.isArray(created) ? created[0] : created;
 
             for (const append of (out.ledgerAppends || [])) {
               await ledgerService.append({

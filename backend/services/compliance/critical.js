@@ -2,9 +2,16 @@
  * critical.js -- SINGLE SOURCE OF TRUTH for task criticality across
  * the HRMS.  Every compliance detector, executor, dashboard metric or
  * analytics query that needs to know whether a task is "critical"
- * MUST route through this helper.  The helper reads ONLY the
- * `isCritical` flag stored on the template document -- never
- * template names, priorities, or heuristics.
+ * MUST route through this helper.  It reads ONLY `isCritical` flags --
+ * never template names, priorities, or heuristics.
+ *
+ * Source of truth per stage:
+ *   - A task that already exists on a Submission: the SNAPSHOT
+ *     (`Submission.tasks[i].isCritical`, written when the row was created).
+ *     An explicit true OR false wins; later template edits do not
+ *     re-classify history.
+ *   - Only rows that predate the snapshot (field absent) fall back to the
+ *     live `Template` flag.
  *
  * The flag lives in two places on `Template`:
  *   - Task Templates      : `tasks[i].isCritical`         (per-task)
@@ -127,17 +134,22 @@ const resolveCriticalByTaskId = async (templateId, taskId) => {
  * and `sourceTaskId` (both may be missing -- returns false then).
  *
  * Preference order:
- *   1) Snapshot on Submission.tasks[i].isCritical for the row whose
- *      `taskId === dep.sourceTaskId` (stable, HR toggles later don't
- *      retroactively re-classify).
- *   2) Live Template.tasks[i].isCritical for the same taskId.
- *   3) false.
+ *   1) The snapshot row on the source submission.  `sourceTaskId` is the
+ *      Submission.tasks[] row `_id` (what stampDependency writes); the
+ *      template task id (`row.taskId`) is accepted for older rows.  An
+ *      explicit true/false on that row wins -- HR toggles later don't
+ *      retroactively re-classify.
+ *   2) Live Template.tasks[i].isCritical, only when the row has no
+ *      snapshot (pre-snapshot data) or the id matches no row.
+ *   3) false (excel / sheet sources, no source submission).
  */
 const resolveCriticalForDependency = async (dep) => {
   if (!dep) return false;
   const subId  = dep.sourceSubmissionId;
   const taskId = dep.sourceTaskId;
   if (!subId || !taskId) return false;
+  // Excel columns / sheet scores carry no criticality concept.
+  if (dep.sourceKind === 'excel' || dep.sourceKind === 'sheet') return false;
 
   const sk = String(subId);
   let subRec = _subCache.get(sk);
@@ -146,17 +158,21 @@ const resolveCriticalForDependency = async (dep) => {
       const sub = await Submission.findById(subId)
         .select('template tasks._id tasks.taskId tasks.isCritical')
         .lean();
-      if (!sub) {
-        subRec = { templateId: null, tasks: new Map() };
-      } else {
-        const tasks = new Map();
+      const byRowId = new Map();
+      const byTemplateTaskId = new Map();
+      if (sub) {
         (Array.isArray(sub.tasks) ? sub.tasks : []).forEach((row) => {
-          // Snapshot rows carry the ORIGINAL template task id in `taskId`.
-          const rid = row && (row.taskId || row._id);
-          if (rid) tasks.set(String(rid), _isTrue(row.isCritical));
+          if (!row) return;
+          // `undefined` (not false) marks a legacy row without a snapshot.
+          const entry = {
+            flag: typeof row.isCritical === 'boolean' ? row.isCritical : null,
+            templateTaskId: row.taskId || null,
+          };
+          if (row._id) byRowId.set(String(row._id), entry);
+          if (row.taskId) byTemplateTaskId.set(String(row.taskId), entry);
         });
-        subRec = { templateId: sub.template || null, tasks };
       }
+      subRec = { templateId: (sub && sub.template) || null, byRowId, byTemplateTaskId };
       _subCache.set(sk, subRec);
     } catch (e) {
       console.error('[compliance/critical] submission lookup failed for', sk, e.message);
@@ -165,14 +181,47 @@ const resolveCriticalForDependency = async (dep) => {
   }
 
   const tk = String(taskId);
-  if (subRec.tasks.has(tk)) return subRec.tasks.get(tk);
+  // DependencyTask.sourceTaskId is the Submission.tasks[] row `_id`
+  // (submissionController.stampDependency / dependencyEngine);
+  // the template task id is accepted too for older / HR-created rows.
+  const row = subRec.byRowId.get(tk) || subRec.byTemplateTaskId.get(tk);
+  if (row) {
+    if (row.flag !== null) return row.flag;                       // snapshot wins
+    return subRec.templateId
+      ? resolveCriticalByTaskId(subRec.templateId, row.templateTaskId || tk)   // legacy row
+      : false;
+  }
+  // Unknown row id: last resort, treat it as a template task id.
+  return subRec.templateId ? resolveCriticalByTaskId(subRec.templateId, tk) : false;
+};
 
-  // Snapshot didn't carry the flag (legacy submission).  Fall back
-  // to the live template.
-  if (subRec.templateId) {
-    return resolveCriticalByTaskId(subRec.templateId, tk);
+/**
+ * Pending-task row (from PendingStateService) -> critical?  The row's
+ * `criticalSnapshot` (true/false) is authoritative; null means a legacy
+ * row, so the live template is consulted by template task id.
+ */
+const resolveCriticalForPendingRow = async (row) => {
+  if (!row) return false;
+  if (row.criticalSnapshot === true) return true;
+  if (row.criticalSnapshot === false) return false;
+  if (row.isCritical === true && row.criticalSnapshot === undefined) return true;   // caller without the tri-state
+  if (row.templateId && row.templateTaskId) {
+    return resolveCriticalByTaskId(row.templateId, row.templateTaskId);
   }
   return false;
+};
+
+/**
+ * Whole-submission miss (Missed Submission): critical iff the stub's own
+ * task snapshot contains a critical task.  A stub with no snapshot at all
+ * (custom templates, pre-snapshot rows) falls back to the template-wide flag.
+ */
+const resolveCriticalForSubmission = async (stub) => {
+  if (!stub) return false;
+  const flags = (Array.isArray(stub.tasks) ? stub.tasks : [])
+    .filter((t) => t && typeof t.isCritical === 'boolean');
+  if (flags.length) return flags.some((t) => t.isCritical === true);
+  return resolveCriticalByTemplateId(stub.template);
 };
 
 /**
@@ -190,6 +239,8 @@ module.exports = {
   resolveCriticalByTemplateId,
   resolveCriticalByTaskId,
   resolveCriticalForDependency,
+  resolveCriticalForPendingRow,
+  resolveCriticalForSubmission,
   beginTick,
   clearCache,
   _size,

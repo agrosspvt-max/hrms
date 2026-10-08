@@ -19,6 +19,7 @@ const MODELS = {
   attendance: require('../../models/AttendanceLedger'),
 };
 
+const ledgerService = require('../../services/compliance/ledger/ledgerService');
 const _isAdmin = (u) => u && (u.role === 'hr' || u.role === 'super_admin');
 const _isHOD   = (u) => u && (u.role === 'hod' || u.isHOD === true);
 
@@ -50,7 +51,15 @@ const get = asyncHandler(async (req, res) => {
     .sort({ date: 1, createdAt: 1 })
     .limit(Math.max(1, Math.min(1000, Number(req.query.limit) || 500)))
     .lean();
-  res.json(rows);
+  // The stored `runningBalance` is an insertion-time snapshot and is wrong
+  // for historical rows written out of date order, so the balance column is
+  // recomputed from the rows themselves (opening balance = everything dated
+  // before the window).  Response shape is unchanged: the last row's
+  // `runningBalance` is the true total.  Nothing is written.
+  const opening = req.query.from
+    ? await ledgerService.balance({ ledger: name, employee, before: new Date(req.query.from) })
+    : 0;
+  res.json(ledgerService.withDisplayBalances(rows, opening));
 });
 
 module.exports = { get };

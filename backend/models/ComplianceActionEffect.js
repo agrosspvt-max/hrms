@@ -52,6 +52,16 @@ const complianceActionEffectSchema = new mongoose.Schema(
 
     penaltyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Penalty', default: null },
 
+    /**
+     * Business identity of a RECURRING effect produced by an AUTOMATIC
+     * incident: rule action + employee + effective day.  Detectors raise a
+     * new day-scoped incident every day a condition persists, so several
+     * still-active incidents can exist for the same employee; the daily
+     * recurring effect belongs to the employee-day, not to each incident.
+     * Null for one-shot actions and manual incidents (separate events).
+     */
+    recurringKey: { type: String, default: null },
+
     ledgerRefs: { type: ledgerRefsSchema, default: () => ({}) },
 
     resolvedAt:     { type: Date, default: null },
@@ -76,6 +86,12 @@ const complianceActionEffectSchema = new mongoose.Schema(
 complianceActionEffectSchema.index(
   { incidentId: 1, ruleActionId: 1, effectiveDate: 1 },
   { unique: true, name: 'compliance_effect_natural_key' },
+);
+// Cross-incident guard for recurring effects (see recurringKey above).
+// Partial, so historical rows without the field never collide.
+complianceActionEffectSchema.index(
+  { recurringKey: 1 },
+  { unique: true, partialFilterExpression: { recurringKey: { $type: 'string' } }, name: 'compliance_effect_recurring_key' },
 );
 complianceActionEffectSchema.index({ penaltyId: 1 }, { sparse: true });
 complianceActionEffectSchema.index({ employee: 1, status: 1 });

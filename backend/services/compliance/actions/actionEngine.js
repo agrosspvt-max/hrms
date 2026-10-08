@@ -19,6 +19,7 @@
 const ComplianceRule = require('../../../models/ComplianceRule');
 const ComplianceActionEffect = require('../../../models/ComplianceActionEffect');
 const ComplianceEvent = require('../../../models/ComplianceEvent');
+const ComplianceIncident = require('../../../models/ComplianceIncident');
 const Penalty = require('../../../models/Penalty');
 const registry = require('../registry/actionExecutorRegistry');
 const ledgerService = require('../ledger/ledgerService');
@@ -65,6 +66,25 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
     return out;
   }
 
+  // Recurring effects of AUTOMATIC incidents belong to the employee-day:
+  // detectors emit a fresh day-scoped incident every day a condition
+  // persists, and older incidents stay `active`, so without this guard
+  // the same day would be charged once per still-active incident
+  // (N(N+1)/2 over N days).  Sibling = another automatic incident of the
+  // same rule + employee.  Manual incidents are separate HR-asserted
+  // events and keep their own recurring effects.
+  let siblingIds = null;
+  const _siblings = async () => {
+    if (siblingIds) return siblingIds;
+    const rows = incident.source === 'automatic'
+      ? await ComplianceIncident.find({
+          ruleId: incident.ruleId, employee: incident.employee, source: 'automatic',
+        }).select('_id').lean()
+      : [];
+    siblingIds = rows.map((r) => r._id).filter((id) => String(id) !== String(incident._id));
+    return siblingIds;
+  };
+
   for (const actionCfg of (rule.actions || [])) {
     if (!actionCfg.enabled) continue;
     // Recurring-only pass -- skip one-shot actions on subsequent ticks.
@@ -76,6 +96,41 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
       out.errors.push({ reason: 'no_executor', type: actionCfg.type });
       continue;
     }
+
+    // Cross-incident dedupe for recurring effects (any status counts: a
+    // waived / cancelled day must not be re-charged by an older incident).
+    let recurringKey = null;
+    if (actionCfg.config && actionCfg.config.recurring === true && incident.source === 'automatic') {
+      recurringKey = ['rec', String(rule._id), String(actionCfg._id), String(incident.employee),
+        effectiveDate.toISOString().slice(0, 10)].join('|');
+      const sibs = await _siblings();
+      const covered = sibs.length
+        ? await ComplianceActionEffect.findOne({
+            ruleActionId: actionCfg._id,
+            employee: incident.employee,
+            effectiveDate,
+            incidentId: { $in: sibs },
+          }).lean()
+        : null;
+      if (covered) {
+        out.effects.push({ effect: covered, created: false, dedupedBy: covered.incidentId });
+        continue;
+      }
+    }
+    // Already applied for this incident/action/day?  Answer from a plain
+    // read BEFORE any transaction work.  Re-running a scheduler tick (or
+    // promoting + recurring-applying the same incident) must not open a
+    // transaction just to hit the unique index: on a replica set MongoDB
+    // aborts the transaction on E11000, and a follow-up read inside it made
+    // the driver retry the callback for ~120 s.
+    const existingOwn = await ComplianceActionEffect.findOne({
+      incidentId: incident._id, ruleActionId: actionCfg._id, effectiveDate,
+    }).lean();
+    if (existingOwn) {
+      out.effects.push({ effect: existingOwn, created: false });
+      continue;
+    }
+
     let executorOut;
     try {
       executorOut = await executor({
@@ -106,6 +161,7 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
               ruleActionId: actionCfg._id,
               employee: incident.employee,
               effectiveDate,
+              recurringKey,
             }], { session })
           : [await ComplianceActionEffect.create({
               ...executorOut.effectDoc,
@@ -114,20 +170,16 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
               ruleActionId: actionCfg._id,
               employee: incident.employee,
               effectiveDate,
+              recurringKey,
             })];
         effect = created[0];
       } catch (e) {
-        if (e && e.code === 11000) {
-          alreadyExisted = true;
-          const q = ComplianceActionEffect.findOne({
-            incidentId: incident._id,
-            ruleActionId: actionCfg._id,
-            effectiveDate,
-          });
-          if (session) q.session(session);
-          effect = await q;
-          return;
-        }
+        // A duplicate key must NOT be handled here: inside a replica-set
+        // transaction MongoDB has already aborted it, so any further
+        // operation on this session fails and the driver retries the whole
+        // callback.  Rethrow; the duplicate is recognised and resolved
+        // OUTSIDE the transaction below.  Nothing after the insert (ledger
+        // rows) has run, so no partial state exists to undo.
         txnErr = e;
         throw e;
       }
@@ -155,6 +207,21 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
       if (!txnErr) txnErr = e;
       return null;
     });
+    // Lost a race on a unique index (own natural key, or the cross-incident
+    // recurringKey).  The transaction has ended; re-read the winner outside
+    // it and report an idempotent "already created".  No ledger row was
+    // written by this attempt.
+    if (txnErr && txnErr.code === 11000) {
+      const winner = await ComplianceActionEffect.findOne({
+        incidentId: incident._id, ruleActionId: actionCfg._id, effectiveDate,
+      }).lean()
+        || (recurringKey ? await ComplianceActionEffect.findOne({ recurringKey }).lean() : null);
+      if (winner) {
+        alreadyExisted = true;
+        effect = winner;
+        txnErr = null;
+      }
+    }
     if (txnErr && !alreadyExisted) {
       out.errors.push({ reason: 'effect_create_or_ledger', type: actionCfg.type, error: txnErr.message });
       continue;
@@ -178,6 +245,22 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
       };
       let mirrorId = null;
       try {
+        // The legacy engine (which runs first in the daily job) already
+        // owns the Penalty for this employee/category/day, anchored to the
+        // day's PRIMARY submission, whereas this mirror is anchored to the
+        // incident's oldest-overdue submission -- a different unique key,
+        // so creating it would put TWO active rows on the same day.  Reuse
+        // the existing row (any status: a cancelled one must stay so).
+        const existingDay = await Penalty.findOne({
+          employee: incident.employee,
+          category: executorOut.legacyPenalty.category,
+          source: 'automatic',
+          probable: false,
+          targetDate: effectiveDate,
+        }).select('_id').lean();
+        if (existingDay && existingDay._id) {
+          mirrorId = existingDay._id;
+        } else {
         const doc = await Penalty.create({
           ...mirrorNaturalKey,
           status: 'active',
@@ -189,6 +272,7 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
           incidentId: incident._id,
         });
         mirrorId = doc && doc._id;
+        }
       } catch (e) {
         // Prod-patch H7 -- E11000 means the legacy penaltyEngine
         // (which runs BEFORE the v2 tick in dailyComplianceScheduler)

@@ -40,6 +40,7 @@ const Attendance    = require('../models/Attendance');
 const DependencyTask = require('../models/DependencyTask');
 const notify        = require('./notifyEvents');
 const { startOfDay } = require('../utils/dateHelpers');
+const { liveSubmissionFilter } = require('../utils/submissionFilter');
 // Shared historical-expectation service.  See services/expectedSubmissions
 // for the invariant that ties this engine to Submission Review.
 const expectedSubmissions = require('./expectedSubmissions');
@@ -393,11 +394,19 @@ const enforceDependencyPending = async ({ employeeId, day }) => {
   const overdue = await _overdueDependencies(employeeId, target);
   if (!overdue.length) return null;
 
+  // Which submission the day's penalty is anchored to.
+  //   Eligible: the canonical "live" definition (utils/submissionFilter):
+  //             not deleted, not test data, not hidden.
+  //   Order:    mirrors DailyReview's primary submission -- submitted work
+  //             first, earliest submittedAt, then _id -- so the choice is
+  //             deterministic.  With nothing eligible the penalty stays
+  //             unanchored (exactly the pre-existing "no submission" case);
+  //             it is never attached to a test / hidden / deleted row.
   const primary = await Submission.findOne({
     employee: employeeId,
     date: target,
-    deleted: { $ne: true },
-  }).select('_id earnedPoints').lean();
+    ...liveSubmissionFilter({}),
+  }).sort({ submitted: -1, submittedAt: 1, _id: 1 }).select('_id earnedPoints').lean();
 
   const doc = {
     employee: employeeId,
@@ -415,6 +424,45 @@ const enforceDependencyPending = async ({ employeeId, day }) => {
     employeeMessage: `${overdue.length} dependency task${overdue.length === 1 ? ' is' : 's are'} overdue by more than 3 days. Resolve to lift the daily penalty.`,
     effectiveDate: target,
   };
+  // The unique key includes `submission`.  The 00:15 sweep usually runs
+  // before the employee's stub for the day exists, so the row is first
+  // written with submission:null; a later run (server restart, same day)
+  // would then see a different key and insert a SECOND row for the same
+  // employee-day.  Complete the existing row with the day's submission
+  // instead (guarded: only an active, still-unanchored automatic row).
+  if (primary) {
+    try {
+      const adopted = await Penalty.updateOne(
+        {
+          employee: employeeId, category: 'dependency_pending', source: 'automatic',
+          probable: false, targetDate: target, submission: null, status: 'active',
+        },
+        { $set: { submission: primary._id, penaltyMarks: doc.penaltyMarks } },
+      );
+      if (adopted && adopted.modifiedCount) {
+        _logSystemAudit({
+          action: 'penalty.auto.anchor_submission',
+          targetId: primary._id,
+          targetLabel: 'dependency_pending · anchored to the day\'s submission',
+          meta: { employee: String(employeeId), targetDate: target, submission: String(primary._id) },
+        });
+      }
+    } catch (e) {
+      // E11000 => an anchored row already exists (historical duplicate);
+      // leave both untouched rather than rewrite history.
+      if (!e || e.code !== 11000) console.error('[penaltyEngine] anchor dependency:', e && e.message);
+    }
+  }
+  // Identity of a dependency penalty is employee + category + day.  The DB
+  // key also carries `submission`, so reuse any existing automatic row for
+  // the day (whatever it is anchored to, whatever its status) rather than
+  // letting a different "primary" on a later run insert a second row.
+  const existingForDay = await Penalty.findOne({
+    employee: employeeId, category: 'dependency_pending', source: 'automatic',
+    probable: false, targetDate: target,
+  }).sort({ _id: 1 }).lean();
+  if (existingForDay) return existingForDay;
+
   const { doc: p, created: didCreate } = await _upsertAutoPenalty(doc);
   if (p && didCreate) {
     notify.notifyPenalty({ employeeId, penalty: p, mode: 'active' });

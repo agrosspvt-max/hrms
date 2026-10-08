@@ -15,6 +15,9 @@ const Assignment = require('./models/Assignment');
  *   node seed.js
  */
 const run = async () => {
+  // Destructive (deleteMany on users/departments/templates...): local DB only,
+  // no override.  The URI is never printed.
+  require('./config/runtimeSafety').assertLocalOnly(process.env.MONGO_URI, 'seed.js');
   await connectDB();
 
   console.log('[seed] Clearing existing data...');

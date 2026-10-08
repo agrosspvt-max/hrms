@@ -100,7 +100,8 @@ const detect = async ({ rule, employee, day }) => {
         detector: 'built_in.missed_submission',
         templateType: s.templateType,
         // Batch-1 fix #2 (Option A) -- criticality lookup via Template.
-        criticalTask: await critical.resolveCriticalByTemplateId(s.template),
+        // Stub's own task snapshot first; template only for stubs without one.
+        criticalTask: await critical.resolveCriticalForSubmission(s),
       },
     });
   }

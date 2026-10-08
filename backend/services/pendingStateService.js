@@ -202,6 +202,9 @@ const listPendingTasks = async (opts = {}) => {
         title: t.title,
         points: t.points || 0,
         isCritical: t.isCritical === true,
+        // true / false = explicit snapshot taken when the row was created;
+        // null = legacy row that predates the snapshot.
+        criticalSnapshot: typeof t.isCritical === 'boolean' ? t.isCritical : null,
         pendingSince: t.pendingSince,
         resolveBy: t.resolveBy,
         addedByEmployee: !!t.addedByEmployee,
@@ -275,6 +278,7 @@ const overduePendingTasksForEmployee = async (employeeId, day = new Date()) => {
     pendingSince: r.pendingSince,
     resolveBy: r.resolveBy,
     isCritical: r.isCritical,
+    criticalSnapshot: r.criticalSnapshot,
     templateTaskId: r.templateTaskId,
     templateId: r.template,
   }));

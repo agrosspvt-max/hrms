@@ -86,12 +86,10 @@ const detect = async ({ rule, employee, day, globalCtx = null, employeeLeaveMap 
   // no name/priority heuristics.
   let anyCritical = false;
   for (const o of overdue) {
-    if (o.isCritical === true) { anyCritical = true; break; }
+    // Snapshot (true OR false) is authoritative; the live template is
+    // consulted only for legacy rows that never carried the flag.
     // eslint-disable-next-line no-await-in-loop
-    if (o.templateId && o.templateTaskId
-        && await critical.resolveCriticalByTaskId(o.templateId, o.templateTaskId)) {
-      anyCritical = true; break;
-    }
+    if (await critical.resolveCriticalForPendingRow(o)) { anyCritical = true; break; }
   }
   return [{
     naturalKey: performanceLockKey({

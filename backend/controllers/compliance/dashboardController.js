@@ -12,6 +12,7 @@ const mongoose = require('mongoose');
 const ComplianceIncident = require('../../models/ComplianceIncident');
 const ComplianceWaiver = require('../../models/ComplianceWaiver');
 const FinancialLedger = require('../../models/FinancialLedger');
+const ledgerService = require('../../services/compliance/ledger/ledgerService');
 const User = require('../../models/User');
 const { isEnabled } = require('../../config/featureFlags');
 
@@ -42,6 +43,23 @@ const _dateClause = ({ from, to }, field = 'incidentDate') => {
   return Object.keys(c).length ? { [field]: c } : {};
 };
 
+// A waiver is "pending" (reviewable) only while its own status is
+// 'pending' AND its incident still exists in a state where a decision
+// can change something.  Waivers left over on cancelled / waived
+// incidents (including rows created before the cancel flow closed them)
+// are excluded here -- they stay in the DB as history.
+const _NON_ACTIONABLE_INCIDENT = ['cancelled', 'waived'];
+const _actionablePendingWaivers = async () => {
+  const rows = await ComplianceWaiver.find({ status: 'pending' })
+    .sort({ requestedAt: 1 }).lean();
+  if (rows.length === 0) return rows;
+  const incs = await ComplianceIncident.find({
+    _id: { $in: [...new Set(rows.map((r) => String(r.incidentId)))] },
+  }).select('_id status').lean();
+  const live = new Set(incs.filter((i) => !_NON_ACTIONABLE_INCIDENT.includes(i.status)).map((i) => String(i._id)));
+  return rows.filter((r) => live.has(String(r.incidentId)));
+};
+
 // -----------------------------------------------------------
 // Overview summary tiles.
 // -----------------------------------------------------------
@@ -55,13 +73,14 @@ const summary = asyncHandler(async (req, res) => {
     ComplianceIncident.countDocuments({ ...where, status: 'waived' }),
     ComplianceIncident.countDocuments({ ...where, status: 'resolved' }),
     ComplianceIncident.countDocuments({ ...where, status: 'cancelled' }),
-    ComplianceWaiver.countDocuments({ status: 'pending' }),
+    _actionablePendingWaivers().then((rows) => rows.length),
+    // Net owed = debits - credits (reversals / waivers / recoveries) dated in
+    // the window.  Previously debits only, so a reversed fine still counted.
     FinancialLedger.aggregate([
       { $match: {
         ...(range.from || range.to ? { date: { ...(range.from ? { $gte: range.from } : {}), ...(range.to ? { $lte: range.to } : {}) } } : {}),
-        direction: -1,
       } },
-      { $group: { _id: null, total: { $sum: '$quantity' } } },
+      { $group: { _id: null, total: { $sum: ledgerService.NET_OWED_EXPR } } },
     ]),
   ]);
   res.json({
@@ -113,8 +132,7 @@ const commonViolations = asyncHandler(async (req, res) => {
 // -----------------------------------------------------------
 const pendingWaivers = asyncHandler(async (req, res) => {
   _adminGate(req, res);
-  const rows = await ComplianceWaiver.find({ status: 'pending' })
-    .sort({ requestedAt: 1 }).limit(200).lean();
+  const rows = (await _actionablePendingWaivers()).slice(0, 200);
   const empIds = [...new Set(rows.map((r) => String(r.employee)))];
   const incIds = [...new Set(rows.map((r) => String(r.incidentId)))];
   const [emps, incs] = await Promise.all([
@@ -136,7 +154,7 @@ const pendingWaivers = asyncHandler(async (req, res) => {
 const financialTotals = asyncHandler(async (req, res) => {
   _adminGate(req, res);
   const range = _range(req);
-  const match = { direction: -1 };
+  const match = {};
   if (range.from || range.to) {
     match.date = {};
     if (range.from) match.date.$gte = range.from;
@@ -146,7 +164,11 @@ const financialTotals = asyncHandler(async (req, res) => {
     { $match: match },
     { $lookup: { from: 'users', localField: 'employee', foreignField: '_id', as: 'user' } },
     { $unwind: '$user' },
-    { $group: { _id: '$user.department', total: { $sum: '$quantity' }, count: { $sum: 1 } } },
+    { $group: {
+      _id: '$user.department',
+      total: { $sum: ledgerService.NET_OWED_EXPR },       // debits - credits
+      count: { $sum: { $cond: [{ $eq: ['$direction', -1] }, 1, 0] } },   // debit entries, as before
+    } },
     { $sort: { total: -1 } },
   ]);
   const deptIds = rows.map((r) => r._id).filter(Boolean);

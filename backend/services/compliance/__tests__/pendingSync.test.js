@@ -41,6 +41,8 @@ _stub.install(ComplianceIncident, {
   uniqueBy: [{ keys: ['naturalKey'], filter: { source: 'automatic' } }],
 });
 _stub.install(ComplianceEvent);
+// cancelIncident now also closes the incident's pending waivers.
+_stub.install(require('../../../models/ComplianceWaiver'));
 _stub.install(ComplianceActionEffect);
 _stub.install(MarksLedger);
 _stub.install(FinancialLedger);

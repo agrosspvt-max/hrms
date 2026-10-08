@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import api from '../../../api/axios';
 import { Loader, EmptyState } from '../../../components/Loader.jsx';
 import ActionBadge from '../../../components/compliance/ActionBadge.jsx';
@@ -24,7 +24,22 @@ import useComplianceRegistry from '../../../hooks/useComplianceRegistry.js';
  * of blowing up.
  */
 export default function ComplianceWorkspace() {
-  const [tab, setTab] = useState('dashboard');
+  // Deep link support: /hr/compliance?incident=<id> opens that incident in
+  // the Incidents tab (previously the param was generated but never read).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const linkedIncident = searchParams.get('incident');
+  const [tab, setTab] = useState(linkedIncident ? 'incidents' : 'dashboard');
+  // Incident the Incidents tab should open as soon as it mounts.
+  const [focusIncident, setFocusIncident] = useState(linkedIncident || null);
+  // "Review" on a pending waiver: switch to the Incidents tab and open the
+  // waiver's incident, where the existing Approve / Reject workflow lives.
+  const reviewWaiver = (incidentId) => { setFocusIncident(String(incidentId)); setTab('incidents'); };
+  const clearFocus = () => {
+    setFocusIncident(null);
+    if (searchParams.get('incident')) {
+      const next = new URLSearchParams(searchParams); next.delete('incident'); setSearchParams(next, { replace: true });
+    }
+  };
   // Workspace-level global filters shared by Dashboard + Incidents.
   // Rules tab ignores them (rule config isn't date-scoped).
   const [range, setRange] = useState(rangeFromPreset('last30'));
@@ -70,8 +85,8 @@ export default function ComplianceWorkspace() {
           </button>
         ))}
       </div>
-      {tab === 'dashboard' && <DashboardTab range={range} onEmployeeOpen={openEmployee} />}
-      {tab === 'incidents' && <IncidentsTab range={range} q={q} onEmployeeOpen={openEmployee} />}
+      {tab === 'dashboard' && <DashboardTab range={range} onEmployeeOpen={openEmployee} onReviewWaiver={reviewWaiver} />}
+      {tab === 'incidents' && <IncidentsTab range={range} q={q} onEmployeeOpen={openEmployee} focusId={focusIncident} onFocusHandled={clearFocus} />}
       {tab === 'rules'     && <RulesTab />}
 
       {employeeDrill && (
@@ -89,7 +104,7 @@ export default function ComplianceWorkspace() {
 // -----------------------------------------------------------
 // Dashboard tab
 // -----------------------------------------------------------
-function DashboardTab({ range, onEmployeeOpen }) {
+function DashboardTab({ range, onEmployeeOpen, onReviewWaiver }) {
   const [summary, setSummary] = useState(null);
   const [top, setTop]         = useState(null);
   const [common, setCommon]   = useState(null);
@@ -170,10 +185,11 @@ function DashboardTab({ range, onEmployeeOpen }) {
                         {w.incident ? w.incident.ruleCode.replace(/_/g, ' ') : '?'} · {fmtDate(w.requestedAt)}
                       </div>
                     </div>
-                    <a className="btn-secondary !py-1 !text-xs"
-                       href={`/hr/compliance?incident=${w.incidentId}`}>
+                    <button type="button" className="btn-secondary !py-1 !text-xs"
+                      disabled={!w.incidentId}
+                      onClick={() => onReviewWaiver(w.incidentId)}>
                       Review
-                    </a>
+                    </button>
                   </li>
                 ))}
               </ul>}
@@ -210,7 +226,7 @@ function Panel({ title, span = 1, children }) {
 // -----------------------------------------------------------
 // Incidents tab
 // -----------------------------------------------------------
-function IncidentsTab({ range, q, onEmployeeOpen }) {
+function IncidentsTab({ range, q, onEmployeeOpen, focusId, onFocusHandled }) {
   const [rows, setRows]     = useState(null);
   const [err, setErr]       = useState(null);
   const [status, setStatus] = useState('active');
@@ -251,6 +267,23 @@ function IncidentsTab({ range, q, onEmployeeOpen }) {
       return hay.includes(needle);
     });
   }, [rows, q]);
+
+  // Open an incident handed over by the Dashboard's "Review" button (or a
+  // ?incident= deep link).  Failures are surfaced, never swallowed.
+  useEffect(() => {
+    if (!focusId) return undefined;
+    let cancelled = false;
+    api.get(`/compliance/incidents/${focusId}`)
+      .then(({ data }) => {
+        if (cancelled) return;
+        setOpenId(data);
+        if (data && data.incident && data.incident.status) setStatus(data.incident.status);
+      })
+      .catch((e) => { if (!cancelled) toast.error(`Could not open the waiver's incident: ${errMsg(e)}`); })
+      .finally(() => { if (!cancelled && onFocusHandled) onFocusHandled(); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line
+  }, [focusId]);
 
   const view = async (inc) => {
     try {

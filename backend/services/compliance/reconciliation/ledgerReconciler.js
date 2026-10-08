@@ -40,7 +40,7 @@ const _scan = async (Model) => {
   const drift = [];
   let checked = 0;
   const cursor = Model.find({})
-    .sort({ employee: 1, date: 1, createdAt: 1 })
+    .sort({ employee: 1, createdAt: 1, _id: 1 })   // insertion order: runningBalance is the total at insertion time
     .lean()
     .cursor();
   try {

@@ -4,6 +4,7 @@ const cors = require('cors');
 const morgan = require('morgan');
 
 const connectDB = require('./config/db');
+const { backgroundJobsAllowed } = require('./config/runtimeSafety');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
 const app = express();
@@ -171,6 +172,15 @@ const syncSalaryIndexes = async () => {
 
 const start = async () => {
   await connectDB();
+  // Boot-time index drops/syncs, data migrations, seeds and every scheduler
+  // WRITE to the database.  When a development process was explicitly allowed
+  // onto a shared database (ALLOW_SHARED_DB_DEV=true) they stay off unless
+  // ALLOW_SHARED_DB_DEV_JOBS=true as well (see config/runtimeSafety.js).
+  if (!backgroundJobsAllowed()) {
+    console.warn('[safety] boot migrations, seeds and schedulers are DISABLED for this shared database; serving the API only.');
+    app.listen(PORT, () => console.log(`[server] HRMS API running on :${PORT} (background jobs off)`));
+    return;
+  }
   try { await syncSalaryIndexes(); } catch (e) { console.error('[migrate] salary period migration failed:', e.message); }
   // Seed default Custom Assignment templates (idempotent).
   try {

@@ -45,8 +45,14 @@ const MODELS = {
  *
  * Returns the persisted row (with `runningBalance` materialised).
  *
+ * Phase 3B: `runningBalance` is the true ledger total at insertion time
+ * (see `balance`).  It is a display/audit snapshot, NOT the source of
+ * truth: current balance is always the sum of the rows.  Under concurrent
+ * appends the snapshot of the second writer can omit the first writer's
+ * row; `balance()` is unaffected.
+ *
  * Stabilization patch (C2): when `session` is provided we read the
- * previous row + insert the new row inside the same transaction.
+ * previous total + insert the new row inside the same transaction.
  * On replica-set Mongo this closes the read-then-write race; on
  * standalone Mongo the caller falls through to the pre-patch
  * behaviour (single-node race remains but the reconciler catches
@@ -95,13 +101,12 @@ const append = async (args) => {
     return null;
   }
 
-  // Read the most recent row.  Use both `date` and `createdAt` so
-  // multiple entries on the same day preserve their intra-day order.
-  const lastQ = Model.findOne({ employee })
-    .sort({ date: -1, createdAt: -1 });
-  if (session) lastQ.session(session);
-  const last = await lastQ.lean();
-  const prevBalance = last ? Number(last.runningBalance) || 0 : 0;
+  // Balance after this row = the TRUE total of every row already in the
+  // ledger + this one.  It must not be chained from "the newest row by
+  // date": a backdated entry (a recurring debit carries the incident's
+  // effectiveDate, a reversal carries `now`) would then continue from an
+  // older chain and fork the stored balance away from the real sum.
+  const prevBalance = await balance({ ledger, employee, session });
   const runningBalance = prevBalance + direction * quantity;
 
   const doc = {
@@ -117,14 +122,66 @@ const append = async (args) => {
   return await Model.create(doc);
 };
 
-/** Current balance = most recent row's runningBalance, or 0. */
-const balance = async ({ ledger, employee }) => {
+/**
+ * Signed contribution of one ledger row (-1 debit / +1 credit).  The single
+ * definition of the ledger's sign convention; `balance`, the employee ledger
+ * view and the dashboards all derive from it (the dashboard's aggregation
+ * pipeline expresses the same thing, see `NET_OWED_EXPR`).
+ */
+const signed = (r) => (Number(r.direction) || 0) * (Number(r.quantity) || 0);
+
+/**
+ * Mongo expression for "net amount OWED" of a row: debit counts +quantity,
+ * credit counts -quantity.  Equals `-signed(row)`.
+ */
+const NET_OWED_EXPR = Object.freeze({
+  $multiply: [{ $subtract: [0, '$direction'] }, '$quantity'],
+});
+
+/**
+ * Current balance = SUM of every row's signed quantity.  Independent of
+ * insertion order and of row dates, and it never trusts a stored
+ * `runningBalance` (which is only an insertion-time snapshot).  Negative
+ * means the employee is net debited.  `before` restricts to rows dated
+ * strictly earlier than that date (opening balance of a date window).
+ */
+const balance = async ({ ledger, employee, before = null, session = null }) => {
   const Model = MODELS[ledger];
   if (!Model) throw new Error(`ledgerService.balance: unknown ledger "${ledger}"`);
-  const last = await Model.findOne({ employee })
-    .sort({ date: -1, createdAt: -1 })
-    .lean();
-  return last ? Number(last.runningBalance) || 0 : 0;
+  const where = { employee };
+  if (before) where.date = { $lt: before };
+  const q = Model.find(where).select('direction quantity');
+  if (session) q.session(session);
+  const rows = await q.lean();
+  return rows.reduce((sum, r) => sum + signed(r), 0);
 };
 
-module.exports = { append, balance, MODELS };
+/**
+ * Display view of a ledger window: rows in (date, createdAt) order with
+ * `runningBalance` recomputed as opening + cumulative sum in that order, so
+ * the last row always equals the true total.  The stored value is kept as
+ * `storedRunningBalance`.  Pure; never writes.
+ */
+const withDisplayBalances = (rows, opening = 0) => {
+  let bal = Number(opening) || 0;
+  return rows.map((r) => {
+    bal += signed(r);
+    return { ...r, storedRunningBalance: r.runningBalance, runningBalance: bal };
+  });
+};
+
+/**
+ * True when a compensating credit (recovery / waiver) already exists for
+ * the effect.  Lets lifecycle callers refuse to write a second reversal
+ * for the same original effect.
+ */
+const hasReversal = async ({ ledger, effectId, session = null }) => {
+  const Model = MODELS[ledger];
+  if (!Model || !effectId) return false;
+  const q = Model.findOne({ refEffectId: effectId, direction: 1, type: { $in: ['recovery', 'waiver'] } })
+    .select('_id');
+  if (session) q.session(session);
+  return !!(await q.lean());
+};
+
+module.exports = { append, balance, signed, withDisplayBalances, NET_OWED_EXPR, hasReversal, MODELS };

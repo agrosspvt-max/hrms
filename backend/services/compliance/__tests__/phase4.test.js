@@ -65,6 +65,8 @@ _stub.install(ComplianceActionEffect, {
   uniqueBy: [['incidentId', 'ruleActionId', 'effectiveDate']],
 });
 _stub.install(ComplianceEvent);
+// cancelIncident now also closes the incident's pending waivers.
+_stub.install(require('../../../models/ComplianceWaiver'));
 _stub.install(AuditLog);
 
 // Now load Phase 4 services (they cached the models above).
