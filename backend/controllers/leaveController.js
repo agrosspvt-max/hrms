@@ -7,6 +7,7 @@ const Notification = require('../models/Notification');
 const { startOfDay, daysBetween, addDays, effectiveLeaveDays } = require('../utils/dateHelpers');
 const Holiday = require('../models/Holiday');
 const { logAudit } = require('../utils/audit');
+const { paidFlagForLeaveType } = require('../utils/leaveAccounting');
 const notify = require('../services/notifyEvents');
 // Phase 54 -- supporting documents.  Never required; if the employee
 // sends `attachmentIds[]` we link matching orphan attachments to the
@@ -193,7 +194,7 @@ const apply = asyncHandler(async (req, res) => {
   // Employees are blocked here when their balance is insufficient; HR /
   // Super Admin acting on behalf of an employee may over-allocate, the
   // payroll engine will handle any overflow.
-  const isPaidRequest = leaveType !== 'unpaid';
+  const isPaidRequest = paidFlagForLeaveType(leaveType);
   if (isPaidRequest) {
     const u = await User.findById(req.user._id).select('leaveBalance role');
     const allowance = Number(u?.leaveBalance?.yearlyAllowance) || 0;
@@ -506,10 +507,8 @@ const decide = asyncHandler(async (req, res) => {
     //     spills into negative `used` so the payroll engine can see and
     //     deduct salary for the uncovered days.
     const user = await User.findById(lv.employee);
-    if (lv.leaveType === 'unpaid') {
-      lv.paid = false;
-    } else {
-      lv.paid = true;
+    lv.paid = paidFlagForLeaveType(lv.leaveType);
+    if (lv.paid) {
       user.leaveBalance.used = (user.leaveBalance.used || 0) + lv.days;
       await user.save();
     }
@@ -851,6 +850,10 @@ const edit = asyncHandler(async (req, res) => {
   if (body.fromDate  !== undefined) patch.fromDate  = startOfDay(new Date(body.fromDate));
   if (body.toDate    !== undefined) patch.toDate    = startOfDay(new Date(body.toDate));
   if (body.paid      !== undefined) patch.paid      = !!body.paid;
+  // The paid flag follows the leave type unless HR overrides it explicitly.  Changing
+  // the type alone (unpaid -> casual / paid ...) used to leave `paid` stale, so the
+  // leave said "paid" while its attendance (and the balance) stayed unpaid.
+  else if (patch.leaveType && patch.leaveType !== lv.leaveType) patch.paid = paidFlagForLeaveType(patch.leaveType);
 
   const forced = !!body.force;
   const forceReason = String(body.forceReason || '').trim();
@@ -976,13 +979,12 @@ const edit = asyncHandler(async (req, res) => {
     }
   }
 
-  // Attendance sync -- reuse existing helper.  Clear the old rows
-  // (leave-linked) then re-materialise via syncAttendanceForLeave so
-  // shrunk / moved windows drop old days.
+  // Attendance sync -- ONE reconcile of this leave's records: refreshes rows whose
+  // paid / half-day classification changed, creates rows for new days, releases rows
+  // for days that left the window (a manual mark a leave had superseded is given
+  // back).  No clear-then-recreate, so nothing else on those days is disturbed.
   try {
-    const leaveAtt = require('../services/leaveAttendance');
-    await leaveAtt.clearAttendanceForLeave(lv._id);
-    await leaveAtt.syncAttendanceForLeave(lv);
+    await require('../services/leaveAttendance').syncAttendanceForLeave(lv);
   } catch (e) { console.error('[leave.edit attendance]', e.message); }
 
   // Business-state sync across the UNION of previous + new window.

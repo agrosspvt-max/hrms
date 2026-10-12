@@ -45,14 +45,88 @@ const unitsForLeave = (lv) => {
   return lv.dayType === 'half' ? 0.5 : 1;
 };
 
+// Manual salary-cut marks.  An approved leave supersedes one of these when the
+// mark was made BEFORE the leave was approved (HR marked the day on the facts
+// they had; the approval is the later, more specific decision).  A mark made
+// AFTER the approval is a deliberate override of the leave and always wins.
+// 'absent' keeps its original (Issue #3) behaviour: always superseded.
+const NEGATIVE_MANUAL_STATUSES = Object.freeze(['half_unpaid', 'full_unpaid']);
+
+const _ts = (d) => (d ? new Date(d).getTime() : NaN);
+
 /**
- * Sync attendance records for a single approved Leave document.
- * Returns { created, kept } counts for logging / verification.
+ * Should an approved leave take over this MANUAL attendance record?
+ * Returns 'stale_absent' | 'pre_approval_unpaid_mark' | null (keep the manual row).
  */
-const syncAttendanceForLeave = async (lv) => {
-  if (!lv || lv.status !== 'approved') return { created: 0, kept: 0 };
+const manualSupersession = (existing, lv, { repair = true } = {}) => {
+  if (!existing || existing.source !== 'manual') return null;
+  if (existing.status === 'absent') return 'stale_absent';
+  if (!repair) return null;                                             // boot re-sync never rewrites history
+  if ((existing.leaveDelta || 0) !== 0) return null;                    // never disturb leave accounting
+  if (!NEGATIVE_MANUAL_STATUSES.includes(existing.status)) return null; // present / paid / weekly_off are deliberate
+  const markedAt = _ts(existing.updatedAt || existing.createdAt);
+  const approvedAt = _ts(lv.decidedAt);
+  if (Number.isNaN(markedAt) || Number.isNaN(approvedAt)) return null;  // cannot prove it predates: keep
+  return markedAt <= approvedAt ? 'pre_approval_unpaid_mark' : null;
+};
+
+const _systemAudit = async (action, targetId, label, meta) => {
+  try {
+    const AuditLog = require('../models/AuditLog');
+    await AuditLog.create({
+      actor: new mongoose.Types.ObjectId('000000000000000000000000'), actorRole: 'system',
+      action, targetType: 'Attendance', targetId, targetLabel: label, meta,
+    });
+  } catch (e) { console.error('[leaveAttendance] audit failed:', e.message); }
+};
+
+/**
+ * Give a leave-linked row back: restore the manual record it superseded (with its
+ * ORIGINAL timestamp, so a later re-sync can still tell it predates the approval),
+ * otherwise delete it so the day falls back to its derived state.
+ */
+const _releaseRow = async (row) => {
+  const prev = row.supersededManual;
+  if (prev && prev.status) {
+    await Attendance.updateOne(
+      { _id: row._id, source: 'leave' },
+      { $set: {
+        status: prev.status, source: 'manual', note: prev.note || '', setBy: prev.setBy || null,
+        leaveDelta: prev.leaveDelta || 0, leaveId: null, supersededManual: null,
+        ...(prev.updatedAt ? { updatedAt: prev.updatedAt } : {}),
+      } },
+      { timestamps: false },
+    );
+    return 'restored';
+  }
+  await Attendance.deleteMany({ _id: row._id, source: 'leave' });
+  return 'deleted';
+};
+
+/**
+ * Reconcile the attendance records of ONE approved Leave with the leave as it is
+ * NOW (status, paid flag, day type, dates).  Idempotent and safe to repeat:
+ *   - missing day                    -> create the leave-linked record
+ *   - this leave's own record, stale -> refresh status / leaveDelta in place
+ *     (this is the "approved as unpaid, now paid" case: the row is never kept stale)
+ *   - another leave's record         -> leave alone
+ *   - manual record                  -> kept, unless manualSupersession() says the
+ *     approval takes over (stale Absent, or an unpaid mark that predates it)
+ *   - auto half-day from a submission-> adopted so revocation can clean up
+ *   - this leave's records on days that are no longer part of it -> released
+ * Only this employee's records for this leave's window are touched.
+ *
+ * `repair:false` (used by the boot-time re-sync) keeps the historical rules only:
+ * create missing days, adopt auto rows, supersede a stale Absent -- it does NOT
+ * refresh stale leave-linked rows, supersede unpaid marks or release rows, so a
+ * deploy never silently rewrites past attendance.  Live leave events use the
+ * default (repair) mode; historical repair is a separate, reviewed step.
+ * Returns { created, kept, updated, released }.
+ */
+const syncAttendanceForLeave = async (lv, { repair = true } = {}) => {
+  if (!lv || lv.status !== 'approved') return { created: 0, kept: 0, updated: 0, released: 0 };
   const employee = await User.findById(lv.employee).select('weeklyOff');
-  if (!employee) return { created: 0, kept: 0 };
+  if (!employee) return { created: 0, kept: 0, updated: 0, released: 0 };
   const weeklyOff = Array.isArray(employee.weeklyOff) && employee.weeklyOff.length ? employee.weeklyOff : [0];
 
   const from = startOfDay(lv.fromDate);
@@ -64,69 +138,98 @@ const syncAttendanceForLeave = async (lv) => {
 
   const status = statusForLeave(lv);
   const leaveDelta = unitsForLeave(lv);
+  const windowNote = `(${formatYMD(lv.fromDate)} → ${formatYMD(lv.toDate)})`;
 
   let created = 0;
   let kept = 0;
+  let updated = 0;
+  const owned = new Set();          // YMD of every day this leave should own
   for (let d = new Date(from.getTime()); d.getTime() <= to.getTime(); d = addDays(d, 1)) {
     if (weeklyOff.includes(d.getUTCDay())) continue;        // employee's weekly off
     if (holidaySet.has(formatYMD(d))) continue;             // company holiday
+    owned.add(formatYMD(d));
 
-    // Atomic upsert -- if there's already a record for this day:
-    //   - leave-driven from THIS or another approved leave -> leave alone
-    //   - manual override -> respect HR's intent, leave alone, EXCEPT a
-    //     stale manual 'absent': an approved leave supersedes it (Issue
-    //     #3).  'absent' is the negative/default state and is the value
-    //     an attendance-review or a pre-approval HR mark leaves behind;
-    //     a subsequently-approved leave for the same day should win.
-    //     Every OTHER manual status (present, half_paid/half_unpaid,
-    //     full_paid/full_unpaid, weekly_off) is a deliberate positive
-    //     override and is preserved untouched.
-    //   - auto half-day from a submission -> upgrade to leave-linked so
-    //     revocation can clean up
     const existing = await Attendance.findOne({ employee: lv.employee, date: d });
-    if (existing) {
-      const isStaleManualAbsent = existing.source === 'manual' && existing.status === 'absent';
-      if (existing.source === 'manual' && !isStaleManualAbsent) { kept += 1; continue; }
-      if (existing.source === 'leave' && String(existing.leaveId) === String(lv._id)) { kept += 1; continue; }
-      if (existing.source === 'leave' && existing.leaveId) { kept += 1; continue; }
-      // 'auto' record (submission-driven half-day) OR a stale manual
-      // 'absent': take it over to the leave status.  `statusForLeave`
-      // respects dayType, so a half-day leave becomes half_paid/
-      // half_unpaid -- never a full-day status.  The record is UPDATED
-      // (not deleted), preserving its history + audit note; leaveDelta
-      // is set so ledger/paid-day accounting is correct, and on revoke
-      // clearAttendanceForLeave removes exactly this leave-linked row.
-      existing.status = status;
-      existing.source = 'leave';
-      existing.leaveId = lv._id;
-      existing.leaveDelta = leaveDelta;
-      existing.note = isStaleManualAbsent
-        ? `Approved leave superseded a prior Absent mark (${formatYMD(lv.fromDate)} → ${formatYMD(lv.toDate)})`
-        : (existing.note || `Approved leave (${formatYMD(lv.fromDate)} → ${formatYMD(lv.toDate)})`);
-      await existing.save();
+    if (!existing) {
+      await Attendance.create({
+        employee: lv.employee, date: d, status, source: 'leave', leaveId: lv._id, leaveDelta,
+        setBy: lv.decidedBy || lv.employee, note: `Approved leave ${windowNote}`,
+      });
       created += 1;
       continue;
     }
-    await Attendance.create({
-      employee: lv.employee,
-      date: d,
-      status,
-      source: 'leave',
-      leaveId: lv._id,
-      leaveDelta,
-      setBy: lv.decidedBy || lv.employee,
-      note: `Approved leave (${formatYMD(lv.fromDate)} → ${formatYMD(lv.toDate)})`,
-    });
+    if (existing.source === 'leave') {
+      if (String(existing.leaveId) !== String(lv._id)) { kept += 1; continue; }   // another leave's row
+      if (!repair || (existing.status === status && (existing.leaveDelta || 0) === leaveDelta)) { kept += 1; continue; }
+      // Our own row carries an obsolete classification: bring it up to date.
+      await Attendance.updateOne(
+        { _id: existing._id, source: 'leave', leaveId: lv._id },
+        { $set: { status, leaveDelta, note: `Approved leave ${windowNote}` } },
+      );
+      updated += 1;
+      continue;
+    }
+    if (existing.source === 'manual') {
+      const why = manualSupersession(existing, lv, { repair });
+      if (!why) { kept += 1; continue; }
+      const snapshot = why === 'stale_absent' ? null : {
+        status: existing.status, note: existing.note || '', setBy: existing.setBy || null,
+        leaveDelta: existing.leaveDelta || 0, updatedAt: existing.updatedAt || existing.createdAt || null,
+      };
+      const won = await Attendance.updateOne(
+        { _id: existing._id, source: 'manual', status: existing.status },     // not if HR changed it meanwhile
+        { $set: {
+          status, source: 'leave', leaveId: lv._id, leaveDelta, supersededManual: snapshot,
+          note: why === 'stale_absent'
+            ? `Approved leave superseded a prior Absent mark ${windowNote}`
+            : `Approved leave superseded a prior ${existing.status} mark ${windowNote}`,
+        } },
+      );
+      if (won && (won.modifiedCount === undefined || won.modifiedCount > 0)) {
+        created += 1;
+        await _systemAudit('attendance.leave_superseded_manual', existing._id,
+          `${formatYMD(d)} ${existing.status} -> ${status}`,
+          { employee: String(lv.employee), leaveId: String(lv._id), date: formatYMD(d), reason: why,
+            previous: { status: existing.status, note: existing.note || '', setBy: existing.setBy ? String(existing.setBy) : null },
+            next: { status } });
+      } else { kept += 1; }
+      continue;
+    }
+    // 'auto' record (submission-driven half-day): take it over so revocation can clean up.
+    await Attendance.updateOne(
+      { _id: existing._id, source: 'auto' },
+      { $set: {
+        status, source: 'leave', leaveId: lv._id, leaveDelta,
+        note: existing.note || `Approved leave ${windowNote}`,
+      } },
+    );
     created += 1;
   }
-  return { created, kept };
+
+  // This leave's records on days that no longer belong to it (window shrunk / moved,
+  // a holiday or weekly off now covers the day): release them.
+  let released = 0;
+  const mine = repair ? await Attendance.find({ leaveId: lv._id, source: 'leave' }) : [];
+  for (const row of mine) {
+    if (owned.has(formatYMD(row.date))) continue;
+    await _releaseRow(row);
+    released += 1;
+  }
+  return { created, kept, updated, released };
 };
 
-/** Delete every Attendance record we created for a given leaveId. */
+/**
+ * Release every Attendance record we created for a given leaveId.  A record that
+ * had superseded a manual mark gives that mark back; everything else is deleted.
+ */
 const clearAttendanceForLeave = async (leaveId) => {
-  if (!leaveId) return { deleted: 0 };
-  const r = await Attendance.deleteMany({ leaveId, source: 'leave' });
-  return { deleted: r?.deletedCount || 0 };
+  if (!leaveId) return { deleted: 0, restored: 0 };
+  const rows = await Attendance.find({ leaveId, source: 'leave' });
+  let deleted = 0; let restored = 0;
+  for (const row of rows) {
+    if ((await _releaseRow(row)) === 'restored') restored += 1; else deleted += 1;
+  }
+  return { deleted, restored };
 };
 
 /**
@@ -138,7 +241,7 @@ const clearAttendanceForLeave = async (leaveId) => {
  * spamming Render's log volume.
  */
 const migrateApprovedLeaves = async () => {
-  const approved = await Leave.find({ status: 'approved' }).select('_id employee fromDate toDate dayType paid status decidedBy');
+  const approved = await Leave.find({ status: 'approved' }).select('_id employee fromDate toDate dayType paid status decidedBy decidedAt');
   if (approved.length === 0) {
     console.log('[migrate] leave→attendance: no approved leaves to backfill');
     return { totalLeaves: 0, totalCreated: 0, totalKept: 0 };
@@ -147,7 +250,7 @@ const migrateApprovedLeaves = async () => {
   let totalKept = 0;
   for (const lv of approved) {
     try {
-      const r = await syncAttendanceForLeave(lv);
+      const r = await syncAttendanceForLeave(lv, { repair: false });   // never rewrite history at boot
       totalCreated += r.created;
       totalKept    += r.kept;
     } catch (e) {
@@ -164,4 +267,5 @@ module.exports = {
   migrateApprovedLeaves,
   statusForLeave,
   unitsForLeave,
+  manualSupersession,
 };

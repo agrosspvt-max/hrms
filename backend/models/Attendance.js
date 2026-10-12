@@ -52,6 +52,20 @@ const attendanceSchema = new mongoose.Schema(
     // clearing a MANUAL override can reverse exactly what it applied,
     // keeping leaveBalance.used consistent without double-counting.
     leaveDelta: { type: Number, default: 0 },
+
+    // When an approved leave takes over a manual "unpaid" mark that predates its
+    // approval, the mark is parked here so revoking / re-pointing the leave can give
+    // it back (see services/leaveAttendance).  Absent on every other record.
+    supersededManual: {
+      type: new mongoose.Schema({
+        status:     { type: String },
+        note:       { type: String, default: '' },
+        setBy:      { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        leaveDelta: { type: Number, default: 0 },
+        updatedAt:  { type: Date, default: null },
+      }, { _id: false }),
+      default: null,
+    },
   },
   { timestamps: true }
 );

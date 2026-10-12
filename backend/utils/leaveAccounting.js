@@ -80,10 +80,19 @@ const computeOverrideLeaveDelta = ({ targetUnits, approvalUnits, existingOverrid
 
 const round2 = (n) => Math.round(n * 100) / 100;
 
+/**
+ * Whether a leave of this type is PAID.  The single rule used by apply, decide
+ * and edit: only 'unpaid' bypasses the balance; casual / sick / paid / other
+ * are paid.  `Leave.paid` must always be derived from the type through this
+ * helper (an explicit HR override on edit aside), never set independently.
+ */
+const paidFlagForLeaveType = (leaveType) => leaveType !== 'unpaid';
+
 module.exports = {
   STATUS_LEAVE_UNITS,
   leaveUnitsForStatus,
   approvedPaidLeaveUnitsForDay,
   computeOverrideLeaveDelta,
+  paidFlagForLeaveType,
   round2,
 };
