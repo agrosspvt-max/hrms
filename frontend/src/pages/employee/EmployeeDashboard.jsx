@@ -18,7 +18,19 @@ import { subscribe } from '../../realtime';
 import AttendanceNotesModal from '../../components/AttendanceNotesModal.jsx';
 import DisclosureCard from '../../components/DisclosureCard.jsx';
 import ComplianceCard from '../../components/compliance/ComplianceCard.jsx';
-import useComplianceConfig, { isFeatureEnabled } from '../../hooks/useComplianceConfig.js';
+import useComplianceConfig, { isFeatureEnabled, loadComplianceConfig } from '../../hooks/useComplianceConfig.js';
+
+/**
+ * The employee's warning / penalty feed.  Same {active, probable, resolved}
+ * shape from either source; `compliance.readWarnings` (exposed through
+ * /compliance/config) switches it from the legacy Penalty feed to Compliance.
+ */
+const fetchPenaltyFeed = async () => {
+  let fromCompliance = false;
+  try { fromCompliance = isFeatureEnabled(await loadComplianceConfig(), 'readWarnings'); } catch (_) { /* legacy */ }
+  const pr = await api.get(fromCompliance ? '/compliance/me/accountability' : '/penalties/mine');
+  return pr.data || { active: [], probable: [], resolved: [] };
+};
 
 /**
  * ComplianceCardBlock -- tiny wrapper that reads the flag snapshot
@@ -28,6 +40,9 @@ import useComplianceConfig, { isFeatureEnabled } from '../../hooks/useCompliance
 function ComplianceCardBlock() {
   const cfg = useComplianceConfig();
   if (!isFeatureEnabled(cfg, 'employeeCardV2')) return null;
+  // Phase 4: when the warning / penalty card is already served from Compliance
+  // (readWarnings), a second Compliance card would show the same events twice.
+  if (isFeatureEnabled(cfg, 'readWarnings')) return null;
   return <ComplianceCard />;
 }
 
@@ -163,9 +178,10 @@ function PenaltyWarnings({ penalties, onAcknowledged }) {
     ...(penalties.probable || []).filter((p) => !p.acknowledgedAt),
   ];
   if (unread.length === 0 && activeLocks.length === 0 && activeMissed.length === 0 && activeFinancial.length === 0) return null;
-  const ack = async (id) => {
+  const ack = async (p) => {
     try {
-      await api.post(`/penalties/${id}/acknowledge`);
+      // Compliance-sourced items carry their own acknowledge endpoint.
+      await api.post(p.acknowledgeUrl || `/penalties/${p._id}/acknowledge`);
       onAcknowledged?.();
     } catch (_) { /* silent */ }
   };
@@ -258,7 +274,7 @@ function PenaltyWarnings({ penalties, onAcknowledged }) {
             </div>
             <button
               className="btn-secondary shrink-0"
-              onClick={() => ack(p._id)}
+              onClick={() => ack(p)}
               title="Acknowledge and dismiss this card"
             >
               I've read this
@@ -769,8 +785,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     // Phase 61 -- pull the caller's own penalty feed for the
     // dashboard warning card.  Failure is non-fatal.
     try {
-      const pr = await api.get('/penalties/mine');
-      setPenalties(pr.data || { active: [], probable: [], resolved: [] });
+      setPenalties(await fetchPenaltyFeed());
     } catch (_) { /* card just stays empty */ }
     // Phase 62 -- probation info card.  Never blocks the dashboard.
     try {
@@ -1615,8 +1630,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         penalties={penalties}
         onAcknowledged={async () => {
           try {
-            const pr = await api.get('/penalties/mine');
-            setPenalties(pr.data || { active: [], probable: [], resolved: [] });
+            setPenalties(await fetchPenaltyFeed());
           } catch (_) { /* silent */ }
         }}
       />

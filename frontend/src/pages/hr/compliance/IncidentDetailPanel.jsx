@@ -167,6 +167,7 @@ function SummaryCard({ incident, isHR, onWaive, onRecover, onCancel, busy, onRel
         <Meta label="Source" value={sourceLabel} />
         <Meta label="Incident date" value={fmtWhen(incident.incidentDate, false)} />
         <Meta label="Effective date" value={fmtWhen(incident.effectiveDate, false)} />
+        <Meta label="Acknowledged by employee" value={incident.acknowledgedAt ? fmtWhen(incident.acknowledgedAt, true) : 'Not yet'} />
         <Meta label="Current phase" value={<PhaseChip status={incident.status} />} />
       </div>
 

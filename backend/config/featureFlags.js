@@ -47,6 +47,12 @@ const DEFAULTS = Object.freeze({
   'compliance.readShim': false,
   'compliance.dualWrite': false,
   'compliance.legacyBackfill': false,
+  // Phase 4 consolidation -- read-side switches (default OFF = legacy Penalty
+  // behaviour).  Rollout: LEGACY -> flip one read flag at a time after its
+  // parity suite passes -> (later) legacy writers off -> legacy removal.
+  'compliance.readFinalMarks': false,   // Final Marks projected from Compliance effects
+  'compliance.readCompletion': false,   // completion-% adjustment from Compliance effects
+  'compliance.readWarnings': false,     // employee/HR warning views from Compliance
   // Phase 10 -- final cleanup lock.
   'compliance.legacyGone': false,
 });

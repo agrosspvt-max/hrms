@@ -35,6 +35,9 @@ const _marksStrategies = [
   'template_default',
   'department_avg',
   'admin_defined',
+  // Deduct the target submission's own earned marks ("zero the day"), frozen at
+  // creation -- the legacy Penalty.penaltyMarks semantics.
+  'submission_earned',
 ];
 
 const complianceRuleActionSchema = new mongoose.Schema(

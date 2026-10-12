@@ -65,6 +65,8 @@ const get = asyncHandler(async (req, res) => {
       dashboardV2:     isEnabled('compliance.dashboardV2'),
       waiverRecovery:  isEnabled('compliance.waiverRecovery'),
       rules:           isEnabled('compliance.rules'),
+      // Phase 4: the employee warning / penalty card is served from Compliance.
+      readWarnings:    isEnabled('compliance.readWarnings'),
     },
     rollout: {
       missedSubmissionEffectiveFrom: MISSED_SUBMISSION_EFFECTIVE_FROM,

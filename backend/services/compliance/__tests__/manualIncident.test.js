@@ -83,6 +83,8 @@ const _seedManualRule = async ({ code, actionType, config }) => {
   // ==========================================================
   _stub.reset();
   const empId = _oid();
+
+  await User.create({ _id: empId, name: 'E', employeeId: 'E1', email: 'e1@x.test', password: 'secret1', role: 'employee', status: 'active' });
   const ruleFin = await _seedManualRule({
     code: 'financial_penalty_v2',
     actionType: 'financial_fine',
@@ -203,6 +205,7 @@ const _seedManualRule = async ({ code, actionType, config }) => {
   //    the executor will observe on the next apply().
   // ==========================================================
   _stub.reset();
+  await User.create({ _id: empId, name: 'E', employeeId: 'E1', email: 'e1@x.test', password: 'secret1', role: 'employee', status: 'active' });
   const ruleE2E = await _seedManualRule({
     code: 'financial_penalty_v2', actionType: 'financial_fine',
     config: { amount: 500 },
@@ -236,11 +239,15 @@ const _seedManualRule = async ({ code, actionType, config }) => {
   assert.deepStrictEqual(respBody.detectorMeta.hrOverride, { amount: 750 },
     'controller round-trips the HR override onto the incident');
 
-  // Now promote + apply.  Executor should use the override.
-  const promoted = await compliance.incidentService.promoteToActive(respBody._id, { now: new Date() });
-  assert.ok(promoted, 'incident promoted to active');
-  await compliance.actionEngine.apply({ incident: promoted });
+  // Phase 4: a manual consequence is applied IMMEDIATELY by the controller
+  // (promote + apply), as the legacy manual penalty was.  The executor must have
+  // used the override, and re-applying must be an idempotent no-op.
+  assert.strictEqual(respBody.status, 'active', 'manual incident is put in force on creation');
+  assert.strictEqual(await compliance.incidentService.promoteToActive(respBody._id, { now: new Date() }), null,
+    'already active -> no second promotion');
+  await compliance.actionEngine.apply({ incident: respBody });
   const finLedgerE2E = _stub.rows(FinancialLedger);
+  assert.strictEqual(finLedgerE2E.length, 1, 'exactly one ledger row (re-apply is idempotent)');
   assert.strictEqual(finLedgerE2E[0].quantity, 750,
     'end-to-end: modal payload -> controller -> incident -> executor uses 750');
   console.log('  ok  end-to-end: modal payload flows through controller to executor override');

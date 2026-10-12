@@ -91,7 +91,7 @@ const _mkEmp = async (over = {}) => await User.create({
   featureFlags._resetForTest();
 
   const r = await ruleSeed.run();
-  assert.strictEqual(r.total, 7, 'seed spec unchanged');
+  assert.strictEqual(r.total, 8, 'seed spec: 7 original rules + manual_warning_v2 (Phase 4)');
   const rule = _stub.rows(ComplianceRule).find((x) => x.code === 'performance_lock_v2');
   assert.ok(rule, 'performance_lock_v2 seeded');
   const lockAction = rule.actions.find((a) => a.type === 'performance_lock');

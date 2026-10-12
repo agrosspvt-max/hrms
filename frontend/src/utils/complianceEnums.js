@@ -121,6 +121,7 @@ export const MARKS_STRATEGIES = [
   { value: 'template_default', label: "Template's expected marks" },
   { value: 'department_avg',   label: 'Department average' },
   { value: 'admin_defined',    label: 'Fixed number (admin-defined)' },
+  { value: 'submission_earned', label: "The day's earned marks (zero the day)" },
 ];
 
 export const RECOVERY_MODES = [

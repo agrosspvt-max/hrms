@@ -23,6 +23,8 @@ const { scrubPrivateRemark } = require('../utils/privateRemark');
 const { scrubHodRecommendation } = require('../utils/hodRecommendation');
 // Phase 61 -- Penalty Engine hooks.
 const penaltyEngine = require('../services/penaltyEngine');
+const refileEligibility = require('../services/compliance/refile/refileEligibility');
+const refileService = require('../services/compliance/refile/refileService');
 const { attachFinalMarks } = require('../services/penaltyMath');
 // Phase 64.4 Gap 2 -- late-submission gate consults the Penalty
 // collection before accepting a submit for a past date.
@@ -194,12 +196,9 @@ const getToday = asyncHandler(async (req, res) => {
   // changes.
   let reopenedIds = [];
   try {
-    const approvedReopens = await Penalty.find({
-      employee: employee._id,
-      category: { $in: ['missed_submission', 'absent_submission'] },
-      'reopenRequest.decision': 'approved',
-    }).select('submission').lean();
-    reopenedIds = approvedReopens.map((p) => p.submission).filter(Boolean);
+    // Source of truth: Compliance re-file grants (ComplianceRefile, status
+    // approved), plus -- BRIDGE -- grants still approved on the legacy Penalty.
+    reopenedIds = await refileEligibility.approvedStubIds(employee._id);
   } catch (e) { console.error('[getToday] reopen lookup:', e.message); }
   // Business-state suppression: a submission hidden by businessStateSync
   // (e.g. a full-day leave was approved for today AFTER the submission
@@ -413,24 +412,14 @@ const submitOne = asyncHandler(async (req, res) => {
   // Employee Submits" order at the API layer so a client cannot
   // bypass the workflow by POSTing directly.  Same-day submissions
   // are untouched (that's the normal flow).
-  if (sub.date && startOfDay(sub.date).getTime() < today.getTime()) {
-    const missPenalty = await Penalty.findOne({
-      submission: sub._id,
-      category: { $in: ['missed_submission', 'absent_submission'] },
-      status: { $in: ['active', 'pending', 'scheduled'] },
-    }).select('reopenRequest').lean();
-    if (missPenalty) {
-      const decision = missPenalty.reopenRequest?.decision || '';
-      if (decision !== 'approved') {
-        res.status(400);
-        throw new Error(
-          decision === 'pending'
-            ? 'A reopen request is still pending HR review.  You cannot re-submit until it is approved.'
-            : decision === 'rejected'
-              ? 'HR rejected your reopen request.  Contact HR to raise a new request.'
-              : 'This day\'s submission window has closed.  Open Fines & Penalties to request reopening from HR.'
-        );
-      }
+  // The decision lives in ONE place (services/compliance/refile/refileEligibility):
+  // same conditions as before -- a past day with a missed-day marker is blocked
+  // unless a re-file grant is approved -- with the grant now owned by Compliance.
+  {
+    const gate = await refileEligibility.check({ submission: sub, today });
+    if (!gate.allowed) {
+      res.status(400);
+      throw new Error(gate.message);
     }
   }
 
@@ -1126,6 +1115,11 @@ const submitOne = asyncHandler(async (req, res) => {
   // enforced) attached to this exact submission the moment it lands.
   try { await penaltyEngine.resolveAbsentSubmissionOnSubmit({ submissionId: sub._id }); }
   catch (e) { console.error('[submit] penaltyEngine resolve:', e.message); }
+  // Compliance side of the same lifecycle step: a re-file grant is one-time, so
+  // the successful submission consumes it (atomic, idempotent).  The legacy
+  // reopenRequest is completed by the penaltyEngine call above.
+  try { await refileService.consumeForSubmission({ submissionId: sub._id, actor: req.user._id }); }
+  catch (e) { console.error('[submit] refile consume:', e.message); }
   sub.reviewStatus = 'pending';
   if (selfRating !== undefined) sub.selfRating = selfRating;
   if (selfNote !== undefined) sub.selfNote = selfNote;

@@ -184,6 +184,57 @@ const get = asyncHandler(async (req, res) => {
   res.json({ incident: row, effects, waivers });
 });
 
+
+// -----------------------------------------------------------
+// Manual issue validation (marks / completion / fine / warning).  Mirrors the
+// checks of the legacy POST /api/penalties/manual and adds the submission link
+// check, so a manual consequence is as safe as an automatic one.
+// -----------------------------------------------------------
+const _validateManualIssue = async ({ req, res, rule, employee, context, detectorMeta }) => {
+  const bad = (msg) => { res.status(400); throw new Error(msg); };
+  const User = require('../../models/User');
+  if (!(await User.findById(employee).select('_id').lean())) { res.status(404); throw new Error('Employee not found.'); }
+
+  const meta = { ...(detectorMeta || {}) };
+  const ov = meta.hrOverride && typeof meta.hrOverride === 'object' ? meta.hrOverride : {};
+  const clean = {};
+  for (const k of ['marks', 'percent', 'amount']) {
+    if (ov[k] === undefined || ov[k] === null || ov[k] === '') continue;
+    const n = Number(ov[k]);
+    if (!Number.isFinite(n) || n < 0) bad(`${k} must be a number >= 0.`);
+    clean[k] = n;
+  }
+  const types = new Set((rule.actions || []).filter((a) => a.enabled !== false).map((a) => a.type));
+  const cfg = (t) => ((rule.actions || []).find((a) => a.type === t) || {}).config || {};
+
+  if (types.has('financial_fine')) {
+    const amt = clean.amount !== undefined ? clean.amount : Number(cfg('financial_fine').amount) || 0;
+    if (!(amt > 0)) bad('amount must be > 0 for a financial fine.');
+  }
+  if (types.has('percent_reduction') && rule.detector === 'manual') {
+    const per = ov.evaluationPeriod;
+    if (!per || !per.startDate || !per.endDate) bad('Completion adjustment requires evaluationPeriod {startDate, endDate} (past dates).');
+    const { startOfDay } = require('../../utils/dateHelpers');
+    const s = startOfDay(new Date(per.startDate)), e = startOfDay(new Date(per.endDate)), today = startOfDay(new Date());
+    if (!(s <= e)) bad('evaluationPeriod.startDate must be on or before endDate.');
+    if (s > today || e > today) bad('Completion adjustment period must be strictly in the past.');
+    clean.evaluationPeriod = { startDate: s, endDate: e };
+  }
+
+  const ctx = { ...(context || {}) };
+  if (ctx.submissionId) {
+    // A marks effect is bound to this submission: it must be the employee's own live row.
+    if (!mongoose.Types.ObjectId.isValid(ctx.submissionId)) bad('submissionId is not valid.');
+    const link = require('../../services/compliance/submissionLink');
+    const sub = await link.explicitIfLive(employee, ctx.submissionId);
+    if (!sub) bad('submissionId must be a live (not deleted / test / hidden) submission of this employee.');
+  }
+  meta.hrOverride = clean;
+  if (req.body && req.body.reason) meta.reason = String(req.body.reason).trim().slice(0, 500);
+  if (req.body && req.body.employeeMessage) meta.employeeMessage = String(req.body.employeeMessage).trim().slice(0, 500);
+  return { context: ctx, detectorMeta: meta };
+};
+
 // -----------------------------------------------------------
 // POST /api/compliance/incidents  (HR manual creation)
 // -----------------------------------------------------------
@@ -204,7 +255,12 @@ const create = asyncHandler(async (req, res) => {
     res.status(400); throw new Error('Rule is disabled; enable it before creating incidents.');
   }
   const day = incidentDate ? new Date(incidentDate) : new Date();
-  const effectiveDate = compliance.dates.computeEffectiveDate(rule, day);
+  const sanitized = await _validateManualIssue({ req, res, rule, employee, context, detectorMeta });
+  let effectiveDate = compliance.dates.computeEffectiveDate(rule, day);
+  // Optional grace period (legacy manual marks): the incident stays `candidate`
+  // and the effects are applied by the scheduler once the grace has passed.
+  const grace = Number(req.body && req.body.graceHours) || 0;
+  if (grace > 0) effectiveDate = new Date(Date.now() + grace * 3600e3);
   const nk = naturalKey.manualIncidentKey({
     ruleCode: rule.code, employeeId: employee, day,
     token: token || String(new mongoose.Types.ObjectId()),
@@ -212,11 +268,25 @@ const create = asyncHandler(async (req, res) => {
   const { incident, created } = await incidentService.recordIncident({
     rule, employeeId: employee, naturalKey: nk,
     incidentDate: day, effectiveDate,
-    context, detectorMeta,
+    context: sanitized.context, detectorMeta: sanitized.detectorMeta,
     source: 'manual',
     severity, actor: req.user._id, req,
   });
-  res.status(created ? 201 : 200).json(incident);
+  // A manual consequence is immediate (legacy POST /penalties/manual was): unless a
+  // grace period was asked for, put the new incident in force and apply its
+  // effects now instead of waiting for the next daily tick.  Idempotent -- the
+  // promotion is an atomic compare-and-set and effects have unique keys.
+  let out = incident;
+  if (created && !(grace > 0) && new Date(incident.effectiveDate) <= new Date()) {
+    try {
+      const promoted = await incidentService.promoteToActive(incident._id);
+      if (promoted) {
+        await compliance.actionEngine.apply({ incident: promoted, day: new Date() });
+        out = promoted;
+      }
+    } catch (e) { console.error('[compliance/create] immediate apply failed:', e.message); }
+  }
+  res.status(created ? 201 : 200).json(out);
 });
 
 // -----------------------------------------------------------
@@ -387,7 +457,29 @@ const waiveDecide = asyncHandler(async (req, res) => {
   } catch (e) { res.status(e.httpStatus || 400); throw e; }
 });
 
+// -----------------------------------------------------------
+// POST /api/compliance/incidents/:id/acknowledge  (the employee concerned)
+// -----------------------------------------------------------
+const acknowledge = asyncHandler(async (req, res) => {
+  _flagGate(res);
+  try {
+    const row = await require('../../services/compliance/acknowledgement/acknowledgementService')
+      .acknowledge({ incidentId: req.params.id, user: req.user, req });
+    res.json(row);
+  } catch (e) { res.status(e.httpStatus || 400); throw e; }
+});
+
+// -----------------------------------------------------------
+// GET /api/compliance/me/accountability  (the employee's own warnings + penalties,
+// same {active, probable, resolved} shape as the legacy /penalties/mine)
+// -----------------------------------------------------------
+const myAccountability = asyncHandler(async (req, res) => {
+  _flagGate(res);
+  res.json(await require('../../services/compliance/projections/accountability')
+    .forEmployee({ employeeId: req.user._id }));
+});
+
 module.exports = {
-  list, get, create, cancel, recover, activate, resolve,
+  list, get, create, cancel, recover, activate, resolve, acknowledge, myAccountability,
   waiveDirect, waiveRequest, waiveDecide,
 };

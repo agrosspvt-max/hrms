@@ -145,6 +145,109 @@ const applyEvaluationOverride = (sub, penalties) => {
 };
 
 /**
+ * Pure per-submission Final Marks derivation, shared by the legacy
+ * (Penalty) read path and the Compliance projection so both use ONE
+ * implementation of the math.  Mutates and returns `s`.  `bucket` is the
+ * list of Penalty-shaped rows that target this submission.
+ */
+const deriveFinalMarksForSubmission = (s, bucket) => {
+
+  // Phase 64.1 Item 2 -- historical marks are IMMUTABLE.  We only
+  // ever derive.  Every submission response now exposes the full
+  // canonical audit trio so every UI surface reads the same fields:
+  //   originalAvailableMarks / originalEarnedMarks
+  //   penaltyDeduction        (capped at Earned so audit is readable)
+  //   penaltyDeductionRaw     (uncapped Σ for engine-side inspection)
+  //   manualRestoration       (from 'restore' evaluation mode)
+  //   finalAvailableMarks / finalEarnedMarks / finalScore
+  const originalAvailable = Number(s.totalPoints)  || 0;
+  const originalEarned    = Number(s.earnedPoints) || 0;
+  const penaltyDeductionRaw = sumMarksPenalty(bucket);
+  // Phase 64.2 Item 1 -- cap the DISPLAY value at Earned so a day
+  // that stacks (say) missed_submission + performance_lock never
+  // shows "-174 penalty on 82 Earned".  Final Marks was already
+  // clamped to 0 via Math.max in computeFinal; capping here keeps
+  // the audit line arithmetically consistent (Earned - deduction
+  // = Final, with everyone at 0 when penalties >= Earned).  The
+  // uncapped total remains available on penaltyDeductionRaw for
+  // engine + admin diagnostics.
+  const penaltyDeduction  = Math.min(originalEarned, penaltyDeductionRaw);
+  // Phase 64.2 Item 2 -- manualRestoration reads the audit field
+  // now persistently stored by performanceRecovery.applyEvaluationMode
+  // (`restoredMarks`).  Old rows without the field contribute 0.
+  const manualRestoration = bucket
+    .filter((p) => p && p.evaluationMode === 'restore' && p.status === 'resolved')
+    .reduce((sum, p) => sum + (Number(p.restoredMarks) || 0), 0);
+
+  // Phase 64 -- evaluation-mode override wins over raw marks math.
+  const override = applyEvaluationOverride(s, bucket);
+  if (override) {
+    s.finalMarks = override.finalMarks;
+    s.availableMarksDisplay = override.availableMarks;
+    s.earnedMarksDisplay    = override.earnedMarks;
+    s.evaluationMode        = override.mode;
+  } else {
+    s.finalMarks = computeFinal(originalEarned, bucket);
+    s.availableMarksDisplay = originalAvailable;
+    s.earnedMarksDisplay    = originalEarned;
+    s.evaluationMode        = '';
+  }
+
+  // Phase 64.1 Item 2 -- canonical trio + restoration.  These are
+  // the ONLY marks fields consumers should read going forward;
+  // legacy fields (finalMarks, earnedMarksDisplay, etc.) are kept
+  // for backward compat (Part 11) but new callers should use these.
+  s.originalAvailableMarks = originalAvailable;
+  s.originalEarnedMarks    = originalEarned;
+  s.penaltyDeduction       = penaltyDeduction;
+  s.manualRestoration      = manualRestoration;
+  s.finalAvailableMarks    = s.availableMarksDisplay;
+  s.finalEarnedMarks       = s.earnedMarksDisplay;
+  s.finalScore             = s.finalMarks;
+
+  s.penaltyBreakdown = {
+    template:   bucket.filter((p) => p.category === 'absent_submission'
+                                  || p.category === 'missed_submission'
+                                  || p.category === 'critical_threshold'
+                                  || p.category === 'repeated_missing'),
+    attendance: bucket.filter((p) => p.category === 'attendance_manual'),
+    dependency: bucket.filter((p) => p.category === 'dependency_pending'
+                                  || p.category === 'performance_lock'),
+    manual:     bucket.filter((p) => p.category === 'manual_marks'
+                                  || p.category === 'manual_completion'
+                                  || p.category === 'marks_adjustment'),
+    // Phase 64.2 Item 1 -- consistent with the capped
+    // `penaltyDeduction` so UI totals never exceed Earned.
+    totalDeducted:    penaltyDeduction,
+    totalDeductedRaw: penaltyDeductionRaw,
+    // Phase 64.1 Item 3 -- surface every performance_lock row's
+    // human-readable metadata so the UI can explain WHY (spec Item 5).
+    performanceLocks: bucket
+      .filter((p) => p.category === 'performance_lock' && !p.probable)
+      .map((p) => ({
+        _id: p._id,
+        // Phase 64.1 Item 3 -- every locked day must be able to
+        // explain WHY.  Expose the full metadata set the spec
+        // enumerates so the UI never has to say only "0 Marks".
+        lockReason:          p.reason || '',
+        lockCategory:        p.category,
+        pendingTask:         p.overdueRef?.taskTitle || '',
+        pendingSince:        p.overdueRef?.pendingSince || null,
+        allowedResolveDays:  null, // populated by caller from the source task if desired
+        resolveBy:           p.overdueRef?.resolveBy || null,
+        lockedSince:         p.effectiveDate || p.createdAt,
+        unlockedAt:          p.resolvedAt || null,
+        resolvedBy:          p.resolvedBy || null,
+        restoredBy:          p.restoredBy || p.reopenRequest?.decidedBy || null,
+        restorationReason:   p.restorationReason || p.reopenRequest?.decisionNote || '',
+        status:              p.status,
+        evaluationMode:      p.evaluationMode || '',
+      })),
+  };
+  return s;
+};
+
+/**
  * Attach `finalMarks` + `penaltyBreakdown` fields to an array of
  * submission-like plain objects.  Fetches every penalty in one
  * round-trip.  Safe to call with lean() output.
@@ -161,7 +264,7 @@ const applyEvaluationOverride = (sub, penalties) => {
  *     },
  *   }
  */
-const attachFinalMarks = async (subs) => {
+const attachFinalMarksLegacy = async (subs) => {
   const list = Array.isArray(subs) ? subs : [subs];
   const ids = list.map((s) => s && (s._id || s.id)).filter(Boolean);
   if (!ids.length) return subs;
@@ -179,101 +282,28 @@ const attachFinalMarks = async (subs) => {
   }
   for (const s of list) {
     const bucket = bySub[String(s._id || s.id)] || [];
-
-    // Phase 64.1 Item 2 -- historical marks are IMMUTABLE.  We only
-    // ever derive.  Every submission response now exposes the full
-    // canonical audit trio so every UI surface reads the same fields:
-    //   originalAvailableMarks / originalEarnedMarks
-    //   penaltyDeduction        (capped at Earned so audit is readable)
-    //   penaltyDeductionRaw     (uncapped Σ for engine-side inspection)
-    //   manualRestoration       (from 'restore' evaluation mode)
-    //   finalAvailableMarks / finalEarnedMarks / finalScore
-    const originalAvailable = Number(s.totalPoints)  || 0;
-    const originalEarned    = Number(s.earnedPoints) || 0;
-    const penaltyDeductionRaw = sumMarksPenalty(bucket);
-    // Phase 64.2 Item 1 -- cap the DISPLAY value at Earned so a day
-    // that stacks (say) missed_submission + performance_lock never
-    // shows "-174 penalty on 82 Earned".  Final Marks was already
-    // clamped to 0 via Math.max in computeFinal; capping here keeps
-    // the audit line arithmetically consistent (Earned - deduction
-    // = Final, with everyone at 0 when penalties >= Earned).  The
-    // uncapped total remains available on penaltyDeductionRaw for
-    // engine + admin diagnostics.
-    const penaltyDeduction  = Math.min(originalEarned, penaltyDeductionRaw);
-    // Phase 64.2 Item 2 -- manualRestoration reads the audit field
-    // now persistently stored by performanceRecovery.applyEvaluationMode
-    // (`restoredMarks`).  Old rows without the field contribute 0.
-    const manualRestoration = bucket
-      .filter((p) => p && p.evaluationMode === 'restore' && p.status === 'resolved')
-      .reduce((sum, p) => sum + (Number(p.restoredMarks) || 0), 0);
-
-    // Phase 64 -- evaluation-mode override wins over raw marks math.
-    const override = applyEvaluationOverride(s, bucket);
-    if (override) {
-      s.finalMarks = override.finalMarks;
-      s.availableMarksDisplay = override.availableMarks;
-      s.earnedMarksDisplay    = override.earnedMarks;
-      s.evaluationMode        = override.mode;
-    } else {
-      s.finalMarks = computeFinal(originalEarned, bucket);
-      s.availableMarksDisplay = originalAvailable;
-      s.earnedMarksDisplay    = originalEarned;
-      s.evaluationMode        = '';
-    }
-
-    // Phase 64.1 Item 2 -- canonical trio + restoration.  These are
-    // the ONLY marks fields consumers should read going forward;
-    // legacy fields (finalMarks, earnedMarksDisplay, etc.) are kept
-    // for backward compat (Part 11) but new callers should use these.
-    s.originalAvailableMarks = originalAvailable;
-    s.originalEarnedMarks    = originalEarned;
-    s.penaltyDeduction       = penaltyDeduction;
-    s.manualRestoration      = manualRestoration;
-    s.finalAvailableMarks    = s.availableMarksDisplay;
-    s.finalEarnedMarks       = s.earnedMarksDisplay;
-    s.finalScore             = s.finalMarks;
-
-    s.penaltyBreakdown = {
-      template:   bucket.filter((p) => p.category === 'absent_submission'
-                                    || p.category === 'missed_submission'
-                                    || p.category === 'critical_threshold'
-                                    || p.category === 'repeated_missing'),
-      attendance: bucket.filter((p) => p.category === 'attendance_manual'),
-      dependency: bucket.filter((p) => p.category === 'dependency_pending'
-                                    || p.category === 'performance_lock'),
-      manual:     bucket.filter((p) => p.category === 'manual_marks'
-                                    || p.category === 'manual_completion'
-                                    || p.category === 'marks_adjustment'),
-      // Phase 64.2 Item 1 -- consistent with the capped
-      // `penaltyDeduction` so UI totals never exceed Earned.
-      totalDeducted:    penaltyDeduction,
-      totalDeductedRaw: penaltyDeductionRaw,
-      // Phase 64.1 Item 3 -- surface every performance_lock row's
-      // human-readable metadata so the UI can explain WHY (spec Item 5).
-      performanceLocks: bucket
-        .filter((p) => p.category === 'performance_lock' && !p.probable)
-        .map((p) => ({
-          _id: p._id,
-          // Phase 64.1 Item 3 -- every locked day must be able to
-          // explain WHY.  Expose the full metadata set the spec
-          // enumerates so the UI never has to say only "0 Marks".
-          lockReason:          p.reason || '',
-          lockCategory:        p.category,
-          pendingTask:         p.overdueRef?.taskTitle || '',
-          pendingSince:        p.overdueRef?.pendingSince || null,
-          allowedResolveDays:  null, // populated by caller from the source task if desired
-          resolveBy:           p.overdueRef?.resolveBy || null,
-          lockedSince:         p.effectiveDate || p.createdAt,
-          unlockedAt:          p.resolvedAt || null,
-          resolvedBy:          p.resolvedBy || null,
-          restoredBy:          p.restoredBy || p.reopenRequest?.decidedBy || null,
-          restorationReason:   p.restorationReason || p.reopenRequest?.decisionNote || '',
-          status:              p.status,
-          evaluationMode:      p.evaluationMode || '',
-        })),
-    };
+    deriveFinalMarksForSubmission(s, bucket);
   }
   return subs;
+};
+
+/**
+ * Read-path dispatcher.  Default (flag off) = the legacy Penalty projection,
+ * byte-for-byte the previous behaviour.  With `compliance.readFinalMarks` on,
+ * the same math runs over Compliance effects (projections/finalMarks.js) --
+ * every existing caller switches at once, none changes.
+ */
+const attachFinalMarks = async (subs) => {
+  const { isEnabled } = require('../config/featureFlags');
+  const out = isEnabled('compliance.readFinalMarks')
+    ? await require('./compliance/projections/finalMarks').attachFinalMarks(subs)
+    : await attachFinalMarksLegacy(subs);
+  // The Submission Review "Reopened" badge reads `reopenRequest` off the missed
+  // rows of the breakdown.  Re-file grants now live in Compliance, so surface
+  // their state on those rows whichever source produced the breakdown.
+  try { await require('./compliance/refile/refileEligibility').decorateBreakdown(out); }
+  catch (e) { console.error('[penaltyMath] refile decorate:', e.message); }
+  return out;
 };
 
 /**
@@ -372,6 +402,8 @@ module.exports = {
   sumMarksPenalty,
   computeFinal,
   attachFinalMarks,
+  attachFinalMarksLegacy,
+  deriveFinalMarksForSubmission,
   // Phase 64.1 -- shared helpers (spec Part 10: single source of truth).
   computeCompletionAdjustment,
   applyCompletionAdjustment,

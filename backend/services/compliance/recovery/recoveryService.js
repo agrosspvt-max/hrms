@@ -59,6 +59,10 @@ const apply = async (args) => {
   const {
     incidentId, effectIds = null, mode,
     reason = '', actor, req,
+    // The re-file flow applies the evaluation mode to the legacy Penalty itself
+    // (information / neutral keep that row ACTIVE, which the generic mirror below
+    // would resolve), so it asks this call not to touch the legacy mirror.
+    skipLegacyMirror = false,
   } = args || {};
   if (!incidentId) throw new Error('recovery.apply: incidentId is required.');
   if (!actor)      throw new Error('recovery.apply: actor is required.');
@@ -104,6 +108,12 @@ const apply = async (args) => {
         set: {
           resolvedAt: new Date(), resolvedBy: actor,
           resolvedReason: `${mode}: ${cleanReason}`,
+          // Same three modes as the legacy Penalty evaluationMode; the Final
+          // Marks projection reads them (restore gives the marks back,
+          // information / neutral change how the day is shown).
+          evaluationMode: mode,
+          restoredMarks: (mode === 'restore' && ['zero_daily_marks', 'add_daily_total', 'fixed_marks_reduction'].includes(e.actionType))
+            ? (Number(e.marks) || 0) : 0,
         },
         ledgerType: 'recovery',
         reason: `${mode}: ${e.actionType}`,
@@ -156,12 +166,14 @@ const apply = async (args) => {
       // only once the incident has nothing outstanding; a partial
       // recovery touches only the legacy rows explicitly linked to the
       // recovered effects.
-      for (const id of await legacyMirror.penaltyIdsFor({ effect: null, incident: inc, session })) {
-        if (!mirrorIds.some((x) => String(x) === String(id))) mirrorIds.push(id);
+      if (!skipLegacyMirror) {
+        for (const id of await legacyMirror.penaltyIdsFor({ effect: null, incident: inc, session })) {
+          if (!mirrorIds.some((x) => String(x) === String(id))) mirrorIds.push(id);
+        }
       }
     }
     await lifecycle.mirrorPenalties({
-      ids: mirrorIds,
+      ids: skipLegacyMirror ? [] : mirrorIds,
       set: {
         status: 'resolved',
         resolvedAt: new Date(),

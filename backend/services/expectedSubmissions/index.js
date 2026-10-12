@@ -187,28 +187,14 @@ const getMissedSubmissions = async ({ employeeId, day, preloaded }) => {
  * `{submission: {$in}, category, source:'automatic'}`.
  */
 const buildReopenIndex = async (stubs, { preloadedPenalties } = {}) => {
-  const out = new Map();
-  if (!stubs.length) return out;
+  if (!stubs.length) return new Map();
   const stubIds = stubs.filter((s) => !s.submitted).map((s) => s._id);
-  if (!stubIds.length) return out;
-
-  let pens;
-  if (preloadedPenalties) {
-    pens = preloadedPenalties.filter(
-      (p) => stubIds.some((id) => String(id) === String(p.submission)),
-    );
-  } else {
-    pens = await Penalty.find({
-      submission: { $in: stubIds },
-      category:   { $in: ['missed_submission', 'absent_submission'] },
-      source:     'automatic',
-      probable:   false,
-    }).select('submission reopenRequest').lean();
-  }
-  for (const p of pens) {
-    if (p.submission) out.set(String(p.submission), p);
-  }
-  return out;
+  if (!stubIds.length) return new Map();
+  // The re-file grant now lives in Compliance (ComplianceRefile); the legacy
+  // Penalty.reopenRequest is merged in as a BRIDGE.  The returned Map keeps its
+  // historical shape ({reopenRequest:{decision}}) so classifySubmissionState and
+  // every caller are unchanged.
+  return require('../compliance/refile/refileEligibility').decisionIndex(stubIds, { preloadedPenalties });
 };
 
 /* ------------------------------------------------------------------ */

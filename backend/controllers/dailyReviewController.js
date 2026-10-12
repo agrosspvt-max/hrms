@@ -574,17 +574,9 @@ const listGrouped = asyncHandler(async (req, res) => {
 
       // Reopen-penalty index for stubs in the window so per-stub
       // state classification is O(1) per stub.
-      const PenaltyRange = require('../models/Penalty');
       const stubIds = stubsRange.filter((s) => !s.submitted).map((s) => s._id);
-      const reopenPens = stubIds.length ? await PenaltyRange.find({
-        submission: { $in: stubIds },
-        category:   { $in: ['missed_submission', 'absent_submission'] },
-        source:     'automatic',
-        probable:   false,
-      }).select('submission reopenRequest').lean() : [];
-      const reopenPenaltiesByStubId = new Map(
-        reopenPens.filter((p) => p.submission).map((p) => [String(p.submission), p]),
-      );
+      // Re-file grants come from Compliance (legacy Penalty merged as a BRIDGE).
+      const reopenPenaltiesByStubId = await require('../services/compliance/refile/refileEligibility').decisionIndex(stubIds);
 
       const confsRange = await AttendanceConfirmation.find({
         employee: { $in: fullEmployees.filter((e) => e.attendanceMode === 'attendance_review').map((e) => e._id) },
@@ -709,7 +701,6 @@ const listGrouped = asyncHandler(async (req, res) => {
       // missed_submission penalty IDs onto each range card so HR
       // can Send Back individual days from the aggregated view.
       try {
-        const Penalty = require('../models/Penalty');
         const empIds = [...new Set(cards.map((c) => String(c.employee._id)))];
         const allDates = [...new Set(cards.flatMap((c) => (c.missingDates || []).map((d) => new Date(d).getTime())))]
           .map((t) => new Date(t));
@@ -717,23 +708,16 @@ const listGrouped = asyncHandler(async (req, res) => {
         // filtered out so the Send Back button is never shown for
         // historical missed days.
         const { MISSED_SUBMISSION_EFFECTIVE_FROM } = require('../config/complianceRollout');
-        const pens = await Penalty.find({
-          employee: { $in: empIds },
-          category: { $in: ['missed_submission', 'absent_submission'] },
-          targetDate: { $in: allDates, $gte: MISSED_SUBMISSION_EFFECTIVE_FROM },
-          source: 'automatic',
-          probable: false,
-          archivedPreRollout: { $ne: true },
-        }).select('employee targetDate reopenRequest').lean();
+        const dayIdx = await require('../services/compliance/refile/refileEligibility').dayIndex({ employeeIds: empIds, dates: allDates, since: MISSED_SUBMISSION_EFFECTIVE_FROM });
         const _key = (empId, d) => `${String(empId)}|${new Date(d).toISOString().slice(0, 10)}`;
-        const byKey = new Map(pens.map((p) => [_key(p.employee, p.targetDate), p]));
         for (const c of cards) {
           c.missingPenalties = (c.missingDates || []).map((d) => {
-            const m = byKey.get(_key(c.employee._id, d));
+            const m = dayIdx.get(_key(c.employee._id, d));
             return {
               date: d,
-              penaltyId: m ? m._id : null,
-              reopenDecision: m?.reopenRequest?.decision || '',
+              penaltyId: m ? m.penaltyId : null,          // legacy id (kept for the legacy buttons)
+              canSendBack: !!(m && m.canSendBack),        // Compliance-aware: a missed marker exists
+              reopenDecision: (m && m.reopenDecision) || '',
             };
           });
         }
@@ -792,17 +776,8 @@ const listGrouped = asyncHandler(async (req, res) => {
     }
 
     // Reopen-penalty index for the day's unsubmitted stubs.
-    const PenaltySingle = require('../models/Penalty');
     const singleStubIds = dayStubs.filter((s) => !s.submitted).map((s) => s._id);
-    const singleReopenPens = singleStubIds.length ? await PenaltySingle.find({
-      submission: { $in: singleStubIds },
-      category:   { $in: ['missed_submission', 'absent_submission'] },
-      source:     'automatic',
-      probable:   false,
-    }).select('submission reopenRequest').lean() : [];
-    const reopenPenaltiesByStubIdSingle = new Map(
-      singleReopenPens.filter((p) => p.submission).map((p) => [String(p.submission), p]),
-    );
+    const reopenPenaltiesByStubIdSingle = await require('../services/compliance/refile/refileEligibility').decisionIndex(singleStubIds);
 
     const reviewModeConfs = await AttendanceConfirmation.find({
       employee: { $in: fullEmployees.filter((e) => e.attendanceMode === 'attendance_review').map((e) => e._id) },
@@ -899,26 +874,18 @@ const listGrouped = asyncHandler(async (req, res) => {
     // materialised a penalty for that (employee, date) yet, in which
     // case the frontend disables the Send Back button.
     try {
-      const Penalty = require('../models/Penalty');
       const empIds = [...new Set(notSubmittedCards.map((c) => String(c.employee._id)))];
       const days = [...new Set(notSubmittedCards.map((c) => new Date(c.date).getTime()))]
         .map((t) => new Date(t));
       // Phase 65.1 rollout gate.
       const { MISSED_SUBMISSION_EFFECTIVE_FROM } = require('../config/complianceRollout');
-      const pens = await Penalty.find({
-        employee: { $in: empIds },
-        category: { $in: ['missed_submission', 'absent_submission'] },
-        targetDate: { $in: days, $gte: MISSED_SUBMISSION_EFFECTIVE_FROM },
-        source: 'automatic',
-        probable: false,
-        archivedPreRollout: { $ne: true },
-      }).select('employee targetDate reopenRequest').lean();
+      const dayIdx = await require('../services/compliance/refile/refileEligibility').dayIndex({ employeeIds: empIds, dates: days, since: MISSED_SUBMISSION_EFFECTIVE_FROM });
       const _key = (empId, d) => `${String(empId)}|${new Date(d).toISOString().slice(0, 10)}`;
-      const byKey = new Map(pens.map((p) => [_key(p.employee, p.targetDate), p]));
       for (const c of notSubmittedCards) {
-        const match = byKey.get(_key(c.employee._id, c.date));
-        c.penaltyId      = match ? match._id : null;
-        c.reopenDecision = match?.reopenRequest?.decision || '';
+        const match = dayIdx.get(_key(c.employee._id, c.date));
+        c.penaltyId      = match ? match.penaltyId : null;          // legacy id (legacy buttons)
+        c.canSendBack    = !!(match && match.canSendBack);          // Compliance-aware
+        c.reopenDecision = (match && match.reopenDecision) || '';
       }
     } catch (e) {
       console.error('[dailyReview] penalty enrich:', e.message);

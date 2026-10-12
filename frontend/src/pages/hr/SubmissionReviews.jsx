@@ -475,11 +475,11 @@ export default function SubmissionReviews() {
 /**
  * Submission Review recovery dialog.
  * HR picks Restore / Information / Neutral, adds an optional note,
- * then confirms.  Posts to POST /api/penalties/:id/reopen-decision
- * with decision='approved' + the chosen evaluationMode.  Same code
- * path used everywhere else that applies an evaluation mode.
+ * then confirms.  Posts to POST /api/compliance/refile/send-back (re-file
+ * grant + the chosen evaluationMode); falls back to the legacy
+ * /api/penalties/:id/reopen-decision only if Compliance is off (404).
  */
-function SendBackDialog({ penaltyId, dateLabel, onClose, onDone }) {
+function SendBackDialog({ penaltyId, employeeId, date, dateLabel, onClose, onDone }) {
   const toast = useToast();
   const [mode, setMode] = useState('restore');
   const [note, setNote] = useState('');
@@ -487,11 +487,15 @@ function SendBackDialog({ penaltyId, dateLabel, onClose, onDone }) {
   const confirm = async () => {
     setBusy(true);
     try {
-      await api.post(`/penalties/${penaltyId}/reopen-decision`, {
-        decision: 'approved',
-        evaluationMode: mode,
-        note,
-      });
+      // Compliance owns the re-file grant.  The legacy Penalty endpoint is only
+      // the fallback while the Compliance API is switched off on a deployment.
+      try {
+        await api.post('/compliance/refile/send-back', { employeeId, date, evaluationMode: mode, note });
+      } catch (e) {
+        if (e?.response?.status === 404 && penaltyId) {
+          await api.post(`/penalties/${penaltyId}/reopen-decision`, { decision: 'approved', evaluationMode: mode, note });
+        } else { throw e; }
+      }
       toast.success('Sent back to employee');
       onDone?.();
     } catch (e) { toast.error(errMsg(e)); }
@@ -585,7 +589,7 @@ function NotSubmittedCard({ card, onReload }) {
               reuses the EXISTING /penalties/:id/reopen-decision endpoint.
               Single-date cards send back the one missed day; range cards
               open a per-date picker so HR can send back individual days. */}
-          {!isRange && card.penaltyId && (
+          {!isRange && (card.canSendBack ?? !!card.penaltyId) && (
             <>
               {card.reopenDecision === 'approved' && (
                 <span className="badge bg-blue-50 text-blue-700 text-[11px]">Reopened</span>
@@ -597,6 +601,8 @@ function NotSubmittedCard({ card, onReload }) {
                 className="btn-secondary !py-1 !text-xs"
                 onClick={() => setSendBackOpen({
                   penaltyId: card.penaltyId,
+                  employeeId: card.employee?._id,
+                  date,
                   dateLabel: fmtFull(date),
                 })}
                 title="Reopen this day's submission with an evaluation mode"
@@ -607,7 +613,7 @@ function NotSubmittedCard({ card, onReload }) {
           )}
           {/* Range mode: the Missing Dates strip below acts as a
               per-day picker.  Header shows a passive hint. */}
-          {isRange && missingPenalties.some((mp) => mp.penaltyId) && (
+          {isRange && missingPenalties.some((mp) => mp.canSendBack || mp.penaltyId) && (
             <span
               className="badge bg-slate-100 text-slate-600 text-[11px]"
               title="Click any Missing Date pill below to send that specific day back"
@@ -636,12 +642,13 @@ function NotSubmittedCard({ card, onReload }) {
             {missingDates.map((d) => {
               const mp = missingPenalties.find((x) => new Date(x.date).getTime() === new Date(d).getTime());
               const penaltyId = mp?.penaltyId || null;
+              const canSend = !!(mp?.canSendBack || penaltyId);
               const decision  = mp?.reopenDecision || '';
               const badge = decision === 'approved' ? ' · Reopened'
                           : decision === 'completed' ? ' · Reopened & Submitted'
                           : decision === 'pending' ? ' · Requested'
                           : '';
-              if (!penaltyId) {
+              if (!canSend) {
                 // No Missed Submission Penalty for this day -- render
                 // as a read-only historical pill.
                 return (
@@ -661,6 +668,8 @@ function NotSubmittedCard({ card, onReload }) {
                   title={`${fmtFull(d)} — click to Send Back to Employee${badge}`}
                   onClick={() => setSendBackOpen({
                     penaltyId,
+                    employeeId: card.employee?._id,
+                    date: d,
                     dateLabel: fmtFull(d),
                   })}
                   className="inline-flex items-center rounded-md border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 text-[11px] font-medium px-2 py-0.5 cursor-pointer"
@@ -694,6 +703,8 @@ function NotSubmittedCard({ card, onReload }) {
       {sendBackOpen && (
         <SendBackDialog
           penaltyId={sendBackOpen.penaltyId}
+          employeeId={sendBackOpen.employeeId}
+          date={sendBackOpen.date}
           dateLabel={sendBackOpen.dateLabel}
           onClose={() => setSendBackOpen(null)}
           onDone={() => { setSendBackOpen(null); onReload?.(); }}

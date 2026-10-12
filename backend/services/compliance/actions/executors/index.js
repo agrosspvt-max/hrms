@@ -46,7 +46,7 @@ const _override = (incident, key) => {
   return Number.isFinite(n) && n >= 0 ? n : undefined;
 };
 
-const _resolveMarks = async ({ rule, actionConfig, incident, employee }) => {
+const _resolveMarks = async ({ rule, actionConfig, incident, employee, targetSubmission }) => {
   // HR override wins.  When an HR-created incident supplies a marks
   // override, use it as-is and skip the strategy chain.
   const hr = _override(incident, 'marks');
@@ -54,6 +54,12 @@ const _resolveMarks = async ({ rule, actionConfig, incident, employee }) => {
 
   const strat = (actionConfig.config && actionConfig.config.marksStrategy)
     || 'admin_defined';
+  // "Zero the day": the deduction is the target submission's own earned marks,
+  // frozen now (legacy Penalty.penaltyMarks semantics).  No linked live
+  // submission => nothing to deduct.
+  if (strat === 'submission_earned') {
+    return Math.max(0, Number(targetSubmission && targetSubmission.earnedPoints) || 0);
+  }
   const strategyConfig = actionConfig.config && actionConfig.config.strategyConfig || {};
   return await marksStrategies.compute({
     strategy: strat,

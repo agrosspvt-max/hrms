@@ -88,7 +88,8 @@ const ruleSeed = require('../rules/ruleSeed');
     dashboardV2:    true,
     waiverRecovery: true,
     rules:          true,
-  }, 'config endpoint reports every rollout flag as ON');
+    readWarnings:   false,   // Phase 4 read switch: off until explicitly enabled
+  }, 'config endpoint reports every rollout flag');
   console.log('  ok  rollout: /api/compliance/config exposes flags for the frontend');
 
   _stub.restore();

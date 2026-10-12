@@ -62,6 +62,12 @@ const complianceIncidentSchema = new mongoose.Schema(
     cancelledBy:  { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     cancelReason: { type: String, default: '', trim: true },
 
+    /** Employee acknowledgement.  Belongs to the INCIDENT (the case the employee is
+     *  told about), not to each effect -- one acknowledgement covers all of its
+     *  effects, matching the single legacy Penalty acknowledgement. */
+    acknowledgedAt: { type: Date, default: null },
+    acknowledgedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+
     waivedAt: { type: Date, default: null },
     waivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     waiverId: { type: mongoose.Schema.Types.ObjectId, ref: 'ComplianceWaiver', default: null },

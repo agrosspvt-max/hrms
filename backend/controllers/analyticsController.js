@@ -681,11 +681,14 @@ const completion = asyncHandler(async (req, res) => {
   try {
     const Penalty = require('../models/Penalty');
     const { applyCompletionAdjustment } = require('../services/penaltyMath');
-    const rawAdj = await Penalty.find({
-      employee: { $in: empIds },
-      category: { $in: ['completion_adjustment', 'manual_completion'] },
-      status: 'active',
-    }).select('employee category status completionPercent evaluationPeriod').lean();
+    // Source switch (compliance.readCompletion): same rows shape, same math.
+    const rawAdj = require('../config/featureFlags').isEnabled('compliance.readCompletion')
+      ? await require('../services/compliance/projections/completion').fetchAdjustments({ employeeIds: empIds })
+      : await Penalty.find({
+        employee: { $in: empIds },
+        category: { $in: ['completion_adjustment', 'manual_completion'] },
+        status: 'active',
+      }).select('employee category status completionPercent evaluationPeriod').lean();
     completionAdjustments = rawAdj;
     const originalPct = totalTotal > 0 ? (totalEarned / totalTotal) * 100 : 0;
     // Fold across every scoped employee's adjustments -- the query

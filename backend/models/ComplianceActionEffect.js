@@ -53,6 +53,48 @@ const complianceActionEffectSchema = new mongoose.Schema(
     penaltyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Penalty', default: null },
 
     /**
+     * Canonical effect -> Submission relationship (marks effects).  Set once at
+     * creation by services/compliance/submissionLink (explicit id, else the
+     * day's primary LIVE submission; never an arbitrary match).  Final Marks
+     * are projected per submission from effects carrying this id.  `marks` on
+     * a submission-scoped effect is the amount frozen at creation, exactly
+     * like the legacy Penalty.penaltyMarks.
+     */
+    submissionId: { type: mongoose.Schema.Types.ObjectId, ref: 'Submission', default: null },
+    /** Denormalised rule code ("missed_submission_v2"); drives UI grouping and the
+     *  completion-adjustment projection without a join. */
+    ruleCode: { type: String, default: '', trim: true },
+
+    /** Recovery mode stamped by recoveryService (same three values as the legacy
+     *  Penalty.evaluationMode).  'restore' also records the marks given back. */
+    evaluationMode: { type: String, enum: ['', 'restore', 'information', 'neutral'], default: '' },
+    restoredMarks:  { type: Number, default: 0, min: 0 },
+
+    /** Window a completion-percentage adjustment applies to (legacy
+     *  Penalty.evaluationPeriod).  Absent => applied at full weight. */
+    evaluationPeriod: {
+      startDate: { type: Date, default: null },
+      endDate:   { type: Date, default: null },
+    },
+
+    /**
+     * Payroll lifecycle of a financial_fine.  Independent of `status`:
+     *   pending  -- owed, not yet taken into a salary slip
+     *   deducted -- HR included it in a slip (salarySlipId recorded; one-way)
+     *   '' (empty) for non-financial effects.
+     * `refundDue` is raised if an already-deducted fine is later cancelled /
+     * waived / recovered, so HR can refund it; nothing refunds automatically.
+     */
+    payroll: {
+      status:        { type: String, enum: ['', 'pending', 'deducted'], default: '' },
+      salarySlipId:  { type: mongoose.Schema.Types.ObjectId, ref: 'SalarySlip', default: null },
+      salaryMonth:   { type: String, default: '' },
+      deductedBy:    { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      deductedAt:    { type: Date, default: null },
+      refundDue:     { type: Boolean, default: false },
+    },
+
+    /**
      * Business identity of a RECURRING effect produced by an AUTOMATIC
      * incident: rule action + employee + effective day.  Detectors raise a
      * new day-scoped incident every day a condition persists, so several
@@ -94,6 +136,8 @@ complianceActionEffectSchema.index(
   { unique: true, partialFilterExpression: { recurringKey: { $type: 'string' } }, name: 'compliance_effect_recurring_key' },
 );
 complianceActionEffectSchema.index({ penaltyId: 1 }, { sparse: true });
+complianceActionEffectSchema.index({ submissionId: 1, status: 1 }, { sparse: true });
+complianceActionEffectSchema.index({ 'payroll.status': 1, employee: 1 }, { sparse: true });
 complianceActionEffectSchema.index({ employee: 1, status: 1 });
 
 module.exports = mongoose.models.ComplianceActionEffect

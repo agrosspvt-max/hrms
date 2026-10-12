@@ -23,6 +23,7 @@ const ComplianceIncident = require('../../../models/ComplianceIncident');
 const Penalty = require('../../../models/Penalty');
 const registry = require('../registry/actionExecutorRegistry');
 const ledgerService = require('../ledger/ledgerService');
+const submissionLink = require('../submissionLink');
 const { isEnabled } = require('../../../config/featureFlags');
 const { startOfDay } = require('../../../utils/dateHelpers');
 const { withComplianceTransaction } = require('../txn');
@@ -55,6 +56,29 @@ const _emit = async ({ employee, incidentId, kind, payload }) => {
  * missed-submission incident was accumulating a fresh marks
  * deduction every day forever.
  */
+
+/**
+ * Canonical fields every new effect carries (Phase 4): the submission it is
+ * bound to (marks effects only), the rule code, the completion-adjustment
+ * window (manual percent effects) and the payroll status of a fine.
+ */
+const _canonicalFields = ({ executorOut, incident, rule, actionCfg, targetSubmission }) => {
+  const doc = executorOut.effectDoc || {};
+  const f = { ruleCode: (rule && rule.code) || incident.ruleCode || '' };
+  if (submissionLink.LINKED_ACTION_TYPES.includes(actionCfg.type) && targetSubmission) {
+    f.submissionId = targetSubmission._id;
+  }
+  if (doc.actionType === 'financial_fine' && Number(doc.amount) > 0) {
+    f.payroll = { status: 'pending' };
+  }
+  const per = incident.detectorMeta && incident.detectorMeta.hrOverride
+    && incident.detectorMeta.hrOverride.evaluationPeriod;
+  if (doc.actionType === 'percent_reduction' && per && per.startDate && per.endDate) {
+    f.evaluationPeriod = { startDate: new Date(per.startDate), endDate: new Date(per.endDate) };
+  }
+  return f;
+};
+
 const apply = async ({ incident, day, recurringOnly = false } = {}) => {
   const out = { effects: [], errors: [] };
   if (!incident) return out;
@@ -131,10 +155,24 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
       continue;
     }
 
+    // Marks effects are bound to ONE live submission (see submissionLink).  The
+    // lookup is skipped for every other action type.
+    let targetSubmission = null;
+    if (submissionLink.LINKED_ACTION_TYPES.includes(actionCfg.type)) {
+      try {
+        targetSubmission = await submissionLink.resolveTargetSubmission({
+          incident, effectiveDate,
+          recurring: !!(actionCfg.config && actionCfg.config.recurring === true),
+        });
+      } catch (e) {
+        out.errors.push({ reason: 'submission_link_failed', type: actionCfg.type, error: e.message });
+      }
+    }
+
     let executorOut;
     try {
       executorOut = await executor({
-        rule, actionConfig: actionCfg, incident,
+        rule, actionConfig: actionCfg, incident, effectiveDate, targetSubmission,
         employee: { _id: incident.employee, department: incident.context?.departmentId },
       });
     } catch (e) {
@@ -153,25 +191,19 @@ const apply = async ({ incident, day, recurringOnly = false } = {}) => {
     let txnErr = null;
     const txnResult = await withComplianceTransaction(async (session) => {
       try {
+        const body = {
+          ...executorOut.effectDoc,
+          ..._canonicalFields({ executorOut, incident, rule, actionCfg, targetSubmission }),
+          incidentId: incident._id,
+          ruleId: rule._id,
+          ruleActionId: actionCfg._id,
+          employee: incident.employee,
+          effectiveDate,
+          recurringKey,
+        };
         const created = session
-          ? await ComplianceActionEffect.create([{
-              ...executorOut.effectDoc,
-              incidentId: incident._id,
-              ruleId: rule._id,
-              ruleActionId: actionCfg._id,
-              employee: incident.employee,
-              effectiveDate,
-              recurringKey,
-            }], { session })
-          : [await ComplianceActionEffect.create({
-              ...executorOut.effectDoc,
-              incidentId: incident._id,
-              ruleId: rule._id,
-              ruleActionId: actionCfg._id,
-              employee: incident.employee,
-              effectiveDate,
-              recurringKey,
-            })];
+          ? await ComplianceActionEffect.create([body], { session })
+          : [await ComplianceActionEffect.create(body)];
         effect = created[0];
       } catch (e) {
         // A duplicate key must NOT be handled here: inside a replica-set

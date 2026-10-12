@@ -70,6 +70,8 @@ const _matches = (row, query) => {
         }
         else throw new Error('stubMongo: unsupported query op ' + op);
       }
+    } else if (v === null) {
+      if (rowVal != null) return false;            // Mongo: {field: null} also matches a missing field
     } else {
       if (String(rowVal) !== String(v)) return false;
     }
@@ -145,6 +147,28 @@ const _chain = (rows) => {
   return self;
 };
 
+
+// Apply a Mongo-style $set (supports dotted paths like "payroll.status").
+const _applySet = (row, set) => {
+  for (const [k, v] of Object.entries(set || {})) {
+    if (!k.includes('.')) { row[k] = v; continue; }
+    const parts = k.split('.');
+    let cur = row;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (cur[parts[i]] == null || typeof cur[parts[i]] !== 'object') cur[parts[i]] = {};
+      cur = cur[parts[i]];
+    }
+    cur[parts[parts.length - 1]] = v;
+  }
+};
+// Deep-ish clone that keeps ObjectId / Date instances (pre-update images).
+const _cloneRow = (v) => {
+  if (v == null || typeof v !== 'object') return v;
+  if (v instanceof Date || v instanceof mongoose.Types.ObjectId) return v;
+  if (Array.isArray(v)) return v.map(_cloneRow);
+  const out = {}; for (const [k, x] of Object.entries(v)) out[k] = typeof x === 'function' ? x : _cloneRow(x); return out;
+};
+
 const _cloneWithId = (doc) => ({
   _id: doc._id || new mongoose.Types.ObjectId(),
   ...doc,
@@ -195,7 +219,7 @@ const install = (Model, { name, uniqueBy = [] } = {}) => {
     let n = 0;
     for (const r of store.rows) {
       if (!_matches(r, query)) continue;
-      Object.assign(r, patch.$set || {});
+      _applySet(r, patch.$set);
       n += 1;
     }
     return { modifiedCount: n };
@@ -203,7 +227,7 @@ const install = (Model, { name, uniqueBy = [] } = {}) => {
   Model.updateOne = async (query, patch) => {
     for (const r of store.rows) {
       if (!_matches(r, query)) continue;
-      Object.assign(r, patch.$set || {});
+      _applySet(r, patch.$set);
       return { modifiedCount: 1, matchedCount: 1 };
     }
     return { modifiedCount: 0, matchedCount: 0 };
@@ -212,8 +236,9 @@ const install = (Model, { name, uniqueBy = [] } = {}) => {
   Model.findOneAndUpdate = async (query, patch, opts = {}) => {
     const idx = store.rows.findIndex((r) => _matches(r, query));
     if (idx >= 0) {
-      Object.assign(store.rows[idx], patch.$set || {});
-      return opts.new ? { ...store.rows[idx] } : store.rows[idx];
+      const before = opts.new ? null : _cloneRow(store.rows[idx]);   // real Mongo returns the PRE-update image
+      _applySet(store.rows[idx], patch.$set);
+      return opts.new ? { ...store.rows[idx] } : before;
     }
     if (opts.upsert) {
       const created = _cloneWithId({

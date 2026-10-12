@@ -84,6 +84,19 @@ const claimAndReverse = async ({
   );
   if (!claimed) return { claimed: false, credited: false };
 
+  // A financial fine already taken into a salary slip is being reversed: flag it
+  // so HR can refund the employee.  `claimed` is the pre-update document, so
+  // this reflects the payroll state at the exact moment of the claim (a
+  // concurrent deduction either happened before -> flagged, or loses its own
+  // compare-and-set on status 'active' -> never deducts a reversed fine).
+  if (claimed.payroll && claimed.payroll.status === 'deducted') {
+    await ComplianceActionEffect.updateOne(
+      { _id: effect._id },
+      { $set: { 'payroll.refundDue': true } },
+      session ? { session } : undefined,
+    );
+  }
+
   const ledger = LEDGER_FOR[effect.actionType];
   const q = quantityOf(effect);
   let credited = false;

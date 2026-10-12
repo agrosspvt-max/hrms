@@ -27,6 +27,9 @@ const loadOnce = () => {
   return _inflight;
 };
 
+// For non-hook callers (data loaders) that need the same cached snapshot.
+export const loadComplianceConfig = loadOnce;
+
 export default function useComplianceConfig() {
   const [cfg, setCfg] = useState(_cache);
   useEffect(() => {

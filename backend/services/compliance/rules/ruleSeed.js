@@ -36,9 +36,12 @@ const SEED = [
         // consumed by strategies.adminDefined when last_n_avg / template_default
         // both return 0.  Prevents a first-day miss on a brand-new employee
         // from evaporating to a 0-mark penalty.
+        // Phase 4: 'submission_earned' reproduces the legacy Penalty semantics
+        // exactly (the missed day's own earned marks are deducted, frozen at
+        // creation), so Final Marks projected from Compliance equal today's.
+        // `last_n_avg` / `admin_defined` remain selectable per rule.
         config: {
-          marksStrategy: 'last_n_avg',
-          strategyConfig: { N: 7 },
+          marksStrategy: 'submission_earned',
           marks: 5,
         },
       },
@@ -73,6 +76,11 @@ const SEED = [
       { type: 'percent_reduction', enabled: true, config: {
         percentPerDay: 1, maxCap: 30, recurring: true, recurringCadence: 'daily',
       } },
+      // Phase 4: legacy dependency_pending Penalty zeroes the day's marks
+      // (penaltyMarks = the primary submission's earned marks).
+      { type: 'zero_daily_marks', enabled: true, config: {
+        marksStrategy: 'submission_earned', recurring: true, recurringCadence: 'daily',
+      } },
       { type: 'notification', enabled: true, config: {} },
     ],
     recovery: { allowed: true, autoResolveOnResolve: true },
@@ -96,6 +104,10 @@ const SEED = [
       // pass filters recurring-only on subsequent ticks; this flag opts
       // performance_lock into that pass.
       { type: 'performance_lock', enabled: true, config: { recurring: true, recurringCadence: 'daily' } },
+      // Phase 4: a lock day is a zero-marks day (legacy penaltyMarks = earned).
+      { type: 'zero_daily_marks', enabled: true, config: {
+        marksStrategy: 'submission_earned', recurring: true, recurringCadence: 'daily',
+      } },
       { type: 'notification', enabled: true, config: {} },
     ],
     recovery: { allowed: true, autoResolveOnResolve: true },
@@ -110,7 +122,7 @@ const SEED = [
     severity: 'high',
     trigger: { evaluationDelayDays: 0 },
     actions: [
-      { type: 'zero_daily_marks', enabled: true, config: { marksStrategy: 'admin_defined' } },
+      { type: 'zero_daily_marks', enabled: true, config: { marksStrategy: 'submission_earned' } },
     ],
     waiver:   { allowed: true, partialAllowed: true },
   },
@@ -124,6 +136,7 @@ const SEED = [
     trigger: { evaluationDelayDays: 0 },
     actions: [
       { type: 'fixed_marks_reduction', enabled: true, config: { marks: 0 } },
+      { type: 'notification', enabled: true, config: {} },
     ],
     waiver:   { allowed: true, partialAllowed: false },
   },
@@ -137,6 +150,7 @@ const SEED = [
     trigger: { evaluationDelayDays: 0 },
     actions: [
       { type: 'percent_reduction', enabled: true, config: { percent: 0 } },
+      { type: 'notification', enabled: true, config: {} },
     ],
     waiver:   { allowed: true, partialAllowed: false },
   },
@@ -150,6 +164,21 @@ const SEED = [
     trigger: { evaluationDelayDays: 0 },
     actions: [
       { type: 'financial_fine', enabled: true, config: { amount: 0 } },
+      { type: 'notification', enabled: true, config: {} },
+    ],
+    waiver:   { allowed: true, partialAllowed: false },
+  },
+  {
+    code: 'manual_warning_v2',
+    name: 'Warning',
+    description: 'HR-issued written warning.  No marks, percentage or money.',
+    category: 'conduct',
+    detector: 'manual',
+    severity: 'low',
+    trigger: { evaluationDelayDays: 0 },
+    actions: [
+      { type: 'warning', enabled: true, config: {} },
+      { type: 'notification', enabled: true, config: {} },
     ],
     waiver:   { allowed: true, partialAllowed: false },
   },
