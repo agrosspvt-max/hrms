@@ -4,6 +4,17 @@
 
 html, body, #root { height: 100%; }
 
+/* Keep native numeric validation, but remove the controls that step the value.
+ * display:none also removes the wheel-stepping control in Chromium. */
+input[type='number'] {
+  appearance: textfield;
+}
+
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  display: none;
+}
+
 /* Dark-mode base: applied whenever <html class="dark"> is set by the
  * ThemeContext.  Keeps the page chrome consistent even on pages that
  * render raw `bg-white` / `text-slate-900` without dark variants. */
