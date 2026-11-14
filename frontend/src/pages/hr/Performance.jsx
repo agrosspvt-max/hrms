@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -1257,6 +1257,7 @@ function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () 
                       <th>Dealer Name</th>
                       <th className="text-right">Farmers</th>
                       <th className="text-right">Products</th>
+                      <th className="min-w-[12rem]">Product</th>
                       <th className="text-right">Quantity</th>
                       <th className="text-right">Sales (₹)</th>
                       <th className="text-right">NBV (₹)</th>
@@ -1275,6 +1276,22 @@ function CallingMode({ data, exportParams = {}, canExport = false, onDrill = () 
                         <td>{d.dealerName || <span className="text-slate-400">—</span>}</td>
                         <td className="text-right">{d.farmers}</td>
                         <td className="text-right">{d.products}</td>
+                        {/* Per-product quantity for this dealer, e.g. "VIPER(1), MAXX TRICHO(0.8)".
+                            Built server-side so the Excel export shows the identical string. */}
+                        <td className="whitespace-normal break-words min-w-[12rem] max-w-md" title={d.productSummary || ''}>
+                          {Array.isArray(d.productItems) && d.productItems.length > 0
+                            // One inline-block per item: lines break between
+                            // products, not inside "MAXX TRICHO(0.8)".
+                            ? d.productItems.map((it, i) => (
+                                <Fragment key={`${it.productId || it.name}|${it.unit}`}>
+                                  <span className="inline-block">{it.label}{i < d.productItems.length - 1 ? ',' : ''}</span>
+                                  {i < d.productItems.length - 1 ? ' ' : ''}
+                                </Fragment>
+                              ))
+                            : d.productSummary && d.productSummary !== '—'
+                              ? d.productSummary
+                              : <span className="text-slate-400">—</span>}
+                        </td>
                         <td className="text-right">{d.qty}</td>
                         <td className="text-right font-semibold text-green-700">{d.sales}</td>
                         <td className="text-right">{d.nbv}</td>

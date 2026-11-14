@@ -12,6 +12,7 @@ const { startOfDay, addDays, parseDay, formatYMD } = require('../utils/dateHelpe
 // Phase 4: every analytics query AND-s in this filter so soft-deleted
 // and test-marked submissions never reach a leaderboard / KPI / trend.
 const { liveSubmissionFilter, readReqFlags } = require('../utils/submissionFilter');
+const dealerProductSummary = require('../utils/dealerProductSummary');
 
 // Phase 44.3 -- read a featurePermissions[key].enabled flag from req.user.
 // Mirrors the helper used in dailyReviewController and templateAnalyticsController.
@@ -1168,6 +1169,9 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   // for display.
   const dealerAgg = new Map();     // dealerId -> { name, place, farmers, products, sales, nbv, qty }
   const dealerDay = new Map();     // 'dealerId|date' -> { date, sales, nbv, farmers }
+  // Per-dealer product quantities for the "Product" column (display only;
+  // never feeds the counts / qty / sales / NBV above).
+  const dealerProducts = new Map(); // dealerId -> accumulator
 
   for (const sub of pfSubs) {
     const empKey = String(sub.employee);
@@ -1220,9 +1224,12 @@ const callingAnalytics = asyncHandler(async (req, res) => {
       // Sum every product attached to this farmer + match against
       // productSales rows on the same submission to fold in sales / NBV
       // when the product+quantity tuple is present on both sides.
+      if (!dealerProducts.has(key)) dealerProducts.set(key, dealerProductSummary.createAccumulator());
+      const dpAcc = dealerProducts.get(key);
       for (const fp of (f.products || [])) {
         da.products += 1;
         da.qty      += Number(fp.quantity) || 0;
+        dealerProductSummary.addProduct(dpAcc, fp);
         // Best-effort sales/NBV credit: find a productSales row on the
         // same submission with the same product to inherit pricing.
         const sale = (sub.productSales || []).find((ps) =>
@@ -1388,12 +1395,18 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   const totalDealerSales = [...dealerAgg.values()].reduce((s, d) => s + d.sales, 0);
   const avgSalesPerDealer = dealersTouched > 0 ? round2(totalDealerSales / dealersTouched) : 0;
 
-  const dealersTable = [...dealerAgg.values()].map((d) => ({
-    ...d,
-    sales: round2(d.sales),
-    nbv:   round2(d.nbv),
-    qty:   round2(d.qty),
-  })).sort((a, b) => b.sales - a.sales);
+  const dealersTable = [...dealerAgg.values()].map((d) => {
+    const ps = dealerProductSummary.summarize(dealerProducts.get(d._id));
+    return {
+      ...d,
+      sales: round2(d.sales),
+      nbv:   round2(d.nbv),
+      qty:   round2(d.qty),
+      // "VIPER(1), MAXX TRICHO(0.8)" -- same string on screen and in Excel.
+      productSummary: ps.text,
+      productItems:   ps.items,
+    };
+  }).sort((a, b) => b.sales - a.sales);
 
   const dealerKpis = {
     totalActiveDealers,
@@ -1932,6 +1945,77 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
     });
     ws.getColumn(c).width = Math.min(34, Math.max(14, maxLen + 2));
   }
+
+  // ---- 7b. Per-Product + Per-Dealer breakdown worksheets -----------
+  // Straight from the captured payload's productsTable / dealersTable:
+  // same rows, same order, same filters as the on-screen tables.  No
+  // farmer names / phone numbers are written to these sheets.
+  const addBreakdownSheet = (name, columns, rows) => {
+    const sh = wb.addWorksheet(name, {
+      views: [{ state: 'frozen', ySplit: 3, topLeftCell: 'A4', activeCell: 'A4' }],
+      pageSetup: { fitToPage: true, fitToWidth: 1, fitToHeight: 0, orientation: 'landscape' },
+    });
+    sh.columns = columns.map((c) => ({ key: c.key, width: c.width }));
+    sh.mergeCells(1, 1, 1, columns.length);
+    const t = sh.getCell(1, 1);
+    t.value = name.toUpperCase();
+    t.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+    t.alignment = { horizontal: 'center', vertical: 'middle' };
+    t.fill = TITLE_FILL;
+    sh.getRow(1).height = 24;
+    sh.mergeCells(2, 1, 2, columns.length);
+    const dc = sh.getCell(2, 1);
+    dc.value = `Date Range: ${titleDate}`;
+    dc.font = { italic: true, size: 11, color: { argb: 'FF334155' } };
+    dc.alignment = { horizontal: 'center', vertical: 'middle' };
+    dc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    const head = sh.getRow(3);
+    columns.forEach((c, i) => {
+      const cell = head.getCell(i + 1);
+      cell.value = c.header;
+      cell.font = { bold: true, color: { argb: 'FF1F2937' } };
+      cell.fill = TBL_HEAD_FILL;
+      cell.alignment = { horizontal: c.num ? 'right' : 'left', vertical: 'middle', wrapText: true };
+      cell.border = thinBorder;
+    });
+    rows.forEach((src, idx) => {
+      const row = sh.getRow(4 + idx);
+      columns.forEach((c, i) => {
+        const cell = row.getCell(i + 1);
+        const v = c.get(src);
+        cell.value = c.num ? (Number(v) || 0) : String(v == null || v === '' ? '' : v);
+        if (c.fmt) cell.numFmt = c.fmt;
+        cell.alignment = c.num
+          ? { horizontal: 'right', vertical: 'top' }
+          : { vertical: 'top', wrapText: !!c.wrap };
+        cell.border = thinBorder;
+        if (idx % 2 === 1) cell.fill = ALT_ROW_FILL;
+      });
+    });
+    if (rows.length) sh.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: columns.length } };
+    return sh;
+  };
+  const productsTable = captured.productsTable || [];
+  const dealersTable  = captured.dealersTable  || [];
+  const TEXT_W = (rows, get, min, max) => Math.min(max, Math.max(min, ...rows.map((x) => String(get(x) || '').length + 2)));
+  addBreakdownSheet('Per-Product Breakdown', [
+    { header: 'Product',   get: (p) => p.name,  width: TEXT_W(productsTable, (p) => p.name, 16, 40) },
+    { header: 'Rows',      get: (p) => p.rows,  width: 10, num: true },
+    { header: 'Quantity',  get: (p) => p.qty,   width: 12, num: true },
+    { header: 'Sales (₹)', get: (p) => p.sales, width: 16, num: true, fmt: CURRENCY_FMT },
+    { header: 'NBV (₹)',   get: (p) => p.nbv,   width: 16, num: true, fmt: CURRENCY_FMT },
+  ], productsTable);
+  addBreakdownSheet('Per-Dealer Breakdown', [
+    { header: 'Firm Name',   get: (d) => d.firmName || d.name || '—', width: TEXT_W(dealersTable, (d) => d.firmName || d.name, 16, 36), wrap: true },
+    { header: 'Place',       get: (d) => d.place || '—',      width: TEXT_W(dealersTable, (d) => d.place, 12, 24), wrap: true },
+    { header: 'Dealer Name', get: (d) => d.dealerName || '—', width: TEXT_W(dealersTable, (d) => d.dealerName, 14, 28), wrap: true },
+    { header: 'Farmers',     get: (d) => d.farmers,  width: 10, num: true },
+    { header: 'Products',    get: (d) => d.products, width: 11, num: true },
+    { header: 'Product',     get: (d) => d.productSummary || dealerProductSummary.EMPTY, width: 50, wrap: true },
+    { header: 'Quantity',    get: (d) => d.qty,      width: 12, num: true },
+    { header: 'Sales (₹)',   get: (d) => d.sales,    width: 16, num: true, fmt: CURRENCY_FMT },
+    { header: 'NBV (₹)',     get: (d) => d.nbv,      width: 16, num: true, fmt: CURRENCY_FMT },
+  ], dealersTable);
 
   // ---- 8. Stream the workbook back as xlsx -------------------------
   const buf = await wb.xlsx.writeBuffer();
