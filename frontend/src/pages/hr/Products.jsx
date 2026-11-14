@@ -44,7 +44,8 @@ export default function Products() {
 
 /* ---------------------------- Dealers tab ---------------------------- */
 
-const blankDealer = { firmName: '', place: '', dealerName: '', active: true };
+const DEALER_STATES = ['MP', 'UP', 'WB', 'CG'];
+const blankDealer = { firmName: '', place: '', dealerName: '', state: '', active: true };
 
 function DealersTab() {
   const [items, setItems] = useState([]);
@@ -70,6 +71,7 @@ function DealersTab() {
         firmName:   String(form.firmName || '').trim(),
         place:      String(form.place || '').trim(),
         dealerName: String(form.dealerName || '').trim(),
+        state:      form.state || '',
         active:     form.active !== false,
       };
       if (modal.mode === 'create') await api.post('/dealers', payload);
@@ -107,13 +109,14 @@ function DealersTab() {
         {loading ? <Loader /> :
           items.length === 0 ? <EmptyState title="No dealers yet" subtitle="Add a dealer or import the sample to make them pickable on Farmer Records." /> :
           <table className="table">
-            <thead><tr><th>Firm Name</th><th>Place</th><th>Dealer Name</th><th>Status</th><th></th></tr></thead>
+            <thead><tr><th>Firm Name</th><th>Place</th><th>Dealer Name</th><th>State</th><th>Status</th><th></th></tr></thead>
             <tbody>
               {items.map((d) => (
                 <tr key={d._id} className={d.active ? '' : 'opacity-60'}>
                   <td className="font-medium text-slate-800">{d.firmName || d.name || '—'}</td>
                   <td>{d.place || <span className="text-slate-400">—</span>}</td>
                   <td>{d.dealerName || <span className="text-slate-400">—</span>}</td>
+                  <td>{d.state || <span className="text-slate-400">—</span>}</td>
                   <td>{d.active ? <span className="badge-green">Active</span> : <span className="badge-gray">Inactive</span>}</td>
                   <td className="text-right whitespace-nowrap">
                     <button className="btn-ghost" onClick={() => setModal({ mode: 'edit', data: d })}>Edit</button>
@@ -148,6 +151,14 @@ function DealersTab() {
               <div className="text-[11px] text-slate-500 mt-1">
                 Internal — employees never see the dealer name; HR + analytics do.
               </div>
+            </div>
+            <div>
+              <label className="label" htmlFor="d-state">State (optional)</label>
+              <select id="d-state" className="input" value={modal.data.state || ''}
+                onChange={(e) => setModal({ ...modal, data: { ...modal.data, state: e.target.value } })}>
+                <option value="">Not set</option>
+                {DEALER_STATES.map((state) => <option key={state} value={state}>{state}</option>)}
+              </select>
             </div>
             <div className="flex items-center gap-2">
               <input id="d-active" type="checkbox" checked={modal.data.active !== false} onChange={(e) => setModal({ ...modal, data: { ...modal.data, active: e.target.checked } })} />
@@ -245,6 +256,7 @@ function ImportDealersModal({ onClose, onImported }) {
               <p className="text-[13px]">
                 Accepted: <code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>.  Required columns: Firm Name, Place, Dealer Name.
               </p>
+              <p className="text-[13px]">STATE is optional: MP, UP, WB, or CG. A blank or missing STATE keeps an existing dealer’s state.</p>
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv"

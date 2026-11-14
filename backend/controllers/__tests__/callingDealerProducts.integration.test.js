@@ -16,6 +16,7 @@ process.env.NODE_ENV = 'test';
 const assert = require('assert');
 const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
+const XLSX = require('xlsx');
 const dps = require('../../utils/dealerProductSummary');
 
 let n = 0; const ok = (m) => { n += 1; console.log(`  ok  ${n}: ${m}`); };
@@ -86,9 +87,9 @@ const mkRes = () => {
   r.send = (b) => { r.body = b; return r; };
   return r;
 };
-const run = async (handler, user, query) => {
+const run = async (handler, user, query, extras = {}) => {
   const res = mkRes(); let err = null;
-  await handler({ user, query, params: {} }, res, (e) => { err = e; });
+  await handler({ user, query, params: {}, ...extras }, res, (e) => { err = e; });
   if (err) { err.statusCode = res.statusCode; throw err; }
   return res;
 };
@@ -98,6 +99,7 @@ const suite = async (uri) => {
   await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
   const db = mongoose.connection.db;
   const analytics = require('../analyticsController');
+  const dealers = require('../dealerController');
 
   const deptA = oid(), deptB = oid();
   await db.collection('departments').insertMany([{ _id: deptA, name: 'Sales A' }, { _id: deptB, name: 'Sales B' }]);
@@ -110,8 +112,8 @@ const suite = async (uri) => {
   // D1 and D2 share a firm name (different places): must never merge.
   const D1 = oid(), D2 = oid(), D3 = oid(), D4 = oid();
   await db.collection('dealers').insertMany([
-    { _id: D1, firmName: 'Krishna Agro', place: 'Nashik', dealerName: 'Ramesh', active: true },
-    { _id: D2, firmName: 'Krishna Agro', place: 'Pune',   dealerName: 'Suresh', active: true },
+    { _id: D1, firmName: 'Krishna Agro', place: 'Nashik', dealerName: 'Ramesh', state: 'MP', active: true },
+    { _id: D2, firmName: 'Krishna Agro', place: 'Pune',   dealerName: 'Suresh', state: 'CG', active: false },
     { _id: D3, firmName: 'Green Field',  place: 'Satara', dealerName: 'Mahesh', active: true },
     { _id: D4, firmName: 'Empty Farm Supply', place: 'Sangli', dealerName: 'Ganesh', active: true },
   ]);
@@ -167,6 +169,56 @@ const suite = async (uri) => {
 
   const HR  = { _id: oid(), role: 'hr' };
   const HOD = { _id: oid(), role: 'employee', isHOD: true, hodDepartment: deptA };
+  const newDealer = await run(dealers.createDealer, HR, {}, {
+    body: { firmName: 'Workbook Test Dealer', place: 'Test Place', dealerName: 'Test Person', state: ' wb ' },
+  });
+  assert.strictEqual(newDealer.statusCode, 201);
+  assert.strictEqual(newDealer.body.state, 'WB');
+  const editState = (state) => run(dealers.updateDealer, HR, {}, { params: { id: newDealer.body._id }, body: { state } });
+  await assert.rejects(editState('MH'), (err) => err.statusCode === 400 && /STATE/.test(err.message));
+  assert.strictEqual((await editState('')).body.state, '');
+  assert.strictEqual((await editState('UP')).body.state, 'UP');
+  ok('dealer create and edit normalize, validate and clear optional state');
+
+  const importRows = (rows) => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Dealers');
+    return run(dealers.importBulk, HR, {}, { file: { buffer: XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) } });
+  };
+  const basicHeader = ['Firm Name', 'Place', 'Dealer Name'];
+  const header = [...basicHeader, 'STATE'];
+  const existingRow = ['Workbook Test Dealer', 'Test Place', 'Test Person'];
+  await importRows([basicHeader, existingRow]);
+  await importRows([header, [...existingRow, '']]);
+  assert.strictEqual((await db.collection('dealers').findOne({ _id: newDealer.body._id })).state, 'UP');
+  const result = (await importRows([header, [...existingRow, ' cg '], [], ['Invalid State Dealer', 'Test Place', 'Test Person', 'MH'], ['New Dealer Without State', 'Test Place', 'Test Person', '']])).body;
+  assert.deepStrictEqual([result.createdCount, result.updatedCount, result.failedCount], [1, 1, 1]);
+  assert.strictEqual(result.failed[0].row, 4);
+  assert.match(result.failed[0].reason, /STATE/);
+  assert.strictEqual((await db.collection('dealers').findOne({ _id: newDealer.body._id })).state, 'CG');
+  assert.strictEqual((await db.collection('dealers').findOne({ firmName: 'New Dealer Without State' })).state, '');
+  ok('imports keep existing state for blank or missing cells, save allowed codes, and report invalid rows');
+
+  for (const handler of [dealers.importSample, dealers.exportDealers]) {
+    const { body } = await run(handler, HR, {});
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(body);
+    const ws = wb.getWorksheet('Dealers');
+    assert.deepStrictEqual(ws.getRow(1).values.slice(1), header);
+    assert.deepStrictEqual(ws.getCell('D2').dataValidation.formulae, ['"MP,UP,WB,CG"']);
+    assert.strictEqual(ws.getCell('D2').dataValidation.allowBlank, true);
+    assert.ok(wb.getWorksheet('Instructions'));
+    if (handler === dealers.exportDealers) {
+      const rows = ws.getSheetValues().filter(Boolean);
+      assert.strictEqual(rows.find((r) => r[1] === existingRow[0])[4], 'CG');
+      assert.strictEqual(rows.find((r) => r[1] === 'Green Field')[4], '');
+      const result = (await run(dealers.importBulk, HR, {}, { file: { buffer: body } })).body;
+      assert.strictEqual(result.failedCount, 0);
+      // The existing import intentionally reactivates dealers. Restore the test fixture.
+      await db.collection('dealers').updateOne({ _id: D2 }, { $set: { active: false } });
+    }
+  }
+  ok('sample and dealer export contain the optional STATE dropdown; export can be reimported');
   const OCT = { from: '2026-10-01', to: '2026-10-31' };
   const json = async (user, q) => (await run(analytics.callingAnalytics, user, q)).body;
   const book = async (user, q) => {
@@ -211,20 +263,24 @@ const suite = async (uri) => {
   const dsh = wb.getWorksheet('Per-Dealer Breakdown');
   assert.deepStrictEqual(ps.getRow(3).values.slice(1), ['Product', 'Rows', 'Quantity', 'Sales (₹)', 'NBV (₹)']);
   assert.deepStrictEqual(dsh.getRow(3).values.slice(1),
-    ['Firm Name', 'Place', 'Dealer Name', 'Farmers', 'Products', 'Product', 'Quantity', 'Sales (₹)', 'NBV (₹)']);
+    ['Firm Name', 'Place', 'Dealer Name', 'STATE', 'Farmers', 'Products', 'Product', 'Quantity', 'Sales (₹)', 'NBV (₹)']);
   assert.match(String(ps.getCell('A2').value), /Date Range: 01-Oct-2026 to 31-Oct-2026/);
   assert.match(String(dsh.getCell('A2').value), /Date Range: 01-Oct-2026 to 31-Oct-2026/);
   ok('headers in the required column order; date range shown on both new sheets');
   assert.deepStrictEqual(dataRows(ps), hodData.productsTable.map((p) => [p.name, p.rows, p.qty, p.sales, p.nbv]));
   assert.deepStrictEqual(dataRows(dsh), hodData.dealersTable.map((d) =>
-    [d.firmName, d.place, d.dealerName, d.farmers, d.products, d.productSummary, d.qty, d.sales, d.nbv]));
+    [d.firmName, d.place, d.dealerName, d.state, d.farmers, d.products, d.productSummary, d.qty, d.sales, d.nbv]));
+  assert.strictEqual(dataRows(dsh).find((r) => r[1] === 'Nashik')[3], 'MP');
+  assert.strictEqual(dataRows(dsh).find((r) => r[1] === 'Pune')[3], 'CG');
+  assert.strictEqual(dataRows(dsh).find((r) => r[1] === 'Satara')[3], '');
+  ok('Per-Dealer export uses current master state for active and inactive dealers and leaves older records blank');
   ok(`rows, order and values identical to the screen (${hodData.productsTable.length} products, ${hodData.dealersTable.length} dealers)`);
-  const nums = [...dataRows(ps).flatMap((r) => r.slice(1)), ...dataRows(dsh).flatMap((r) => [r[3], r[4], r[6], r[7], r[8]])];
+  const nums = [...dataRows(ps).flatMap((r) => r.slice(1)), ...dataRows(dsh).flatMap((r) => [r[4], r[5], r[7], r[8], r[9]])];
   assert.ok(nums.every((v) => typeof v === 'number'), 'numeric cells');
-  assert.ok(dataRows(dsh).every((r) => typeof r[5] === 'string'), 'Product is text');
-  assert.strictEqual(dsh.getCell('H4').numFmt, '"₹"#,##0.00');
-  assert.ok(dsh.getCell('F4').alignment.wrapText && dsh.getColumn(6).width >= 40);
-  const sumSales = dataRows(dsh).reduce((s, r) => s + r[7], 0);
+  assert.ok(dataRows(dsh).every((r) => typeof r[6] === 'string'), 'Product is text');
+  assert.strictEqual(dsh.getCell('I4').numFmt, '"₹"#,##0.00');
+  assert.ok(dsh.getCell('G4').alignment.wrapText && dsh.getColumn(7).width >= 40);
+  const sumSales = dataRows(dsh).reduce((s, r) => s + r[8], 0);
   assert.strictEqual(Math.round(sumSales * 100) / 100, hodData.dealersTable.reduce((s, d) => s + d.sales, 0));
   ok('counts / quantity / Sales / NBV stored as numbers (summable); Product is wrapped plain text');
   const flat = JSON.stringify([...dataRows(ps), ...dataRows(dsh)]);
@@ -243,7 +299,7 @@ const suite = async (uri) => {
   const hrTest = await json(HR, { ...OCT, includeTest: 'true' });
   assert.strictEqual(byFirm(hrTest.dealersTable)['Krishna Agro|Nashik'].productSummary, 'VIPER(17), MAXX TRICHO(0.8)');
   const hrTestWb = await book(HR, { ...OCT, includeTest: 'true' });
-  assert.ok(dataRows(hrTestWb.getWorksheet('Per-Dealer Breakdown')).some((r) => r[5] === 'VIPER(17), MAXX TRICHO(0.8)'));
+  assert.ok(dataRows(hrTestWb.getWorksheet('Per-Dealer Breakdown')).some((r) => r[6] === 'VIPER(17), MAXX TRICHO(0.8)'));
   ok('HR: full org (VIPER 8); authorized includeTest adds test data on screen and in the export (VIPER 17); unreviewed + out-of-range never counted');
   await assert.rejects(() => run(analytics.exportCallingAnalytics, { _id: oid(), role: 'employee' }, OCT), (e) => /restricted to HR/.test(e.message));
   ok('plain employee: export handler refuses (route gate requireAnalyticsAccess also blocks first)');
@@ -257,7 +313,7 @@ const suite = async (uri) => {
   const day6 = { from: '2026-10-06', to: '2026-10-06' };
   const d6 = await json(HR, day6);
   const d6wb = await book(HR, day6);
-  assert.deepStrictEqual(dataRows(d6wb.getWorksheet('Per-Dealer Breakdown')).map((r) => r[5]), d6.dealersTable.map((d) => d.productSummary));
+  assert.deepStrictEqual(dataRows(d6wb.getWorksheet('Per-Dealer Breakdown')).map((r) => r[6]), d6.dealersTable.map((d) => d.productSummary));
   assert.match(String(d6wb.getWorksheet('Per-Dealer Breakdown').getCell('A2').value), /06-Oct-2026 to 06-Oct-2026/);
   assert.ok(!d6.dealersTable.some((d) => d.place === 'Nashik'));
   ok('employee filter and date range narrow the screen and the export identically');

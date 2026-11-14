@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const DEALER_STATES = ['MP', 'UP', 'WB', 'CG'];
 
 /**
  * Dealer Master.  HR/SA-maintained catalogue of dealer firms the
@@ -29,6 +30,7 @@ const dealerSchema = new mongoose.Schema(
     firmName:   { type: String, required: true, trim: true, index: true },
     place:      { type: String, required: true, trim: true, index: true },
     dealerName: { type: String, required: true, trim: true },
+    state:      { type: String, enum: ['', ...DEALER_STATES], trim: true, uppercase: true, default: '' },
 
     // Legacy mirror -- kept populated for any old code that reads `name`.
     name:       { type: String, default: '', trim: true, index: true },
@@ -43,5 +45,6 @@ const dealerSchema = new mongoose.Schema(
 // migration in services/dealerMigration.js drops that legacy index
 // before the new compound is built so existing tenants don't trip.
 dealerSchema.index({ firmName: 1, place: 1 }, { unique: true });
+dealerSchema.statics.STATE_OPTIONS = Object.freeze(DEALER_STATES);
 
 module.exports = mongoose.model('Dealer', dealerSchema);

@@ -2,6 +2,7 @@ const asyncHandler = require('express-async-handler');
 const XLSX   = require('xlsx');
 const Dealer = require('../models/Dealer');
 const { logAudit } = require('../utils/audit');
+const { STATE_OPTIONS } = Dealer;
 
 /**
  * Dealer controller -- mirrors Product's CRUD + bulk import shape.
@@ -24,6 +25,15 @@ const normalisePayload = (body = {}, { requireAll = true } = {}) => {
   if (body.place      !== undefined) out.place      = String(body.place).trim();
   if (body.dealerName !== undefined) out.dealerName = String(body.dealerName).trim();
   if (body.active     !== undefined) out.active     = !!body.active;
+  if (body.state !== undefined) {
+    const state = String(body.state ?? '').trim().toUpperCase();
+    if (state && !STATE_OPTIONS.includes(state)) {
+      const err = new Error(`STATE must be one of ${STATE_OPTIONS.join(', ')} or left blank`);
+      err.statusCode = 400;
+      throw err;
+    }
+    out.state = state;
+  }
   // Mirror legacy `name` to firmName whenever firmName is touched so
   // any older code reading dealer.name keeps resolving.
   if ('firmName' in out) out.name = out.firmName;
@@ -110,11 +120,11 @@ const deactivateDealer = asyncHandler(async (req, res) => {
  * Instructions sheet.
  * ============================================================ */
 
-const SAMPLE_HEADER = ['Firm Name', 'Place', 'Dealer Name'];
+const SAMPLE_HEADER = ['Firm Name', 'Place', 'Dealer Name', 'STATE'];
 const SAMPLE_ROWS = [
-  ['Agro Traders',      'Bhopal',  'Rajesh Sharma'],
-  ['Agro Traders',      'Vidisha', 'Amit Verma'],
-  ['Green Crop Centre', 'Sehore',  'Rakesh Patel'],
+  ['Agro Traders',      'Bhopal',  'Rajesh Sharma', 'MP'],
+  ['Agro Traders',      'Vidisha', 'Amit Verma',    'MP'],
+  ['Green Crop Centre', 'Sehore',  'Rakesh Patel',  ''],
 ];
 const INSTRUCTIONS_LINES = [
   ['Dealer Bulk Import — Instructions'],
@@ -122,6 +132,8 @@ const INSTRUCTIONS_LINES = [
   ['• Firm Name is REQUIRED.'],
   ['• Place is REQUIRED.'],
   ['• Dealer Name is REQUIRED.'],
+  [`• STATE is OPTIONAL. Select ${STATE_OPTIONS.join(', ')} or leave it blank.`],
+  ['• A blank or missing STATE leaves an existing dealer’s state unchanged. Use Edit Dealer to clear it.'],
   ['• Upsert key = (Firm Name + Place).  Two rows with the same Firm Name but different Place are TWO separate dealers.'],
   ['• Duplicate (Firm Name + Place) rows UPDATE the existing dealer -- Dealer Name can be changed through import.'],
   ['• Rows with any blank required field are skipped.  A row-by-row error report is returned to the importer.'],
@@ -129,36 +141,42 @@ const INSTRUCTIONS_LINES = [
   ['• The Dealers sheet is read; this Instructions sheet is ignored.'],
 ];
 
+const sendDealerWorkbook = async (res, rows, filename) => {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Dealers');
+  ws.addRow(SAMPLE_HEADER);
+  ws.addRows(rows);
+  [24, 18, 24, 12].forEach((width, index) => { ws.getColumn(index + 1).width = width; });
+  // Include room to fill additional rows when reusing the downloaded file for import.
+  ws.dataValidations.add(`D2:D${Math.max(rows.length + 1, 10001)}`, {
+    type: 'list',
+    allowBlank: true,
+    formulae: [`"${STATE_OPTIONS.join(',')}"`],
+    showErrorMessage: true,
+    errorStyle: 'stop',
+    errorTitle: 'Invalid State',
+    error: `Select ${STATE_OPTIONS.join(', ')} or leave STATE blank.`,
+  });
+  const instructions = wb.addWorksheet('Instructions');
+  instructions.addRows(INSTRUCTIONS_LINES);
+  instructions.getColumn(1).width = 110;
+  const buf = await wb.xlsx.writeBuffer();
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(buf);
+};
+
 // GET /api/dealers/import-sample   (HR / SA)
 const importSample = asyncHandler(async (_req, res) => {
-  const wb = XLSX.utils.book_new();
-  const ws1 = XLSX.utils.aoa_to_sheet([SAMPLE_HEADER, ...SAMPLE_ROWS]);
-  ws1['!cols'] = [{ wch: 22 }, { wch: 14 }, { wch: 22 }];
-  XLSX.utils.book_append_sheet(wb, ws1, 'Dealers');
-  const ws2 = XLSX.utils.aoa_to_sheet(INSTRUCTIONS_LINES);
-  ws2['!cols'] = [{ wch: 110 }];
-  XLSX.utils.book_append_sheet(wb, ws2, 'Instructions');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', 'attachment; filename="dealer_import_sample.xlsx"');
-  res.send(buf);
+  await sendDealerWorkbook(res, SAMPLE_ROWS, 'dealer_import_sample.xlsx');
 });
 
 // GET /api/dealers/export   (HR / SA) -- full catalogue as xlsx.
 const exportDealers = asyncHandler(async (_req, res) => {
   const rows = await Dealer.find({}).sort({ active: -1, firmName: 1, place: 1 }).lean();
-  const aoa = [SAMPLE_HEADER, ...rows.map((d) => [d.firmName || d.name || '', d.place || '', d.dealerName || d.name || ''])];
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols'] = [{ wch: 24 }, { wch: 14 }, { wch: 24 }];
-  XLSX.utils.book_append_sheet(wb, ws, 'Dealers');
-  const ws2 = XLSX.utils.aoa_to_sheet(INSTRUCTIONS_LINES);
-  ws2['!cols'] = [{ wch: 110 }];
-  XLSX.utils.book_append_sheet(wb, ws2, 'Instructions');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="dealers_export_${new Date().toISOString().slice(0, 10)}.xlsx"`);
-  res.send(buf);
+  const cells = rows.map((d) => [d.firmName || d.name || '', d.place || '', d.dealerName || d.name || '', d.state || '']);
+  await sendDealerWorkbook(res, cells, `dealers_export_${new Date().toISOString().slice(0, 10)}.xlsx`);
 });
 
 /** Fuzzy header lookup -- same logic as productController.findCol. */
@@ -190,12 +208,15 @@ const importBulk = asyncHandler(async (req, res) => {
   const colFirm   = findCol(header, ['Firm Name', 'firmName', 'firm']);
   const colPlace  = findCol(header, ['Place', 'city', 'location']);
   const colDealer = findCol(header, ['Dealer Name', 'dealerName', 'dealer', 'person']);
+  const colState  = findCol(header, ['State']);
 
   if (colFirm   < 0) { res.status(400); throw new Error('Missing required column: Firm Name'); }
   if (colPlace  < 0) { res.status(400); throw new Error('Missing required column: Place'); }
   if (colDealer < 0) { res.status(400); throw new Error('Missing required column: Dealer Name'); }
 
-  const dataRows = aoa.slice(1).filter((r) => r.some((c) => c !== '' && c !== null));
+  const dataRows = aoa.slice(1)
+    .map((raw, i) => ({ raw, sheetRow: i + 2 }))
+    .filter(({ raw }) => raw.some((c) => c !== '' && c !== null));
 
   // Pre-fetch every existing dealer so the upsert is one round-trip
   // per row (read = Map lookup, write = atomic).  Key = "firm|place"
@@ -208,9 +229,7 @@ const importBulk = asyncHandler(async (req, res) => {
   let updatedCount = 0;
   const failed = []; // { row, firmName, reason }
 
-  for (let i = 0; i < dataRows.length; i++) {
-    const raw = dataRows[i];
-    const sheetRow = i + 2; // 1-indexed + 1 header
+  for (const { raw, sheetRow } of dataRows) {
     const firmName   = String(raw[colFirm]   ?? '').trim();
     const place      = String(raw[colPlace]  ?? '').trim();
     const dealerName = String(raw[colDealer] ?? '').trim();
@@ -220,21 +239,15 @@ const importBulk = asyncHandler(async (req, res) => {
     if (!dealerName) { failed.push({ row: sheetRow, firmName,                       reason: 'Dealer Name is required' });  continue; }
 
     try {
+      const state = colState < 0 ? '' : String(raw[colState] ?? '').trim();
+      const payload = normalisePayload({ firmName, place, dealerName, active: true, ...(state ? { state } : {}) });
       const k = keyOf(firmName, place);
       const existingId = byKey.get(k);
       if (existingId) {
-        await Dealer.findByIdAndUpdate(existingId, {
-          firmName, place, dealerName,
-          name: firmName,
-          active: true,
-        });
+        await Dealer.findByIdAndUpdate(existingId, payload, { runValidators: true });
         updatedCount += 1;
       } else {
-        const created = await Dealer.create({
-          firmName, place, dealerName,
-          name: firmName,
-          active: true,
-        });
+        const created = await Dealer.create(payload);
         byKey.set(k, created._id);
         createdCount += 1;
       }

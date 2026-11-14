@@ -1395,10 +1395,16 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   const totalDealerSales = [...dealerAgg.values()].reduce((s, d) => s + d.sales, 0);
   const avgSalesPerDealer = dealersTouched > 0 ? round2(totalDealerSales / dealersTouched) : 0;
 
+  // Read the current master state for dealers in this report, even if inactive.
+  const dealerStates = dealerAgg.size
+    ? await Dealer.find({ _id: { $in: [...dealerAgg.keys()] }, state: { $in: Dealer.STATE_OPTIONS } }).select('state').lean()
+    : [];
+  const stateByDealer = new Map(dealerStates.map((d) => [String(d._id), d.state]));
   const dealersTable = [...dealerAgg.values()].map((d) => {
     const ps = dealerProductSummary.summarize(dealerProducts.get(d._id));
     return {
       ...d,
+      state: stateByDealer.get(d._id) || '',
       sales: round2(d.sales),
       nbv:   round2(d.nbv),
       qty:   round2(d.qty),
@@ -2009,6 +2015,7 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
     { header: 'Firm Name',   get: (d) => d.firmName || d.name || '—', width: TEXT_W(dealersTable, (d) => d.firmName || d.name, 16, 36), wrap: true },
     { header: 'Place',       get: (d) => d.place || '—',      width: TEXT_W(dealersTable, (d) => d.place, 12, 24), wrap: true },
     { header: 'Dealer Name', get: (d) => d.dealerName || '—', width: TEXT_W(dealersTable, (d) => d.dealerName, 14, 28), wrap: true },
+    { header: 'STATE',       get: (d) => d.state,    width: 12 },
     { header: 'Farmers',     get: (d) => d.farmers,  width: 10, num: true },
     { header: 'Products',    get: (d) => d.products, width: 11, num: true },
     { header: 'Product',     get: (d) => d.productSummary || dealerProductSummary.EMPTY, width: 50, wrap: true },
