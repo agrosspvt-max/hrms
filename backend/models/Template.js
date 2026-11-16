@@ -392,8 +392,7 @@ const templateSchema = new mongoose.Schema(
     customKind: { type: String, default: '', index: true },
     // Opt-in sub-tables a custom template wants on its submission.
     // Currently supported:
-    //   'productSales'   -> repeating Product Sales rows (Product +
-    //                       Quantity dropdowns, auto Sales Value + NBV).
+    //   'productSales'   -> legacy alias for 'farmerRecords'.
     //   'farmerRecords'  -> repeating Farmer detail rows.
     // Future templates (Dealer Visit, Site Visit, Collection Report)
     // can re-use the same sections without code changes.

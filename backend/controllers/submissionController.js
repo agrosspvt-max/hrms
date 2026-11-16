@@ -1,3 +1,4 @@
+const { priceSnapshot } = require('../services/farmerPurchases');
 const asyncHandler = require('express-async-handler');
 const Submission = require('../models/Submission');
 const User = require('../models/User');
@@ -397,7 +398,7 @@ const getToday = asyncHandler(async (req, res) => {
 const VALID_FIELD_TYPES = ['text', 'number', 'textarea', 'dropdown', 'date'];
 
 const submitOne = asyncHandler(async (req, res) => {
-  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], extraTasks = [], productSales = [], farmerRecords = [], selfRating, selfNote, idea, privateRemark } = req.body;
+  const { tasks = [], addedTasks = [], excelResponses = [], sheet, customResponses = [], extraTasks = [], farmerRecords = [], selfRating, selfNote, idea, privateRemark } = req.body;
   const sub = await Submission.findOne({ _id: req.params.id, employee: req.user._id });
   if (!sub) { res.status(404); throw new Error('Submission not found'); }
   if (sub.submitted) { res.status(400); throw new Error('Submission already submitted for today'); }
@@ -609,14 +610,7 @@ const submitOne = asyncHandler(async (req, res) => {
        preserved from what the daily engine seeded, never overwritten by
        the client. */
     const { computeAutoFields } = require('../services/customTemplate');
-    // customSections MUST be in this projection -- the productSales /
-    // farmerRecords persistence blocks below are guarded on
-    // tpl.customSections.includes(...).  Without this field projected,
-    // the guard silently evaluates false on every submit and the
-    // employee's product/farmer rows are dropped, leaving submissions
-    // with empty productSales[] / farmerRecords[] and Product & Farmer
-    // Analytics permanently at zero.  (This was the cause of the
-    // "submissions exist but analytics shows 0/₹0" bug.)
+    // Include section metadata so Products Purchased persists when the template uses Farmer Records.
     const tpl = await Template.findById(sub.template).select('customFields customKind customSections');
     if (!tpl || !Array.isArray(tpl.customFields)) {
       res.status(400);
@@ -873,62 +867,13 @@ const submitOne = asyncHandler(async (req, res) => {
       }
     }
 
-    /* ---- Product Sales sub-table (templates that opt in) ----
-       Master-data IDs are validated, fields snapshotted at submit time,
-       Sales Value + NBV recomputed server-side from the snapshot so the
-       client can never inflate the numbers. */
-    if (Array.isArray(tpl.customSections) && tpl.customSections.includes('productSales')) {
-      const Product  = require('../models/Product');
-      const Quantity = require('../models/Quantity');
-      const cleanedSales = [];
-      for (const row of (productSales || [])) {
-        // Accept a row that carries EITHER:
-        //   - a raw canonical `quantity` (new flow: employee types 0.5 / 25 / etc.)
-        //   - a legacy `quantityId` pointing into Quantity Master
-        // Must also reference a Product.
-        if (!row || !row.productId) continue;
-        const prod = await Product.findById(row.productId).lean();
-        if (!prod) continue; // silently drop invalid rows
-
-        // Resolve quantity: raw input wins; fall back to Quantity Master
-        // snapshot so older clients keep working.
-        let qty = null;
-        let qval = Number(row.quantity);
-        if (!Number.isFinite(qval) || qval <= 0) {
-          if (row.quantityId) qty = await Quantity.findById(row.quantityId).lean();
-          qval = Number(qty?.value) || 0;
-        }
-        if (qval <= 0) continue; // no quantity = nothing to score
-
-        const price  = Number(prod.pricePerUnit) || 0;
-        const nbvPct = Math.max(0, Math.min(Number(prod.nbvPercentage) || 0, 100));
-        const sales  = Math.round(price * qval * 100) / 100;
-        const nbv    = Math.round(sales * nbvPct) / 100;
-        cleanedSales.push({
-          productId: prod._id,
-          productName: prod.name,
-          productUnit: prod.unit,
-          productPrice: price,
-          productNbvPercentage: nbvPct,
-          quantityId: qty?._id,
-          quantityLabel: qty?.label || '',
-          quantityValue: qty ? (Number(qty.value) || 0) : qval, // mirror raw qty when no master row
-          quantity:     qval,
-          salesValue: sales,
-          nbvValue: nbv,
-        });
-      }
-      sub.productSales = cleanedSales;
-      sub.markModified('productSales');
-    }
-
     /* ---- Farmer Records sub-table (templates that opt in) ----
        v2 schema: each farmer carries an optional Dealer Master
        reference + a products[] array.  Legacy single-product fields
        are kept and mirrored from products[0] so historical analytics
        paths keep working.  Dealer name + place are SNAPSHOTTED so
        Dealer Analytics survives later renames / deactivations. */
-    if (Array.isArray(tpl.customSections) && tpl.customSections.includes('farmerRecords')) {
+    if (tpl.customSections?.some((section) => section === 'farmerRecords' || section === 'productSales')) {
       const Product  = require('../models/Product');
       const Dealer   = require('../models/Dealer');
       const cleanedFarmers = [];
@@ -954,6 +899,7 @@ const submitOne = asyncHandler(async (req, res) => {
             productId:   prod._id,
             productName: prod.name,
             productUnit: prod.unit,
+            ...priceSnapshot(prod),
             quantity:    Number.isFinite(q) && q > 0 ? q : 0,
           });
         }
@@ -1888,7 +1834,7 @@ const bulkReview = asyncHandler(async (req, res) => {
  * Persists a partial work-in-progress payload onto the existing
  * unsubmitted Submission document.  Accepts the SAME shape the submit
  * endpoint accepts (tasks / excelResponses / sheet / customResponses
- * / productSales / farmerRecords / selfRating / selfNote / idea /
+ * / farmerRecords / selfRating / selfNote / idea /
  * addedTasks) -- the frontend builds one payload and routes it to
  * either /draft or /submit depending on the user's intent.
  *
@@ -1917,7 +1863,7 @@ const saveDraft = asyncHandler(async (req, res) => {
     throw new Error('Cannot save a draft on a submission that is already submitted.');
   }
 
-  const { tasks, addedTasks, excelResponses, sheet, customResponses, extraTasks, productSales, farmerRecords, selfRating, selfNote, idea, privateRemark } = req.body || {};
+  const { tasks, addedTasks, excelResponses, sheet, customResponses, extraTasks, farmerRecords, selfRating, selfNote, idea, privateRemark } = req.body || {};
 
   /* ---- Tasks ---- */
   if (Array.isArray(tasks)) {
@@ -2031,37 +1977,6 @@ const saveDraft = asyncHandler(async (req, res) => {
     sub.markModified('extraTasks');
   }
 
-  /* ---- Product Sales ---- */
-  if (Array.isArray(productSales)) {
-    const Product  = require('../models/Product');
-    const Quantity = require('../models/Quantity');
-    const cleaned = [];
-    for (const row of productSales) {
-      if (!row || !row.productId) continue;
-      const prod = await Product.findById(row.productId).lean();
-      if (!prod) continue;
-      let qval = Number(row.quantity);
-      let qty = null;
-      if (!Number.isFinite(qval) || qval <= 0) {
-        if (row.quantityId) qty = await Quantity.findById(row.quantityId).lean();
-        qval = Number(qty?.value) || 0;
-      }
-      const price  = Number(prod.pricePerUnit) || 0;
-      const nbvPct = Math.max(0, Math.min(Number(prod.nbvPercentage) || 0, 100));
-      const sales  = qval > 0 ? Math.round(price * qval * 100) / 100 : 0;
-      const nbv    = qval > 0 ? Math.round(sales * nbvPct) / 100 : 0;
-      cleaned.push({
-        productId: prod._id, productName: prod.name, productUnit: prod.unit,
-        productPrice: price, productNbvPercentage: nbvPct,
-        quantityId: qty?._id, quantityLabel: qty?.label || '',
-        quantityValue: qty ? (Number(qty.value) || 0) : qval,
-        quantity: qval, salesValue: sales, nbvValue: nbv,
-      });
-    }
-    sub.productSales = cleaned;
-    sub.markModified('productSales');
-  }
-
   /* ---- Farmer Records ---- */
   if (Array.isArray(farmerRecords)) {
     const Product = require('../models/Product');
@@ -2080,6 +1995,7 @@ const saveDraft = asyncHandler(async (req, res) => {
         const q = Number(pr.quantity);
         cleanedProducts.push({
           productId: prod._id, productName: prod.name, productUnit: prod.unit,
+          ...priceSnapshot(prod),
           quantity: Number.isFinite(q) && q > 0 ? q : 0,
         });
       }

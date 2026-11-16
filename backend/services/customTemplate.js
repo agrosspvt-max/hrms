@@ -191,9 +191,7 @@ const seedDefaultCallingTemplate = async () => {
 
 /**
  * Default Product & Farmer Report template.  Uses the customSections
- * opt-in mechanism to surface the repeating Product Sales + Farmer
- * Records sub-tables -- no scalar customFields needed because all the
- * numbers (sales / NBV) are computed per-row.
+ * opt-in mechanism to surface Farmer Records with Products Purchased.
  *
  * Future templates (Dealer Visit, Site Visit, Collection Report) can
  * subscribe to the same sections by listing them in customSections.
@@ -203,30 +201,20 @@ const PRODUCT_FARMER_TEMPLATE_KIND = 'product_farmer';
 const seedDefaultProductFarmerTemplate = async () => {
   const existing = await Template.findOne({ customKind: PRODUCT_FARMER_TEMPLATE_KIND });
   if (existing) {
-    // SELF-HEAL: if a prior deploy / save corrupted the template (e.g.
-    // an older normaliser stripped customSections), restore the
-    // canonical opt-ins so the report stays functional.  Idempotent.
-    const wanted = ['productSales', 'farmerRecords'];
-    const have = Array.isArray(existing.customSections) ? existing.customSections : [];
-    const missing = wanted.filter((s) => !have.includes(s));
-    if (missing.length > 0) {
-      existing.customSections = Array.from(new Set([...have, ...wanted]));
-      existing.templateType = 'custom';
-      existing.customKind = PRODUCT_FARMER_TEMPLATE_KIND;
-      if (existing.isActive === undefined) existing.isActive = true;
+    const have = Array.from(existing.customSections || []);
+    const sections = [...new Set([...have.filter((section) => section !== 'productSales'), 'farmerRecords'])];
+    if (sections.length !== have.length || sections.some((section, index) => section !== have[index])) {
+      existing.customSections = sections;
       await existing.save();
-      console.log(`[seed] Product & Farmer Report template found (id=${existing._id}) — restored missing sections: ${missing.join(', ')}`);
-    } else {
-      console.log(`[seed] Product & Farmer Report template found (id=${existing._id}) — sections OK: ${have.join(', ')}`);
     }
     return;
   }
   const created = await Template.create({
     title: 'Product & Farmer Report',
-    description: 'Daily field report: record product sales (auto Sales Value + NBV) and farmer interactions.',
+    description: 'Daily field report: record farmer interactions and products purchased.',
     templateType: 'custom',
     customKind: PRODUCT_FARMER_TEMPLATE_KIND,
-    customSections: ['productSales', 'farmerRecords'],
+    customSections: ['farmerRecords'],
     customFields: [],
     isActive: true,
   });

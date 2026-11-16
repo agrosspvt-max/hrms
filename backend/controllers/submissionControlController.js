@@ -184,7 +184,7 @@ const list = asyncHandler(async (req, res) => {
  * GET /api/submission-control/:id
  *
  * Full submission payload -- every sub-array (tasks / excel / sheet /
- * customResponses / productSales / farmerRecords) + review history +
+ * customResponses / farmerRecords) + review history +
  * edit history.  Read-only view for the modal.
  */
 const get = asyncHandler(async (req, res) => {
@@ -212,21 +212,18 @@ const get = asyncHandler(async (req, res) => {
 /**
  * PUT /api/submission-control/:id
  *
- * HR / Super Admin edit.  Freeze-mode: only fields HR explicitly
- * sends in the body are written; salesValue / nbvValue on
- * productSales rows are NOT recomputed.  Caller can still patch
- * those by sending them explicitly.
+ * HR / Super Admin edit. Only fields explicitly sent are written.
+ * Purchase totals are calculated from farmerRecords at read time.
  *
  * Accepted body keys (any subset):
  *   customResponses [{key, value}]
- *   productSales    [...rows...] (replaces array)
  *   farmerRecords   [...rows...] (replaces array)
  *   tasks           [{taskId, status, pendingReason}] (patches in place)
  *   ideaFeedback, selfNote, idea
  *   note            (free-text edit reason; captured on the audit row)
  */
 const ALLOWED_EDIT_KEYS = new Set([
-  'customResponses', 'productSales', 'farmerRecords', 'tasks',
+  'customResponses', 'farmerRecords', 'tasks',
   'ideaFeedback', 'selfNote', 'idea',
 ]);
 
@@ -249,7 +246,7 @@ const update = asyncHandler(async (req, res) => {
       }
       s.markModified('tasks');
     } else {
-      // Array replacements (productSales / farmerRecords / customResponses)
+      // Array replacements (farmerRecords / customResponses)
       // and scalar fields go through verbatim.  Editor is responsible for
       // sending the full array.
       s[k] = v;

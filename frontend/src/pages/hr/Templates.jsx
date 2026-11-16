@@ -255,21 +255,17 @@ export default function Templates({ embedded = false } = {}) {
 /* ------------------------------------------------------------------ */
 /* Friendly label + description for each well-known sub-table. */
 const CUSTOM_SECTION_META = {
-  productSales: {
-    label: 'Product Sales',
-    description: 'Repeating rows of (Product, Quantity). Sales Value and NBV are auto-calculated from Product Master at submit time.',
-    employeeCols: ['Product (dropdown)', 'Quantity (dropdown)', 'Sales Value (auto)', 'NBV Value (auto)'],
-  },
   farmerRecords: {
     label: 'Farmer Records',
-    description: 'Repeating farmer-detail rows (name, mobile, village, dealer, product, quantity).',
+    description: 'Sales and NBV are calculated from the quantities in Products Purchased.',
     employeeCols: ['Farmer Name', 'Mobile', 'Village', 'Dealer Location', 'Product', 'Quantity'],
   },
 };
 
 function CustomFieldsPreview({ tpl }) {
   const fields = (tpl.customFields || []).slice().sort((a, b) => (a.order || 0) - (b.order || 0));
-  const sections = (tpl.customSections || []).filter(Boolean);
+  const sections = [...new Set((tpl.customSections || []).filter(Boolean)
+    .map((section) => section === 'productSales' ? 'farmerRecords' : section))];
 
   // Group scalar fields by their `group` (for the bottom table view).
   const groups = [];
@@ -290,7 +286,7 @@ function CustomFieldsPreview({ tpl }) {
         </div>
       )}
 
-      {/* Opt-in repeating sub-tables (productSales, farmerRecords, ...). */}
+      {/* Opt-in repeating sections. */}
       {sections.length > 0 && (
         <div className="space-y-3">
           {sections.map((s) => {

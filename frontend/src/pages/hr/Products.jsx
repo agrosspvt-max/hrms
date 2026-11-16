@@ -12,7 +12,7 @@ import { errMsg, fmtMoney, authUrl } from '../../utils/helpers';
  *   - Dealers tab     -> dealer name, place, active.  Drives the dealer
  *                        dropdown in the Farmer Records sub-table.
  *   - Quantities tab  -> legacy label/value/unit master kept for older
- *                        templates; new Product Sales rows accept a raw
+ *                        templates; Products Purchased accepts a raw
  *                        canonical quantity directly.
  *
  * All three masters drive dropdowns in the Product & Farmer Report

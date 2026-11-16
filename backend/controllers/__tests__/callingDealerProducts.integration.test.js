@@ -18,6 +18,7 @@ const mongoose = require('mongoose');
 const ExcelJS = require('exceljs');
 const XLSX = require('xlsx');
 const dps = require('../../utils/dealerProductSummary');
+const { valueFarmerPurchases } = require('../../services/farmerPurchases');
 
 let n = 0; const ok = (m) => { n += 1; console.log(`  ok  ${n}: ${m}`); };
 const oid = () => new mongoose.Types.ObjectId();
@@ -73,6 +74,8 @@ const pure = () => {
   assert.strictEqual(dps.summarize(e1).text, 'C(2), A(1), B(1)');
   assert.strictEqual(dps.summarize(e2).text, dps.summarize(e1).text);
   ok('stable order (quantity desc, then name) regardless of input order');
+
+
 };
 
 /* ------------------------------------------------------------------ */
@@ -125,7 +128,8 @@ const suite = async (uri) => {
   };
   const fp = (productId, productName, quantity, productUnit = 'L') => ({ productId, productName, productUnit, quantity });
   const sale = (productId, productName, quantity, salesValue, nbvValue, productUnit = 'L') =>
-    ({ _id: oid(), productId, productName, productUnit, quantity, quantityValue: quantity, salesValue, nbvValue });
+    ({ _id: oid(), productId, productName, productUnit, quantity, quantityValue: quantity, productPrice: salesValue / quantity,
+      productNbvPercentage: 100 * nbvValue / salesValue, salesValue, nbvValue });
   const sub = (employee, day, extra) => ({
     _id: oid(), employee, date: new Date(`2026-10-${day}T00:00:00Z`), submitted: true, templateType: 'custom',
     customKind: 'calling', reviewStatus: 'reviewed', customResponses: [{ key: 'dialedCalls', value: 5 }],
@@ -165,7 +169,34 @@ const suite = async (uri) => {
     sub(emp1, '08', { isTestData: true, productSales: [sale(VIPER, 'VIPER', 9, 9000, 900)], farmerRecords: [farmer('T', '9', D1, [fp(VIPER, 'VIPER', 9)])] }),
     sub(emp1, '09', { reviewStatus: 'pending', productSales: [sale(VIPER, 'VIPER', 11, 1, 1)], farmerRecords: [farmer('P', '9', D1, [fp(VIPER, 'VIPER', 11)])] }),
     { ...sub(emp1, '01', {}), date: new Date('2026-09-15T00:00:00Z'), productSales: [sale(VIPER, 'VIPER', 13, 1, 1)], farmerRecords: [farmer('O', '9', D1, [fp(VIPER, 'VIPER', 13)])] },
+    // November regression: saved Product Sales quantities conflict with the approved purchases.
+    { ...sub(emp1, '04', {
+      productSales: [sale(VIPER, 'VIPER', 2, 3500, 1750), sale(MAXX, 'MAXX TRICHO', 2, 125, 25)],
+      farmerRecords: [
+        farmer('Split A', '1', D1, [fp(VIPER, 'VIPER', 10), fp(MAXX, 'MAXX TRICHO', 1)]),
+        farmer('Split B', '2', D2, [fp(VIPER, 'VIPER', 5), fp(MAXX, 'MAXX TRICHO', 1)]),
+        farmer('Unlinked', '3', null, [fp(VIPER, 'VIPER', 1)]),
+      ],
+    }), date: new Date('2026-11-04T00:00:00Z') },
   ]);
+
+  const catalogueId = oid();
+  const quantityId = oid();
+  await db.collection('products').insertOne({ _id: catalogueId, name: 'Price History', unit: 'L', pricePerUnit: 900, nbvPercentage: 50 });
+  await db.collection('quantities').insertOne({ _id: quantityId, value: 0.25, unit: 'L' });
+  const purchaseSubmission = {
+    productSales: [{ productId: catalogueId, productUnit: 'L', productPrice: 765, productNbvPercentage: 100, quantity: 2.25, salesValue: 1721.25 }],
+    farmerRecords: [
+      { productId: catalogueId, productName: 'Price History', quantityId },
+      { products: [{ productId: catalogueId, productUnit: 'L', quantity: 1, productPrice: 700, productNbvPercentage: 25 }] },
+    ],
+  };
+  const catalogueFallback = { farmerRecords: [{ products: [{ productId: catalogueId, quantity: 2 }] }] };
+  await valueFarmerPurchases([purchaseSubmission, catalogueFallback]);
+  const valued = (s) => s.farmerRecords.flatMap((f) => f.products).map((row) => [row.quantity, row.salesValue, row.nbvValue]);
+  assert.deepStrictEqual(valued(purchaseSubmission), [[0.25, 191.25, 191.25], [1, 700, 175]]);
+  assert.deepStrictEqual(valued(catalogueFallback), [[2, 1800, 900]]);
+  ok('historical farmer quantities and pricing are resolved with saved purchase rates, historical rates, and catalogue fallback');
 
   const HR  = { _id: oid(), role: 'hr' };
   const HOD = { _id: oid(), role: 'employee', isHOD: true, hodDepartment: deptA };
@@ -235,6 +266,20 @@ const suite = async (uri) => {
     return out;
   };
 
+  const splitDate = { from: '2026-11-04', to: '2026-11-04' };
+  const splitData = await json(HR, splitDate);
+  const splitMoney = (rows) => rows.map(({ sales, nbv }) => [sales, nbv]);
+  assert.deepStrictEqual(splitMoney(splitData.dealersTable), [[17562.50, 8762.50], [8812.50, 4387.50]]);
+  assert.deepStrictEqual(splitMoney(splitData.dealerDayRows).sort(), splitMoney(splitData.dealersTable).sort());
+  assert.deepStrictEqual(splitMoney(splitData.dealerTrend), [[26375, 13150]]);
+  assert.deepStrictEqual(splitMoney(splitData.productsTable), [[28000, 14000], [125, 25]]);
+  const splitBook = await book(HR, splitDate);
+  assert.deepStrictEqual(dataRows(splitBook.getWorksheet('Per-Dealer Breakdown')).map((row) => row.slice(8)), splitMoney(splitData.dealersTable));
+  assert.strictEqual(splitData.productKpis.totalQuantitySold, 18);
+  const employeeSale = [...splitBook.getWorksheet('Calling Analytics').getSheetValues()].find((row) => row?.[1] === 'VIPER');
+  assert.deepStrictEqual(employeeSale.slice(2, 5), [16, 28000, 14000]);
+  ok('approved farmer purchases determine quantity, sales and NBV in every Excel sheet and daily trends despite conflicting legacy quantities');
+
   /* --- screen payload (HOD of department A) --- */
   const hodData = await json(HOD, OCT);
   const T = byFirm(hodData.dealersTable);
@@ -244,16 +289,17 @@ const suite = async (uri) => {
   assert.strictEqual(T['Green Field|Satara'].productSummary, 'BIO GROW(1 KG), VIPER(0.75), BIO GROW(0.5 L), Neem Oil(0.3), Micro Mix(0.00004)');
   ok('mixed units stay separate, legacy rows merge, and tiny quantities stay visible');
   assert.strictEqual(T['Empty Farm Supply|Sangli'].productSummary, '—');
+  assert.deepStrictEqual([T['Green Field|Satara'].sales, T['Green Field|Satara'].nbv], [800, 80]);
   ok('dealer with linked farmer but no products -> em dash');
   assert.ok(!JSON.stringify(hodData.dealersTable.map((d) => d.productSummary)).includes('(5)'), 'unlinked free-text sale not attributed');
   assert.strictEqual(hodData.dealersTable.length, 4);
   ok('unlinked / free-text dealer sale is not attributed to any dealer');
-  // existing dealer numbers unchanged by the new column
+  // Dealer amounts come from the farmer's purchase rows, independent of other farmers.
   assert.deepStrictEqual(
     ['farmers', 'products', 'qty', 'sales', 'nbv'].map((k) => T['Krishna Agro|Nashik'][k]),
     [2, 3, 1.8, 1800, 180]);
   assert.deepStrictEqual(['farmers', 'products', 'qty'].map((k) => T['Empty Farm Supply|Sangli'][k]), [1, 0, 0]);
-  ok('existing Farmers / Products / Quantity / Sales / NBV for dealers unchanged (2 / 3 / 1.8 / 1800 / 180)');
+  ok('dealer metrics use only linked purchases; farmer rows without products still count toward Farmers');
 
   /* --- export matches screen (HOD) --- */
   const wb = await book(HOD, OCT);
@@ -332,6 +378,37 @@ const suite = async (uri) => {
   assert.ok(Array.isArray(hodData.dealerDayRows) && hodData.dealerDayRows.every((r) => !('productSummary' in r)));
   assert.ok(hodData.productsTable.every((p) => Object.keys(p).sort().join() === 'name,nbv,qty,rows,sales'));
   ok('productsTable rows and dealer drill-down rows keep their original shape');
+
+  const submissionController = require('../submissionController');
+  const templateId = oid();
+  const submissionId = oid();
+  const { startOfDay, formatYMD } = require('../../utils/dateHelpers');
+  const today = startOfDay();
+  await db.collection('templates').insertOne({
+    _id: templateId, title: 'Purchase-only Report', templateType: 'custom', customKind: 'product_farmer',
+    customSections: ['farmerRecords'], customFields: [],
+  });
+  await db.collection('submissions').insertOne({
+    _id: submissionId, employee: emp1, template: templateId, date: today,
+    templateType: 'custom', customKind: 'product_farmer', submitted: false,
+  });
+  const actor = { _id: emp1, name: 'Test Submitter', role: 'super_admin' };
+  const purchaseBody = {
+    farmerRecords: [{ name: 'New Purchase', dealerId: D1, products: [{ productId: catalogueId, quantity: 0.25 }] }],
+    productSales: [{ productId: catalogueId, quantity: 99 }],
+    selfRating: 7,
+  };
+  const submitExtras = { params: { id: submissionId }, body: purchaseBody };
+  await run(submissionController.saveDraft, actor, {}, submitExtras);
+  const savedDraft = await db.collection('submissions').findOne({ _id: submissionId });
+  assert.strictEqual(savedDraft.farmerRecords[0].products[0].productPrice, 900);
+  assert.strictEqual(savedDraft.productSales?.length || 0, 0);
+  await run(submissionController.submitOne, actor, {}, submitExtras);
+  await db.collection('products').updateOne({ _id: catalogueId }, { $set: { pricePerUnit: 1000, nbvPercentage: 100 } });
+  const todayData = await json(HR, { from: formatYMD(today), to: formatYMD(today) });
+  const newPurchase = todayData.productsTable.find((row) => row.name === 'Price History');
+  assert.deepStrictEqual([newPurchase.qty, newPurchase.sales, newPurchase.nbv], [0.25, 225, 112.50]);
+  ok('draft, submit and analytics use purchase rows only and keep their saved prices after catalogue changes');
 
   await db.dropDatabase();
   await mongoose.disconnect();

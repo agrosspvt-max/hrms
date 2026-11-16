@@ -1,3 +1,4 @@
+const { valueFarmerPurchases } = require('../services/farmerPurchases');
 /**
  * dailyReviewController.js
  *
@@ -438,7 +439,7 @@ const listGrouped = asyncHandler(async (req, res) => {
     .lean();
 
   // Phase 23.3: enrich each submission with its dependent-task hand-offs.
-  await _attachDependencies(subs);
+  await Promise.all([_attachDependencies(subs), valueFarmerPurchases(subs)]);
 
   // Pre-fetch reflections + reviews for the range for the scoped employees.
   const empIds = [...new Set(subs.map((s) => String(s.employee)))];
@@ -939,7 +940,7 @@ const getDay = asyncHandler(async (req, res) => {
   ]);
 
   // Phase 23.3: enrich submissions with dependent-task hand-offs.
-  await _attachDependencies(submissions);
+  await Promise.all([_attachDependencies(submissions), valueFarmerPurchases(submissions)]);
 
   // Phase 60 -- HOD scrub before responding.
   scrubPrivateRemark(submissions, req.user);

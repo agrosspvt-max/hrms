@@ -349,13 +349,7 @@ const submissionSchema = new mongoose.Schema(
       default: [],
     },
 
-    /* ---- Product Sales sub-table ----
-       Repeating rows for templates that declare customSections: ['productSales'].
-       Each row snapshots the product + quantity master values at submit
-       time so analytics + historical reports stay correct even when the
-       master catalogue is later edited or deactivated.
-       salesValue + nbvValue are RECOMPUTED server-side from the snapshot
-       (never trusted from the client). */
+    // Historical pricing snapshots for older Products Purchased rows.
     productSales: {
       type: [new mongoose.Schema(
         {
@@ -431,6 +425,8 @@ const submissionSchema = new mongoose.Schema(
                 productId:    { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
                 productName:  { type: String, default: '' },
                 productUnit:  { type: String, enum: ['L', 'KG'], default: 'L' },
+                productPrice: { type: Number },
+                productNbvPercentage: { type: Number },
                 quantity:     { type: Number, default: 0 }, // canonical (L or KG)
               },
               { _id: false },

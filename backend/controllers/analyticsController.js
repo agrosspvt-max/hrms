@@ -13,6 +13,7 @@ const { startOfDay, addDays, parseDay, formatYMD } = require('../utils/dateHelpe
 // and test-marked submissions never reach a leaderboard / KPI / trend.
 const { liveSubmissionFilter, readReqFlags } = require('../utils/submissionFilter');
 const dealerProductSummary = require('../utils/dealerProductSummary');
+const { valueFarmerPurchases } = require('../services/farmerPurchases');
 
 // Phase 44.3 -- read a featurePermissions[key].enabled flag from req.user.
 // Mirrors the helper used in dailyReviewController and templateAnalyticsController.
@@ -1126,7 +1127,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   /* =================================================================
    * PRODUCT & FARMER METRICS (additive -- existing calling KPIs above
    * are unchanged).  Pulls every submitted custom submission in range
-   * whose productSales[] or farmerRecords[] is non-empty.  Templates
+   * whose farmerRecords[] is non-empty.  Templates
    * opt in via customSections, so the same aggregation works for
    * future Dealer Visit / Site Visit / Collection reports.
    * ================================================================= */
@@ -1135,13 +1136,11 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     employee: { $in: empIds },
     templateType: 'custom',
     date: { $gte: from, $lt: to },
-    $or: [
-      { 'productSales.0': { $exists: true } },
-      { 'farmerRecords.0': { $exists: true } },
-    ],
+    'farmerRecords.0': { $exists: true },
     // Phase 15: Product & Farmer + Dealer analytics count reviewed only.
     ...liveSubmissionFilter({ ...readReqFlags(req), onlyReviewed: true }),
-  }).select('employee date productSales farmerRecords').lean();
+  }).select('employee date productSales.productId productSales.productName productSales.productUnit productSales.productPrice productSales.productNbvPercentage farmerRecords').lean();
+  await valueFarmerPurchases(pfSubs);
 
   // Dealer Master snapshot for the "active dealers" KPI.  Independent of
   // pfSubs so an empty range still reports the catalogue size.
@@ -1152,12 +1151,12 @@ const callingAnalytics = asyncHandler(async (req, res) => {
   const totalActiveDealers = allDealers.length;
 
   // Defensive log so deploys can verify data flow at a glance.
-  const pfProductRows = pfSubs.reduce((s, sub) => s + ((sub.productSales || []).length), 0);
+  const pfProductRows = pfSubs.reduce((s, sub) => s + (sub.farmerRecords || []).reduce((n, farmer) => n + farmer.products.length, 0), 0);
   const pfFarmerRows  = pfSubs.reduce((s, sub) => s + ((sub.farmerRecords || []).length), 0);
   console.log(`[analytics] product submissions found: ${pfSubs.length} (${pfProductRows} product rows, ${pfFarmerRows} farmer rows) [range ${from.toISOString().slice(0,10)} → ${to.toISOString().slice(0,10)}, ${empIds.length} employees scoped]`);
 
   let totalProductsSold     = 0;   // count of product-sale rows
-  let totalQuantitySold     = 0;   // sum of quantityValue
+  let totalQuantitySold     = 0;   // sum of purchased quantities
   let totalSalesValue       = 0;
   let totalNbvValue         = 0;
   let totalFarmersAdded     = 0;
@@ -1177,11 +1176,12 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     const empKey = String(sub.employee);
     if (!employeePFAgg.has(empKey)) employeePFAgg.set(empKey, { sales: 0, nbv: 0, qty: 0, products: 0, farmers: 0 });
     const peStats = employeePFAgg.get(empKey);
+    const farmerRows = sub.farmerRecords || [];
 
-    for (const row of (sub.productSales || [])) {
+    for (const row of farmerRows.flatMap((farmer) => farmer.products)) {
       const sv = Number(row.salesValue) || 0;
       const nv = Number(row.nbvValue)   || 0;
-      const qv = Number(row.quantityValue) || 0;
+      const qv = row.quantity;
       totalProductsSold += 1;
       totalQuantitySold += qv;
       totalSalesValue   += sv;
@@ -1198,7 +1198,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
       pa.sales += sv;
       pa.nbv   += nv;
     }
-    const farmerCount = (sub.farmerRecords || []).length;
+    const farmerCount = farmerRows.length;
     totalFarmersAdded += farmerCount;
     peStats.farmers   += farmerCount;
 
@@ -1206,7 +1206,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     // Free-text dealerLocation rows are intentionally NOT counted here;
     // they're legacy data and don't carry a stable bucket key.
     const dk = formatYMD(sub.date);
-    for (const f of (sub.farmerRecords || [])) {
+    for (const f of farmerRows) {
       if (!f.dealerId) continue;
       const key = String(f.dealerId);
       if (!dealerAgg.has(key)) dealerAgg.set(key, {
@@ -1221,37 +1221,20 @@ const callingAnalytics = asyncHandler(async (req, res) => {
       });
       const da = dealerAgg.get(key);
       da.farmers += 1;
-      // Sum every product attached to this farmer + match against
-      // productSales rows on the same submission to fold in sales / NBV
-      // when the product+quantity tuple is present on both sides.
       if (!dealerProducts.has(key)) dealerProducts.set(key, dealerProductSummary.createAccumulator());
       const dpAcc = dealerProducts.get(key);
-      for (const fp of (f.products || [])) {
-        da.products += 1;
-        da.qty      += Number(fp.quantity) || 0;
-        dealerProductSummary.addProduct(dpAcc, fp);
-        // Best-effort sales/NBV credit: find a productSales row on the
-        // same submission with the same product to inherit pricing.
-        const sale = (sub.productSales || []).find((ps) =>
-          String(ps.productId) === String(fp.productId) && Number(ps.quantityValue || ps.quantity) === Number(fp.quantity));
-        if (sale) {
-          da.sales += Number(sale.salesValue) || 0;
-          da.nbv   += Number(sale.nbvValue)   || 0;
-        }
-      }
-      // Daily trend.
       const dayKey = `${key}|${dk}`;
       if (!dealerDay.has(dayKey)) dealerDay.set(dayKey, { dealerId: key, date: dk, sales: 0, nbv: 0, farmers: 0 });
-      const dd = dealerDay.get(dayKey);
-      dd.farmers += 1;
-      // Same best-effort sales attribution per product.
-      for (const fp of (f.products || [])) {
-        const sale = (sub.productSales || []).find((ps) =>
-          String(ps.productId) === String(fp.productId) && Number(ps.quantityValue || ps.quantity) === Number(fp.quantity));
-        if (sale) {
-          dd.sales += Number(sale.salesValue) || 0;
-          dd.nbv   += Number(sale.nbvValue)   || 0;
-        }
+      const daily = dealerDay.get(dayKey);
+      daily.farmers += 1;
+      for (const fp of f.products) {
+        da.products += 1;
+        da.qty += fp.quantity;
+        da.sales += fp.salesValue;
+        da.nbv += fp.nbvValue;
+        daily.sales += fp.salesValue;
+        daily.nbv += fp.nbvValue;
+        dealerProductSummary.addProduct(dpAcc, fp);
       }
     }
   }
@@ -1281,7 +1264,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
     const eDept = e?.department?.name || 'Unassigned';
     const dateK = formatYMD(sub.date);
     // (employee, product) rollup
-    for (const row of (sub.productSales || [])) {
+    for (const row of (sub.farmerRecords || []).flatMap((farmer) => farmer.products)) {
       const pname = (row.productName || '—').trim() || '—';
       const k = `${String(sub.employee)}|${pname}`;
       if (!productEmployeeAgg.has(k)) productEmployeeAgg.set(k, {
@@ -1293,7 +1276,7 @@ const callingAnalytics = asyncHandler(async (req, res) => {
         qty: 0, sales: 0, nbv: 0, rows: 0,
       });
       const pe = productEmployeeAgg.get(k);
-      pe.qty   += Number(row.quantityValue) || 0;
+      pe.qty   += row.quantity;
       pe.sales += Number(row.salesValue)    || 0;
       pe.nbv   += Number(row.nbvValue)      || 0;
       pe.rows  += 1;
@@ -1559,7 +1542,7 @@ const myCallingAnalytics = asyncHandler(async (req, res) => {
  *       and a per-product org-wide total, not the cross-product we need
  *       for the section-by-section export.  Filters mirror the analytics
  *       handler exactly (same date range, same liveSubmissionFilter,
- *       same templateType='custom' productSales selector).
+ *       same approved Products Purchased rows as the screen).
  *   3.  Render the worksheet with exceljs so we can apply professional
  *       styling (fills, borders, currency / percentage formats, bold
  *       banners, frozen rows).  SheetJS community can't write cell
@@ -1611,50 +1594,14 @@ const exportCallingAnalytics = asyncHandler(async (req, res) => {
   const range       = captured.range       || { from: req.query.from, to: req.query.to };
   const pfByEmp = new Map(employeesPF.map((r) => [String(r._id), r]));
 
-  // ---- 2. Per-(employee, product) breakdown -------------------------
-  // Same filter as callingAnalytics' `pfSubs` query -- read-only,
-  // doesn't change any analytics calculation.
-  const empUniverse = new Set([
-    ...employees.map((e) => String(e._id)),
-    ...employeesPF.map((e) => String(e._id)),
-  ]);
-  const empProductRows = new Map(); // empId -> Map(productName -> { qty, sales, nbv })
-  let totalProductsSold_export = 0;
-  let totalQuantitySold_export = 0;
-  if (empUniverse.size) {
-    const empObjectIds = [...empUniverse];
-    const pfSubs = await Submission.find({
-      submitted: true,
-      employee: { $in: empObjectIds },
-      templateType: 'custom',
-      date: { $gte: new Date(range.from), $lt: new Date(range.to) },
-      'productSales.0': { $exists: true },
-      ...liveSubmissionFilter({ ...readReqFlags(req), onlyReviewed: true }),
-    }).select('employee productSales').lean();
-    for (const sub of pfSubs) {
-      const k = String(sub.employee);
-      if (!empProductRows.has(k)) empProductRows.set(k, new Map());
-      const m = empProductRows.get(k);
-      for (const row of (sub.productSales || [])) {
-        const pname = (row.productName || '—').trim() || '—';
-        if (!m.has(pname)) m.set(pname, { qty: 0, sales: 0, nbv: 0 });
-        const p = m.get(pname);
-        p.qty   += Number(row.quantityValue) || 0;
-        p.sales += Number(row.salesValue)    || 0;
-        p.nbv   += Number(row.nbvValue)      || 0;
-        totalProductsSold_export += 1;
-        totalQuantitySold_export += Number(row.quantityValue) || 0;
-      }
-    }
+  // Reuse the screen's filtered product and employee rollups.
+  const empProductRows = new Map();
+  for (const row of captured.productEmployeeRows || []) {
+    if (!empProductRows.has(row.employeeId)) empProductRows.set(row.employeeId, new Map());
+    empProductRows.get(row.employeeId).set(row.productName, row);
   }
-  // Prefer the captured payload's product totals so the Overall Summary
-  // exactly mirrors what the on-screen Calling Analytics shows; fall
-  // back to our just-computed numbers if the payload didn't carry them
-  // (older deploys / empty range).
-  const overallProductsSold = (productKpis.totalProductsSold != null)
-    ? productKpis.totalProductsSold : totalProductsSold_export;
-  const overallQuantitySold = (productKpis.totalQuantitySold != null)
-    ? productKpis.totalQuantitySold : totalQuantitySold_export;
+  const overallProductsSold = productKpis.totalProductsSold || 0;
+  const overallQuantitySold = productKpis.totalQuantitySold || 0;
   const overallSales = productKpis.totalSalesValue || 0;
   const overallNbv   = productKpis.totalNbvValue   || 0;
 

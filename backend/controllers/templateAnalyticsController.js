@@ -235,7 +235,7 @@ const generate = asyncHandler(async (req, res) => {
     submitted: true,
     ...liveSubmissionFilter({ ...flags, onlyReviewed: true }),
   })
-    .select('employee date submittedAt templateType customResponses tasks productSales farmerRecords earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus extraTasks customAvailableMarks customEarnedMarks customPenaltyMarks customFinalMarks')
+    .select('employee date submittedAt templateType customResponses tasks earnedPoints totalPoints workEarnedPoints workTotalPoints reviewStatus extraTasks customAvailableMarks customEarnedMarks customPenaltyMarks customFinalMarks')
     .lean();
 
   /* =================================================================

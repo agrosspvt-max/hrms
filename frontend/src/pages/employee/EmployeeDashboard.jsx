@@ -361,13 +361,10 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
   // Phase 60 -- Employee Private Remark per submission.  Only rendered
   // when the template has privateRemarkEnabled.  { subId: 'text' }.
   const [privateRemarks, setPrivateRemarks] = useState({});
-  // Product Sales rows per submission: { subId: [{ productId, quantityId }] }
-  const [productSales, setProductSales] = useState({});
   // Farmer rows per submission: { subId: [{ name, mobile, ... }] }
   const [farmerRecords, setFarmerRecords] = useState({});
-  // Master data (Products / Quantities / Dealers) for the custom-template dropdowns.
+  // Products and dealers for the farmer-report dropdowns.
   const [products, setProducts] = useState([]);
-  const [quantities, setQuantities] = useState([]);
   const [dealers, setDealers] = useState([]);
   const [sheetState, setSheetState] = useState({}); // { subId: workingSheet }
   // Per-row task status for sheet "task rows" (scored rows with statusTracking)
@@ -515,10 +512,9 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
 
   // Pre-load active master data so custom-template forms have ready
   // dropdowns.  Cheap (small payload), single fetch on mount, used only
-  // when a custom template with productSales / farmerRecords surfaces.
+  // when a custom template with Farmer Records surfaces.
   useEffect(() => {
     api.get('/products', { params: { activeOnly: 'true' } }).then((r) => setProducts(r.data || [])).catch(() => setProducts([]));
-    api.get('/quantities', { params: { activeOnly: 'true' } }).then((r) => setQuantities(r.data || [])).catch(() => setQuantities([]));
     api.get('/dealers',  { params: { activeOnly: 'true' } }).then((r) => setDealers(r.data || [])).catch(() => setDealers([]));
   }, []);
 
@@ -570,16 +566,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
           remark: r.remark || '',
         }));
       const sections = sub.template?.customSections || [];
-      if (sections.includes('productSales')) {
-        payload.productSales = (productSales[sub._id] || [])
-          .filter((r) => r.productId && (Number(r.quantity) > 0 || r.quantityId))
-          .map((r) => ({
-            productId: r.productId,
-            quantity: Number(r.quantity) > 0 ? Number(r.quantity) : undefined,
-            quantityId: r.quantityId || undefined,
-          }));
-      }
-      if (sections.includes('farmerRecords')) {
+      if (hasFarmerSection(sections)) {
         payload.farmerRecords = (farmerRecords[sub._id] || [])
           .filter((r) => (r.name || '').trim())
           .map((r) => ({
@@ -643,7 +630,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     //
     // Phase 19 fix: BEFORE this fix the loop only seeded `customValues`
     // (scalar custom-field values) and `sheetState`.  It did NOT seed
-    // `productSales[sub._id]` / `farmerRecords[sub._id]` / `customMeta`.
+    // `farmerRecords[sub._id]` / `customMeta`.
     // Result: Save Draft persisted product / farmer rows correctly on
     // the server (the saveDraft endpoint writes them onto the
     // submission document), but on page reload the local state for
@@ -652,7 +639,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     // because it only uses `customResponses` (scalar fields), which
     // WAS being seeded.
     //
-    // We now seed productSales / farmerRecords / customMeta with the
+    // We now seed Farmer Records / customMeta with the
     // SAME shape the form components expect (the ProductSalesSection
     // and FarmerRecordsSection row shapes).  Spread order keeps any
     // in-flight user edits in `prev` from being clobbered by a later
@@ -660,7 +647,6 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     const seed = {};
     const customSeed = {};
     const customMetaSeed = {};
-    const productSalesSeed = {};
     const farmerRecordsSeed = {};
     // Phase 53 -- reseed extra tasks so a page reload / re-open of the
     // dashboard restores what the employee typed.
@@ -724,17 +710,6 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         });
         customSeed[s._id] = ctx;
         if (Object.keys(metaCtx).length > 0) customMetaSeed[s._id] = metaCtx;
-        if (Array.isArray(s.productSales) && s.productSales.length > 0) {
-          productSalesSeed[s._id] = s.productSales.map((r) => ({
-            productId: r.productId ? String(r.productId) : '',
-            // Prefer the raw `quantity` field (Phase 2 canonical input);
-            // fall back to `quantityValue` for rows saved under the
-            // legacy Quantity Master path.
-            quantity:  r.quantity != null && r.quantity !== '' ? r.quantity
-                     : r.quantityValue != null && r.quantityValue !== '' ? r.quantityValue : '',
-            quantityId: r.quantityId ? String(r.quantityId) : '',
-          }));
-        }
         // Phase 53 -- seed any extra tasks the employee has drafted.
         if (Array.isArray(s.extraTasks) && s.extraTasks.length > 0) {
           extraTasksSeed[s._id] = s.extraTasks.map((r) => ({
@@ -768,7 +743,6 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
     setCustomValues((prev) => ({ ...customSeed,        ...prev }));
     setCustomMeta((prev) =>   ({ ...customMetaSeed,    ...prev }));
     setExtraTasks((prev) =>   ({ ...extraTasksSeed,    ...prev }));
-    setProductSales((prev) => ({ ...productSalesSeed,  ...prev }));
     setFarmerRecords((prev) =>({ ...farmerRecordsSeed, ...prev }));
     // Task template -- same prev-wins spread order so in-flight typed
     // edits are not clobbered by a background refetch triggered by a
@@ -1035,19 +1009,17 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         });
         // Repeating sub-tables (any template that opts in via customSections).
         const sections = sub.template?.customSections || [];
-        const cleanProductSales = sections.includes('productSales')
-          ? (productSales[sub._id] || [])
-              // New flow: productId + raw numeric quantity.  Legacy
-              // submissions with quantityId still validate at backend.
-              .filter((r) => r.productId && (Number(r.quantity) > 0 || r.quantityId))
-              .map((r) => ({
-                productId: r.productId,
-                quantity: Number(r.quantity) > 0 ? Number(r.quantity) : undefined,
-                quantityId: r.quantityId || undefined,
-              }))
-          : [];
-        const cleanFarmers = sections.includes('farmerRecords')
-          ? (farmerRecords[sub._id] || [])
+        const farmers = hasFarmerSection(sections) ? (farmerRecords[sub._id] || []) : [];
+        const missingFarmer = farmers.some((farmer) => !farmer.name?.trim()
+          && farmer.products?.some((purchase) => purchase.productId || purchase.quantity));
+        const incompletePurchase = farmers.some((farmer) => farmer.products?.some((purchase) =>
+          (purchase.productId || purchase.quantity) && (!purchase.productId || !(Number(purchase.quantity) > 0))));
+        if (missingFarmer || incompletePurchase) {
+          toast.error(missingFarmer ? 'Enter a farmer name for each purchase.' : 'Select a product and enter a positive quantity for each purchase.');
+          setBusy(false);
+          return;
+        }
+        const cleanFarmers = farmers
               .filter((r) => (r.name || '').trim())
               .map((r) => ({
                 name: r.name.trim(),
@@ -1061,8 +1033,7 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                 products: (r.products || [])
                   .filter((p) => p.productId && Number(p.quantity) > 0)
                   .map((p) => ({ productId: p.productId, quantity: Number(p.quantity) })),
-              }))
-          : [];
+              }));
         // Phase 53 -- Extra Tasks: only rows that carry BOTH a label
         // and (if their response type demands it) a value/status make
         // it into the submission.  Empty half-typed rows are dropped.
@@ -1090,7 +1061,6 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
         await api.post(`/submissions/${sub._id}/submit`, {
           customResponses: payload,
           extraTasks: cleanExtras,
-          productSales: cleanProductSales,
           farmerRecords: cleanFarmers,
           selfRating: selfRating[sub._id],
           selfNote: selfNote[sub._id],
@@ -1733,13 +1703,6 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                       },
                     }))
                   }
-                  productSales={productSales[sub._id] || []}
-                  setProductSales={(updater) =>
-                    setProductSales((s) => ({
-                      ...s,
-                      [sub._id]: typeof updater === 'function' ? updater(s[sub._id] || []) : updater,
-                    }))
-                  }
                   farmerRecords={farmerRecords[sub._id] || []}
                   setFarmerRecords={(updater) =>
                     setFarmerRecords((s) => ({
@@ -1755,7 +1718,6 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
                     }))
                   }
                   products={products}
-                  quantities={quantities}
                   dealers={dealers}
                   selfRating={selfRating[sub._id]}
                   setSelfRating={(v) => setSelfRating((s) => ({ ...s, [sub._id]: v }))}
@@ -2062,13 +2024,15 @@ export default function EmployeeDashboard({ embedded = false } = {}) {
  *
  * Visibility: only fields with 'employee' in `visibleTo` render here.
  */
+// Older templates may have opted into Product Sales alone. Use Farmer Records for those forms too.
+const hasFarmerSection = (sections) => sections.includes('farmerRecords') || sections.includes('productSales');
+
 function CustomTemplateForm({
   sub, values, onChange,
   meta = {}, onMeta = () => {},
-  productSales = [], setProductSales,
   farmerRecords = [], setFarmerRecords,
   extraTasks = [], setExtraTasks = () => {},
-  products = [], quantities = [], dealers = [],
+  products = [], dealers = [],
   selfRating, setSelfRating, selfNote, setSelfNote, idea, setIdea,
   busy, onSubmit,
   // Phase 60 -- Employee Private Remark inputs.
@@ -2093,8 +2057,7 @@ function CustomTemplateForm({
   const computed = customCompute(sub.template?.customFields || [], values);
 
   const sections = sub.template?.customSections || [];
-  const showProductSales   = sections.includes('productSales');
-  const showFarmerRecords  = sections.includes('farmerRecords');
+  const showFarmerRecords  = hasFarmerSection(sections);
 
   // Bucket fields by group, preserving order.
   const groups = [];
@@ -2407,15 +2370,6 @@ function CustomTemplateForm({
           </div>
         </div>
       ))}
-
-      {showProductSales && (
-        <ProductSalesSection
-          rows={productSales}
-          setRows={setProductSales}
-          products={products}
-          quantities={quantities}
-        />
-      )}
 
       {showFarmerRecords && (
         <FarmerRecordsSection
@@ -2933,101 +2887,6 @@ function DailyReflectionCard({ date = null, label = null, returned = false }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Product Sales sub-table                                             */
-/* ------------------------------------------------------------------ */
-function ProductSalesSection({ rows, setRows, products /*, quantities */ }) {
-  // Quantity is now a raw numeric (canonical) value the employee types.
-  // 0.5 = 500 ml on an L-unit product, 25 = 25 kg on a KG-unit product.
-  // Quantity Master is no longer required for new submissions.
-  const addRow = () => setRows((cur) => [...cur, { productId: '', quantity: '' }]);
-  const removeRow = (i) => setRows((cur) => cur.filter((_, idx) => idx !== i));
-  const editRow = (i, patch) => setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
-
-  const productById = new Map((products || []).map((p) => [p._id, p]));
-  const calcRow = (r) => {
-    const p = productById.get(r.productId);
-    const q = Number(r.quantity);
-    if (!p || !Number.isFinite(q) || q <= 0) return { sales: 0, nbv: 0, unit: p?.unit || '' };
-    const sales = (Number(p.pricePerUnit) || 0) * q;
-    const nbv   = sales * (Number(p.nbvPercentage) || 0) / 100;
-    return { sales: Math.round(sales * 100) / 100, nbv: Math.round(nbv * 100) / 100, unit: p.unit };
-  };
-  const totalSales = rows.reduce((s, r) => s + calcRow(r).sales, 0);
-  const totalNbv   = rows.reduce((s, r) => s + calcRow(r).nbv,   0);
-
-  return (
-    <div className="bg-indigo-50/60 border border-indigo-100 rounded-lg p-3">
-      <div className="flex items-center justify-between gap-2 flex-wrap mb-2">
-        <div>
-          <div className="text-sm font-semibold text-indigo-900">Product Sales</div>
-          <div className="text-[11px] text-indigo-700">
-            Enter canonical quantity directly. Examples: 0.1 = 100 ml · 0.5 = 500 ml ·
-            1 = 1 L · 25 = 25 KG. Sales Value and NBV are auto-calculated from the product master.
-          </div>
-        </div>
-        <button type="button" className="btn-secondary !py-1 !text-xs" onClick={addRow}>+ Add Product</button>
-      </div>
-      {rows.length === 0 ? (
-        <div className="text-xs text-indigo-600/80 italic">No products yet. Click "+ Add Product" to record a sale.</div>
-      ) : (
-        <div className="space-y-2">
-          {rows.map((r, i) => {
-            const c = calcRow(r);
-            const p = productById.get(r.productId);
-            return (
-              <div key={i} className="grid grid-cols-12 gap-2 items-start bg-white rounded-lg p-2 border border-indigo-100">
-                <div className="col-span-4">
-                  <label className="label text-[10px] uppercase">Product</label>
-                  <SearchableSelect
-                    value={r.productId}
-                    onChange={(v) => editRow(i, { productId: v })}
-                    options={products || []}
-                    getValue={(p) => p._id}
-                    getLabel={(p) => `${p.name} (${p.unit})`}
-                    getSearchText={(p) => `${p.name} ${p.unit}`}
-                    placeholder="Select product…"
-                  />
-                </div>
-                <div className="col-span-3">
-                  <label className="label text-[10px] uppercase">
-                    Quantity {p ? `(${p.unit})` : ''}
-                  </label>
-                  <input
-                    className="input"
-                    type="number"
-                    step="any"
-                    min="0"
-                    placeholder={p ? `e.g. ${p.unit === 'KG' ? '25' : '0.5'}` : 'e.g. 0.5'}
-                    value={r.quantity}
-                    onChange={(e) => editRow(i, { quantity: e.target.value })}
-                    disabled={!r.productId}
-                  />
-                </div>
-                <div className="col-span-2">
-                  <label className="label text-[10px] uppercase">Sales Value</label>
-                  <div className="input bg-slate-50 font-mono text-sm">{c.sales > 0 ? `₹${c.sales}` : '—'}</div>
-                </div>
-                <div className="col-span-2">
-                  <label className="label text-[10px] uppercase">NBV</label>
-                  <div className="input bg-slate-50 font-mono text-sm">{c.nbv > 0 ? `₹${c.nbv}` : '—'}</div>
-                </div>
-                <div className="col-span-1 flex items-end justify-end">
-                  <button type="button" className="btn-ghost text-red-600 !px-2" onClick={() => removeRow(i)} title="Remove row">✕</button>
-                </div>
-              </div>
-            );
-          })}
-          <div className="flex justify-end gap-6 text-sm pt-1 px-1">
-            <span className="text-slate-600">Total Sales Value: <b className="text-slate-900">₹{Math.round(totalSales * 100) / 100}</b></span>
-            <span className="text-slate-600">Total NBV: <b className="text-slate-900">₹{Math.round(totalNbv * 100) / 100}</b></span>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
 /* Farmer Records sub-table                                            */
 /*                                                                     */
 /* v2: each farmer carries a Dealer Master dropdown (Place auto-fills) */
@@ -3046,6 +2905,19 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
   const editRow = (i, patch) => setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
 
   const productById = new Map((products || []).map((p) => [p._id, p]));
+  const purchaseTotals = { sales: 0, nbv: 0 };
+  for (const farmer of rows) {
+    if (!farmer.name?.trim()) continue;
+    for (const purchase of farmer.products || []) {
+      const product = productById.get(purchase.productId);
+      const quantity = Number(purchase.quantity);
+      if (!product || !Number.isFinite(quantity) || quantity <= 0) continue;
+      const salesPaise = Math.round((Number(product.pricePerUnit) || 0) * quantity * 100);
+      purchaseTotals.sales += salesPaise;
+      purchaseTotals.nbv += Math.round(salesPaise * (Number(product.nbvPercentage) || 0) / 100);
+    }
+  }
+  const formatPurchaseTotal = (paise) => (paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const dealerById  = new Map((dealers  || []).map((d) => [d._id, d]));
   // Sort dealers by firm + place so the dropdown is easy to skim, and
   // resolve a display label that disambiguates same-firm rows across
@@ -3075,7 +2947,7 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
         <div>
           <div className="text-sm font-semibold text-emerald-900">Farmer Details</div>
           <div className="text-[11px] text-emerald-700">
-            Pick a dealer from the master list (Place auto-fills). Each farmer can have one or more products.
+            Pick a dealer to include the purchase in the dealer breakdown. Sales and NBV are calculated from Products Purchased.
           </div>
         </div>
         <button type="button" className="btn-secondary !py-1 !text-xs" onClick={addRow}>+ Add Farmer</button>
@@ -3183,6 +3055,10 @@ function FarmerRecordsSection({ rows, setRows, products, dealers = [] }) {
               </div>
             );
           })}
+          <div className="text-right text-xs text-slate-700">
+            Sales <strong>₹{formatPurchaseTotal(purchaseTotals.sales)}</strong>
+            <span className="ml-4">NBV <strong>₹{formatPurchaseTotal(purchaseTotals.nbv)}</strong></span>
+          </div>
         </div>
       )}
     </div>

@@ -514,11 +514,6 @@ function ViewSubmissionModal({ id, onClose }) {
               </div>
             </Section>
           )}
-          {Array.isArray(sub.productSales) && sub.productSales.length > 0 && (
-            <Section title={`Product Sales (${sub.productSales.length})`}>
-              <pre className="bg-slate-50 border border-slate-200 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(sub.productSales, null, 2)}</pre>
-            </Section>
-          )}
           {Array.isArray(sub.farmerRecords) && sub.farmerRecords.length > 0 && (
             <Section title={`Farmer Records (${sub.farmerRecords.length})`}>
               <pre className="bg-slate-50 border border-slate-200 rounded p-3 text-xs overflow-x-auto">{JSON.stringify(sub.farmerRecords, null, 2)}</pre>
@@ -583,7 +578,6 @@ function EditSubmissionModal({ row, onClose, onSaved }) {
       setSub(r.data);
       setDraft({
         customResponses: JSON.stringify(r.data.customResponses || [], null, 2),
-        productSales:    JSON.stringify(r.data.productSales    || [], null, 2),
         farmerRecords:   JSON.stringify(r.data.farmerRecords   || [], null, 2),
         ideaFeedback:    r.data.ideaFeedback || '',
       });
@@ -596,7 +590,6 @@ function EditSubmissionModal({ row, onClose, onSaved }) {
       const payload = { note };
       const tryParse = (s) => { try { return JSON.parse(s); } catch { throw new Error('Invalid JSON: ' + s.slice(0, 40)); } };
       if (draft.customResponses !== undefined) payload.customResponses = tryParse(draft.customResponses);
-      if (draft.productSales    !== undefined) payload.productSales    = tryParse(draft.productSales);
       if (draft.farmerRecords   !== undefined) payload.farmerRecords   = tryParse(draft.farmerRecords);
       if (draft.ideaFeedback    !== undefined) payload.ideaFeedback    = draft.ideaFeedback;
       await api.put(`/submission-control/${row._id}`, payload);
@@ -615,17 +608,11 @@ function EditSubmissionModal({ row, onClose, onSaved }) {
       {!sub ? <Loader /> : (
         <div className="space-y-3 text-sm">
           <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-amber-800 text-xs">
-            <b>Freeze mode:</b> the server writes exactly what you send here.
-            Sales / NBV / quantity values stored on rows are NOT recomputed; if you change a product quantity,
-            also update the matching salesValue + nbvValue inline.
+            Edit purchase quantities in Farmer Records. Sales and NBV are recalculated from those quantities.
           </div>
           <div>
             <label className="label">Custom Responses (JSON)</label>
             <textarea className="input font-mono text-xs" rows={6} value={draft.customResponses} onChange={(e) => setDraft({ ...draft, customResponses: e.target.value })} />
-          </div>
-          <div>
-            <label className="label">Product Sales (JSON)</label>
-            <textarea className="input font-mono text-xs" rows={6} value={draft.productSales} onChange={(e) => setDraft({ ...draft, productSales: e.target.value })} />
           </div>
           <div>
             <label className="label">Farmer Records (JSON)</label>

@@ -16,7 +16,7 @@ import { subscribe } from '../../realtime';
  *   - Feed: GET /api/daily-review/grouped?date=YYYY-MM-DD&status=
  *   - Each card = one (employee, date).  Inside the card we render
  *     every submission for that day with custom-template-aware
- *     widgets (calling KPI strip, product sales table, farmer
+ *     widgets (calling KPI strip, farmer purchase totals, farmer
  *     records list with dealer details).
  *   - Daily Reflection panel shows what the employee wrote ONCE for
  *     the whole day (selfRating + selfNote + idea).
@@ -873,7 +873,6 @@ function SubmissionPanel({ sub, onReload }) {
   const kind = sub.template?.customKind || '';
   const isCalling = kind === 'calling';
   const isProductFarmer = kind === 'product_farmer'
-    || (Array.isArray(sub.productSales) && sub.productSales.length > 0)
     || (Array.isArray(sub.farmerRecords) && sub.farmerRecords.length > 0);
 
   return (
@@ -1079,59 +1078,25 @@ function fmtPct2(v) {
   return n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-/* ----------------- Product Sales + Farmer Records panel ----------------- */
+/* ----------------- Farmer Records panel ----------------- */
 function ProductFarmerPanel({ sub }) {
-  const sales   = sub.productSales   || [];
-  const farmers = sub.farmerRecords  || [];
-  const totQty   = sales.reduce((s, r) => s + (Number(r.quantity ?? r.quantityValue) || 0), 0);
-  const totSales = sales.reduce((s, r) => s + (Number(r.salesValue) || 0), 0);
-  const totNbv   = sales.reduce((s, r) => s + (Number(r.nbvValue)   || 0), 0);
+  const farmers = sub.farmerRecords || [];
+  const purchases = farmers.flatMap((farmer) => farmer.products || []);
+  const totalSales = purchases.reduce((sum, row) => sum + (Number(row.salesValue) || 0), 0);
+  const totalNbv = purchases.reduce((sum, row) => sum + (Number(row.nbvValue) || 0), 0);
 
   return (
     <div className="space-y-3">
-      {sales.length > 0 && (
-        <div>
-          <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-1">
-            Product Sales ({sales.length})
-          </div>
-          <div className="overflow-x-auto rounded-lg border border-slate-200">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50">
-                <tr>
-                  <th className="text-left px-3 py-2">Product</th>
-                  <th className="text-right px-3 py-2">Qty</th>
-                  <th className="text-right px-3 py-2">Sales (₹)</th>
-                  <th className="text-right px-3 py-2">NBV (₹)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {/* Phase 40.3 -- 2-decimal display formatting on all
-                    computed values (quantity / sales / NBV). */}
-                {sales.map((r, i) => (
-                  <tr key={i} className="border-t border-slate-100">
-                    <td className="px-3 py-1.5">{r.productName || '—'} <span className="text-[11px] text-slate-400">({r.productUnit || ''})</span></td>
-                    <td className="px-3 py-1.5 text-right">{fmtPct2(Number(r.quantity ?? r.quantityValue) || 0)}</td>
-                    <td className="px-3 py-1.5 text-right text-green-700 font-semibold">{fmtPct2(Number(r.salesValue) || 0)}</td>
-                    <td className="px-3 py-1.5 text-right">{fmtPct2(Number(r.nbvValue) || 0)}</td>
-                  </tr>
-                ))}
-                <tr className="bg-slate-50 border-t-2 border-slate-200 font-semibold">
-                  <td className="px-3 py-1.5 text-right">Total</td>
-                  <td className="px-3 py-1.5 text-right">{fmtPct2(totQty)}</td>
-                  <td className="px-3 py-1.5 text-right text-green-700">{fmtPct2(totSales)}</td>
-                  <td className="px-3 py-1.5 text-right">{fmtPct2(totNbv)}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
       {farmers.length > 0 && (
         <div>
           <div className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-1">
             Farmer Records ({farmers.length})
           </div>
+          {purchases.length > 0 && (
+            <div className="mb-2 text-xs text-slate-700">
+              Sales ₹{fmtPct2(totalSales)} · NBV ₹{fmtPct2(totalNbv)}
+            </div>
+          )}
           <div className="space-y-2">
             {farmers.map((f, i) => (
               <div key={i} className="rounded-lg border border-emerald-100 bg-emerald-50/40 p-2 text-sm">
@@ -1148,13 +1113,13 @@ function ProductFarmerPanel({ sub }) {
                 {Array.isArray(f.products) && f.products.length > 0 && (
                   <div className="mt-1 pl-3 text-[12px] text-slate-700">
                     {f.products.map((p, j) => (
-                      <div key={j}>• {p.productName || '—'} <span className="text-slate-400">({p.productUnit || ''})</span> · qty {Number(p.quantity) || 0}</div>
+                      <div key={j}>
+                        • {p.productName || '—'} · {p.quantity} {p.productUnit}
+                        {p.pricingAvailable === false ? ' · Pricing unavailable' :
+                          <> · Sales ₹{fmtPct2(p.salesValue)} · NBV ₹{fmtPct2(p.nbvValue)}</>}
+                      </div>
                     ))}
                   </div>
-                )}
-                {/* Legacy single-product mirror */}
-                {(!f.products || f.products.length === 0) && f.productName && (
-                  <div className="mt-1 pl-3 text-[12px] text-slate-700">• {f.productName} {f.quantityLabel ? `(${f.quantityLabel})` : ''}</div>
                 )}
               </div>
             ))}
@@ -1162,8 +1127,8 @@ function ProductFarmerPanel({ sub }) {
         </div>
       )}
 
-      {sales.length === 0 && farmers.length === 0 && (
-        <div className="text-xs text-slate-500 italic">No product sales or farmer records on this submission.</div>
+      {farmers.length === 0 && (
+        <div className="text-xs text-slate-500 italic">No farmer records on this submission.</div>
       )}
     </div>
   );

@@ -217,7 +217,8 @@ const normalisePayload = (body) => {
       threshold:     Math.max(0, Number(f.threshold) || 0),
     })).filter((f) => f.key && f.label);
     out.customSections = Array.isArray(body.customSections)
-      ? body.customSections.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim())
+      ? [...new Set(body.customSections.filter((s) => typeof s === 'string' && s.trim())
+        .map((s) => s.trim() === 'productSales' ? 'farmerRecords' : s.trim()))]
       : [];
     // Phase 12 sub-templates.  Each entry: { _id?, name, description, isActive, order }.
     out.subTemplates = Array.isArray(body.subTemplates)
