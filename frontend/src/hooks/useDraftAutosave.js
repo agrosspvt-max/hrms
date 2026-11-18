@@ -12,10 +12,10 @@ import api from '../api/axios';
  *   - Periodic flush every `intervalMs` (default 30s) when dirty.
  *   - Debounced flush `debounceMs` (default 1500ms) after the most
  *     recent input change so a user pause triggers a quiet save.
- *   - `beforeunload` sendBeacon so a refresh or tab close still
- *     captures the in-flight changes (best-effort, may not include
- *     auth depending on the browser; the periodic + debounced flushes
- *     are the primary safety net).
+ *   - No unload beacon: a `sendBeacon` cannot carry the bearer token
+ *     or use PUT, so it never saved anything (and, being relative, it
+ *     hit the frontend host instead of the API).  The debounced and
+ *     periodic flushes below are the save path.
  *   - Snapshot-based dirty tracking: the hook stringifies the
  *     payload and only flushes when it differs from the last saved
  *     snapshot.  Idempotent against repeated input churn that
@@ -107,25 +107,6 @@ export default function useDraftAutosave({
     const id = setInterval(() => flush(), intervalMs);
     return () => clearInterval(id);
   }, [enabled, flush, intervalMs]);
-
-  // beforeunload: best-effort sendBeacon (no awaiting allowed).
-  useEffect(() => {
-    if (!enabled || !submissionId) return undefined;
-    const handler = () => {
-      try {
-        const payload = buildPayloadRef.current();
-        const snapshot = JSON.stringify(payload);
-        if (snapshot === lastSnapshotRef.current) return;
-        // sendBeacon doesn't carry our axios bearer header, so it's a
-        // best-effort write -- mostly useful for cookie-auth deployments.
-        // The periodic interval + debounce remain the primary safety net.
-        const blob = new Blob([snapshot], { type: 'application/json' });
-        navigator.sendBeacon?.(`/api/submissions/${submissionId}/draft`, blob);
-      } catch (_e) { /* never block unload */ }
-    };
-    window.addEventListener('beforeunload', handler);
-    return () => window.removeEventListener('beforeunload', handler);
-  }, [enabled, submissionId]);
 
   // Clear any debounce on unmount.
   useEffect(() => () => { if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current); }, []);

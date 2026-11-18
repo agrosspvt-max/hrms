@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
+const { redactUrl } = require('./utils/redactUrl');
 
 const connectDB = require('./config/db');
 const { backgroundJobsAllowed } = require('./config/runtimeSafety');
@@ -11,6 +12,11 @@ const app = express();
 
 app.use(cors({ origin: process.env.CLIENT_URL || '*', credentials: true }));
 app.use(express.json({ limit: '5mb' }));
+// Request logging.  The `url` token is overridden so every morgan format
+// (including 'dev') prints the URL with ?token= / access_token /
+// refresh_token values redacted: EventSource and download links must
+// carry the JWT in the query string.  Headers and bodies are not logged.
+morgan.token('url', (req) => redactUrl(req.originalUrl || req.url));
 if (process.env.NODE_ENV !== 'production') app.use(morgan('dev'));
 
 // Mount routes

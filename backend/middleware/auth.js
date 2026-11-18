@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const { redactUrl } = require('../utils/redactUrl');
 const asyncHandler = require('express-async-handler');
 const User = require('../models/User');
 
@@ -58,7 +59,7 @@ const authorize = (...roles) => (req, res, next) => {
   if (!allowed.has(req.user.role)) {
     // [HOD-DEBUG] temporary - shows exactly who was blocked and why.
     console.warn('[HOD-DEBUG] authorize DENY role=%s needed=%j %s %s',
-      req.user.role, [...allowed], req.method, req.originalUrl);
+      req.user.role, [...allowed], req.method, redactUrl(req.originalUrl));
     res.status(403);
     throw new Error('Forbidden: insufficient permissions');
   }
@@ -102,7 +103,7 @@ const requireReviewer = (req, res, next) => {
   if (ok) return next();
   // [HOD-DEBUG] temporary - surfaces the exact reason a reviewer was blocked.
   console.warn('[HOD-DEBUG] requireReviewer DENY role=%s isHOD=%s canReview=%s %s',
-    u.role, u.isHOD, u.hodPermissions && u.hodPermissions.canReview, req.originalUrl);
+    u.role, u.isHOD, u.hodPermissions && u.hodPermissions.canReview, redactUrl(req.originalUrl));
   res.status(403);
   throw new Error('Forbidden: review access required (need HR or a HOD with review permission)');
 };
